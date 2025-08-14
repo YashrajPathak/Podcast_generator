@@ -305,6 +305,38 @@ app.add_middleware(
 EXPORT_ROOT = Path(settings.EXPORT_DIR).resolve()
 _ensure_dir(EXPORT_ROOT)
 
+# ========= Debug config endpoint (safe, no secrets) =========
+from typing import List as _List
+import os as _os
+
+def _present(k: str) -> bool:
+    v = _os.getenv(k, "")
+    return bool(v and v.strip())
+
+def _looks_url(k: str) -> bool:
+    v = _os.getenv(k, "")
+    return v.startswith("http://") or v.startswith("https://")
+
+def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[str], url_vars: _List[str] = []):
+    @app.get("/debug/config")
+    def debug_config():
+        ok = {}
+        for k in required_vars:
+            ok[k] = "present" if _present(k) else "MISSING"
+        for k in url_vars:
+            if _present(k):
+                ok[k] = ok.get(k, "present")
+            ok[f"{k}_is_url"] = "ok" if _looks_url(k) else "INVALID_URL"
+        return {"service": service_name, "vars": ok}
+
+# Attach
+attach_debug_config(
+    app,
+    "agent4",
+    required_vars=["EXPORT_DIR"],
+    url_vars=[]
+)
+
 # ========= Core export =========
 @app.post("/export", response_model=ExportResponse)
 async def export_now(req: ExportRequest):
@@ -558,6 +590,7 @@ async def root():
             "download_zip": "GET /download/zip?title_or_session=...",
             "list": "GET /list",
             "health": "GET /health",
+            "debug/config": "GET /debug/config",
         },
         "notes": [
             "Write-once export directory per request",
