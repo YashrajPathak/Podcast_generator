@@ -13,6 +13,7 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
+import wave as wav
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +23,8 @@ from pydantic_settings import BaseSettings
 
 import azure.cognitiveservices.speech as speechsdk
 from azure.identity import ClientSecretCredential
+
+import re
 
 from httpx import AsyncClient, Timeout
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -65,6 +68,7 @@ class Settings(BaseSettings):
     # Service Integration
     ORCHESTRATOR_URL: str = "http://localhost:8008"  # Graph, used for local mute fallback
     AGENT_TIMEOUT: float = 30.0
+    MAX_RETRIES: int = 3
 
     # TTS / Files
     DEFAULT_VOICE: str = "en-US-AriaNeural"
@@ -92,6 +96,26 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("Agent3")
+
+# ---- CORS (tightened) ----
+try:
+    app = FastAPI(
+        title="🔊 Agent3 - TTS Generator",
+        description="AAD-auth Azure Speech TTS with streaming, per-agent mute checks, and chat support",
+        version="2.2.1"
+    )
+    origins = [o.strip() for o in os.getenv("UI_ORIGINS", os.getenv("UI_ORIGIN", "http://localhost:8501")).split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
+        allow_credentials=False,
+        max_age=86400,
+    )
+except Exception:
+    # be permissive on init failure (non-fatal)
+    pass
 
 # ========== Models ==========
 class TTSRequest(BaseModel):
@@ -174,37 +198,49 @@ class TTSManager:
         self.auth_manager = auth_manager
         self.semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_SYNTHESIS)
         self.audio_dir = Path(settings.AUDIO_DIR)
-        self.audio_dir.mkdir(exist_ok=True)
+        try:
+            self.audio_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"⚠️ could not create audio_dir={self.audio_dir}: {e}")
 
     def _make_ssml(self, text: str, voice: str, speed: float = 1.0, pitch: float = 1.0) -> str:
         """Generate SSML with natural speech patterns"""
         # Constrain parameters to natural ranges
         speed = max(0.8, min(speed, 1.2))  # 0.8x-1.2x speed
         pitch = max(0.8, min(pitch, 1.2))  # -20% to +20% pitch
-        
+
+        # Sanitize: strip any user-supplied tags to prevent SSML injection
+        text = re.sub(r"<[^>]+>", "", text or "")
+        # Remove any audio src-like patterns defensively
+        text = re.sub(r"\b(src|href)\s*=\s*['\"]?[^'\"\s>]+", "", text, flags=re.IGNORECASE)
+
         # Add natural pauses after sentences
         text = re.sub(r'([.!?])', r'\1<break time="400ms"/>', text)
         
         # Add slight pause after commas
         text = re.sub(r'(,|;)', r'\1<break time="200ms"/>', text)
         
-        safe_text = (text.replace("&", "&amp;")
-                      .replace("<", "&lt;")
-                      .replace(">", "&gt;"))
-        
-        return f"""<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">
-  <voice name="{voice}">
-    <prosody rate="{int(speed*100)}%" pitch="{int(pitch*100)}%">
-      {safe_text}
-    </prosody>
-  </voice>
-</speak>"""
+        # Convert pitch factor to % change around 1.0
+        pct = int(round((pitch - 1.0) * 100))
+        pitch_attr = f"{pct:+d}%"
+        rate_attr = f"{int(round((speed - 1.0) * 100)):+d}%"
+
+        ssml = f"""
+        <speak version='1.0' xml:lang='en-US'>
+            <voice name='{voice}'>
+                <prosody rate='{rate_attr}' pitch='{pitch_attr}'>
+                    {text}
+                </prosody>
+            </voice>
+        </speak>
+        """.strip()
+        return ssml
 
     async def synthesize_wav(self, text: str, voice: str, speed: float = 1.0, pitch: float = 1.0) -> Optional[str]:
         """Generate WAV file with natural pacing"""
         speech_config = self.auth_manager.get_speech_config(voice)
         speech_config.set_speech_synthesis_output_format(
-            speechsdk.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm
+            speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
         )
         
         # Generate unique filename with voice prefix for debugging
@@ -318,7 +354,7 @@ class TTSManager:
             try:
                 # Fallback to size-based estimation
                 size = os.path.getsize(file_path)
-                return round(size / 32000.0, 2)  # 16kHz 16-bit mono = 32KB/sec
+                return round(size / 48000.0, 2)  # 24kHz 16-bit mono = 48KB/sec
             except Exception as e:
                 logger.warning(f"⚠️ Duration estimation failed: {e}")
                 return None
@@ -356,25 +392,35 @@ class TTSManager:
                 logger.error(f"❌ Cleanup cycle failed: {e}")
                 await asyncio.sleep(60)  # Wait longer if error occurs
 # ========== Per-agent mute helper ==========
+@retry(stop=stop_after_attempt(settings.MAX_RETRIES),
+       wait=wait_exponential(multiplier=1, min=1, max=8))
+async def _fetch_mute_status_fallback(session_id: str) -> Optional[bool]:
+    async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
+        r = await client.get(
+            f"{settings.ORCHESTRATOR_URL}/session/{session_id}/mute-status",
+            params={"agent": "agent3"}
+        )
+        if r.status_code >= 500:
+            raise RuntimeError(f"transient {r.status_code}")
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        return bool(data.get("muted", False))
+
 async def is_effectively_muted(session_id: Optional[str]) -> bool:
-    """Check Graph /mute-status with agent=agent3 via utils; fallback to direct HTTP."""
+    """Check Graph /mute-status with agent=agent3 via utils; fallback to direct HTTP with retry."""
     if not session_id:
         return False
-    # Preferred: utils helper (already knows GRAPH URL and schema)
     try:
         return bool(await utils_is_session_muted(session_id, "agent3"))
     except Exception:
         pass
-    # Fallback: direct call to Graph
     try:
-        async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
-            r = await client.get(f"{settings.ORCHESTRATOR_URL}/session/{session_id}/mute-status", params={"agent": "agent3"})
-            if r.status_code == 200:
-                data = r.json()
-                return bool(data.get("muted", False))
+        res = await _fetch_mute_status_fallback(session_id)
+        return bool(res) if res is not None else False
     except Exception as e:
         logger.warning(f"mute check failed: {e}")
-    return False
+        return False
 
 # ========== Voices Cache ==========
 class VoicesCache:
@@ -419,7 +465,8 @@ class Agent3:
         )
         logger.info("✅ Agent3 initialized")
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
+    @retry(stop=stop_after_attempt(settings.MAX_RETRIES),
+           wait=wait_exponential(multiplier=1, min=1, max=8))
     async def generate_audio(self, req: TTSRequest) -> TTSResponse:
         if not validate_session_id(req.session_id):
             return TTSResponse(
@@ -458,7 +505,8 @@ class Agent3:
             base += f"\nContext:\n{request.conversation_context}"
         return base
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
+    @retry(stop=stop_after_attempt(settings.MAX_RETRIES),
+           wait=wait_exponential(multiplier=1, min=1, max=8))
     async def handle_chat(self, request: ChatRequest) -> ChatResponse:
         start = time.time()
         try:
@@ -514,7 +562,7 @@ class Agent3:
 
         speech_config = self.auth.get_speech_config(voice)
         speech_config.set_speech_synthesis_output_format(
-            speechsdk.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm
+            speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
         )
         synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
         ssml = self.tts._make_ssml(cleaned, voice, speed, pitch)
@@ -524,7 +572,7 @@ class Agent3:
             return
 
         stream = speechsdk.AudioDataStream(result)
-        buffer = bytearray(3200)  # ~100ms chunks
+        buffer = bytearray(4800)  # ~100ms chunks
         while True:
             n = stream.read_data(buffer)
             if n == 0:
@@ -533,26 +581,12 @@ class Agent3:
         await websocket.send_json({"status": "completed", "voice": voice, "speed": speed, "pitch": pitch})
 
 # ========== FastAPI App ==========
-app = FastAPI(
-    title="🔊 Agent3 - TTS Generator",
-    description="AAD-auth Azure Speech TTS with streaming, per-agent mute checks, and chat support",
-    version="2.2.1"
-)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Initialize agent
-agent = Agent3()
-
-# Schedule periodic cleanup on startup (safe context)
 @app.on_event("startup")
 async def _start_cleanup():
     asyncio.create_task(agent.tts._periodic_cleanup())
+
+# Initialize agent
+agent = Agent3()
 
 # ========== API Endpoints ==========
 @app.post("/generate-audio", response_model=TTSResponse)
