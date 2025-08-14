@@ -1,0 +1,514 @@
+agent1.py terminal - 
+(.venv) PS C:\Users\ypathak1\podcast_generator> uvicorn agent1:app --port 8001
+C:\Users\ypathak1\podcast_generator\agent1.py:300: LangChainDeprecationWarning: The class `AzureChatOpenAI` was deprecated in LangChain 0.0.10 and will be removed in 1.0. An updated version of the class exists in the :class:`~langchain-openai package and should be used instead. To use it run `pip install 
+-U :class:`~langchain-openai` and import as `from :class:`~langchain_openai import AzureChatOpenAI``.
+  self.llm = AzureChatOpenAI(
+2025-08-14 19:04:41,914 - Agent1 - INFO - 🚀 Agent1 initialized successfully
+INFO:     Started server process [2920]
+INFO:     Waiting for application startup.
+[Agent1] ✅ Azure config looks good
+[Agent1] CWD: C:\Users\ypathak1\podcast_generator
+[Agent1] Env presence: {'AZURE_OPENAI_KEY': True, 'AZURE_OPENAI_ENDPOINT': True, 'AZURE_OPENAI_DEPLOYMENT': True, 'OPENAI_API_VERSION': True, 'GRAPH_URL': True}
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
+2025-08-14 19:06:46,723 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814185828
+2025-08-14 19:06:48,604 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:06:49,684 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:06:53,473 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:06:54,287 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814185828
+2025-08-14 19:06:54,559 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:06:55,912 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:06:56,722 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:06:57,906 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814185828
+2025-08-14 19:06:59,145 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:06:59,669 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:07:00,170 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:00,659 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:02,305 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814185828
+2025-08-14 19:07:03,235 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:07:04,323 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:07:05,139 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814185828
+2025-08-14 19:07:05,145 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:05,420 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:06,716 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:07:07,748 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:07:09,440 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:10,293 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:10,295 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814185828
+2025-08-14 19:07:11,366 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:07:12,146 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:07:13,197 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:14,373 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814185828
+2025-08-14 19:07:14,383 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:16,164 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:07:17,804 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814185828
+2025-08-14 19:07:17,957 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:18,763 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:07:19,897 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:07:21,228 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:21,230 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:21,721 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:07:23,189 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:24,344 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:07:26,484 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:26,715 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814185828
+2025-08-14 19:07:28,266 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:07:29,368 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:07:33,373 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:07:34,583 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:08:40,676 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814190758
+2025-08-14 19:08:42,071 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:08:42,832 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:08:45,489 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:08:47,754 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:08:48,015 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814190758
+2025-08-14 19:08:49,763 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:08:50,526 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:08:52,382 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814190758
+2025-08-14 19:08:53,635 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:08:54,096 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:08:54,588 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:08:54,849 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:08:55,946 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814190758
+2025-08-14 19:08:57,374 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:08:58,144 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:08:59,004 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:08:59,036 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:08:59,573 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814190758
+2025-08-14 19:09:00,929 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:09:01,991 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:09:02,769 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:09:04,598 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:09:04,849 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814190758
+2025-08-14 19:09:06,069 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:09:07,437 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:09:08,441 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:09:08,564 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:09:09,682 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814190758
+2025-08-14 19:09:11,267 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:09:12,130 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814190758
+2025-08-14 19:09:12,398 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:09:13,060 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:09:13,886 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:09:14,675 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:09:14,934 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:09:16,756 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:09:18,039 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:09:18,907 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:09:19,560 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:09:19,831 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814190758
+2025-08-14 19:09:21,240 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:09:22,155 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:09:25,358 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:09:26,270 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:16:44,660 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814191613
+2025-08-14 19:16:46,175 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:16:47,001 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:16:50,221 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:16:51,164 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:16:51,423 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814191613
+2025-08-14 19:16:52,781 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:16:53,550 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:16:56,670 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814191613
+2025-08-14 19:16:57,363 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:16:58,171 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:16:59,143 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:16:59,247 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:16:59,759 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814191613
+2025-08-14 19:17:00,952 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:17:01,734 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:17:02,219 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:17:03,425 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:17:03,680 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814191613
+2025-08-14 19:17:04,732 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:17:05,890 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:17:07,438 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:17:07,712 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:17:09,807 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814191613
+2025-08-14 19:17:10,918 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:17:12,008 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:17:12,762 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:17:13,321 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814191613
+2025-08-14 19:17:13,332 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:17:14,627 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:17:15,787 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:17:16,936 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:17:18,390 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814191613
+2025-08-14 19:17:19,680 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:17:20,860 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:17:21,121 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:17:22,552 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:17:25,044 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:17:25,308 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814191613
+2025-08-14 19:17:25,816 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:17:26,619 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:17:26,691 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:17:27,640 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+2025-08-14 19:17:31,736 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
+2025-08-14 19:17:33,698 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent1 "HTTP/1.1 200 OK"
+__________________________________________________________________________________________________________________________________________________________________________
+agent2.py terminal - 
+(.venv) PS C:\Users\ypathak1\podcast_generator> uvicorn agent2:app --port 8002
+C:\Users\ypathak1\podcast_generator\agent2.py:228: LangChainDeprecationWarning: The class `AzureChatOpenAI` was deprecated in LangChain 0.0.10 and will be removed in 1.0. An updated version of the class exists in the :class:`~langchain-openai package and should be used instead. To use it run `pip install 
+-U :class:`~langchain-openai` and import as `from :class:`~langchain_openai import AzureChatOpenAI``.                                                    -version=2024-05-01-preview "HTTP/1.1 200 OK"
+  self.llm = AzureChatOpenAI(
+2025-08-14 18:56:46,033 - Agent2 - INFO - ✅ Agent2 initialized
+2025-08-14 18:56:46,033 - Agent2 - INFO - 🚀 Agent2 service ready
+INFO:     Started server process [19440]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8002 (Press CTRL+C to quit)
+2025-08-14 19:07:10,590 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent2 "HTTP/1.1 200 OK"
+2025-08-14 19:07:10,592 - Agent2 - INFO - 💬 Processing chat for session podcast_20250814185828
+2025-08-14 19:07:11,638 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53967 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:07:21,229 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent2 "HTTP/1.1 200 OK"
+2025-08-14 19:07:21,231 - Agent2 - INFO - 💬 Processing chat for session podcast_20250814185828
+2025-08-14 19:07:22,351 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54013 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:07:33,826 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent2 "HTTP/1.1 200 OK"
+2025-08-14 19:07:33,828 - Agent2 - INFO - 💬 Processing chat for session podcast_20250814185828
+2025-08-14 19:07:34,832 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54068 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:09:04,609 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent2 "HTTP/1.1 200 OK"
+2025-08-14 19:09:04,610 - Agent2 - INFO - 💬 Processing chat for session podcast_20250814190758
+2025-08-14 19:09:06,427 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52546 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:09:16,141 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent2 "HTTP/1.1 200 OK"
+2025-08-14 19:09:16,142 - Agent2 - INFO - 💬 Processing chat for session podcast_20250814190758
+2025-08-14 19:09:17,334 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52599 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:09:26,844 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent2 "HTTP/1.1 200 OK"
+2025-08-14 19:09:26,845 - Agent2 - INFO - 💬 Processing chat for session podcast_20250814190758
+2025-08-14 19:09:28,678 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52645 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:17:09,530 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent2 "HTTP/1.1 200 OK"
+2025-08-14 19:17:09,532 - Agent2 - INFO - 💬 Processing chat for session podcast_20250814191613
+2025-08-14 19:17:10,833 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53240 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:17:22,583 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent2 "HTTP/1.1 200 OK"
+2025-08-14 19:17:22,584 - Agent2 - INFO - 💬 Processing chat for session podcast_20250814191613
+2025-08-14 19:17:23,668 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53300 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:17:33,805 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent2 "HTTP/1.1 200 OK"
+2025-08-14 19:17:33,806 - Agent2 - INFO - 💬 Processing chat for session podcast_20250814191613
+2025-08-14 19:17:34,926 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53351 - "POST /v1/chat HTTP/1.1" 200 OK
+_____________________________________________________________________________________________________________________________________________________________________________
+agent3.py terminal -
+(.venv) PS C:\Users\ypathak1\podcast_generator> uvicorn agent3:app --port 8004
+C:\Users\ypathak1\podcast_generator\agent3.py:458: LangChainDeprecationWarning: The class `AzureChatOpenAI` was deprecated in LangChain 0.0.10 and will be removed in 1.0. An updated version of the class exists in the :class:`~langchain-openai package and should be used instead. To use it run `pip install 
+-U :class:`~langchain-openai` and import as `from :class:`~langchain_openai import AzureChatOpenAI``.
+  self.llm = AzureChatOpenAI(
+2025-08-14 18:57:16,984 - Agent3 - INFO - ✅ Agent3 initialized
+INFO:     Started server process [10496]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8004 (Press CTRL+C to quit)
+2025-08-14 19:06:52,172 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:06:52,178 - azure.core.pipeline.policies.http_logging_policy - INFO - Request URL: 'https://login.microsoftonline.com/db05faca-c82a-4b9d-b9c5-0f64b6755421/v2.0/.well-known/openid-configuration'
+Request method: 'GET'
+Request headers:
+    'User-Agent': 'azsdk-python-identity/1.23.1 Python/3.11.10 (Windows-10-10.0.19045-SP0)'
+No body was attached to the request
+2025-08-14 19:06:52,391 - azure.core.pipeline.policies.http_logging_policy - INFO - Response status: 200
+Response headers:
+    'Cache-Control': 'max-age=86400, private'
+    'Content-Type': 'application/json; charset=utf-8'
+    'Strict-Transport-Security': 'REDACTED'
+    'X-Content-Type-Options': 'REDACTED'
+    'Access-Control-Allow-Origin': 'REDACTED'
+    'Access-Control-Allow-Methods': 'REDACTED'
+    'P3P': 'REDACTED'
+    'x-ms-request-id': 'f4d50fce-3029-4835-b66e-975f05643600'
+    'x-ms-ests-server': 'REDACTED'
+    'x-ms-srs': 'REDACTED'
+    'Content-Security-Policy-Report-Only': 'REDACTED'
+    'X-XSS-Protection': 'REDACTED'
+    'Set-Cookie': 'REDACTED'
+    'Date': 'Thu, 14 Aug 2025 13:36:51 GMT'
+    'Content-Length': '1753'
+2025-08-14 19:06:52,402 - azure.core.pipeline.policies.http_logging_policy - INFO - Request URL: 'https://login.microsoftonline.com/db05faca-c82a-4b9d-b9c5-0f64b6755421/oauth2/v2.0/token'
+Request method: 'POST'
+Request headers:
+    'Accept': 'application/json'
+    'x-client-sku': 'REDACTED'
+    'x-client-ver': 'REDACTED'
+    'x-client-os': 'REDACTED'
+    'x-ms-lib-capability': 'REDACTED'
+    'client-request-id': 'REDACTED'
+    'x-client-current-telemetry': 'REDACTED'
+    'x-client-last-telemetry': 'REDACTED'
+    'User-Agent': 'azsdk-python-identity/1.23.1 Python/3.11.10 (Windows-10-10.0.19045-SP0)'
+A body is sent with the request
+2025-08-14 19:06:52,523 - azure.core.pipeline.policies.http_logging_policy - INFO - Response status: 200
+Response headers:
+    'Cache-Control': 'no-store, no-cache'
+    'Pragma': 'no-cache'
+    'Content-Type': 'application/json; charset=utf-8'
+    'Expires': '-1'
+    'Strict-Transport-Security': 'REDACTED'
+    'X-Content-Type-Options': 'REDACTED'
+    'P3P': 'REDACTED'
+    'client-request-id': 'REDACTED'
+    'x-ms-request-id': '3710f31b-9b04-422d-bc11-0d4ecbe01b00'
+    'x-ms-ests-server': 'REDACTED'
+    'x-ms-clitelem': 'REDACTED'
+    'x-ms-srs': 'REDACTED'
+    'Content-Security-Policy-Report-Only': 'REDACTED'
+    'X-XSS-Protection': 'REDACTED'
+    'Set-Cookie': 'REDACTED'
+    'Date': 'Thu, 14 Aug 2025 13:36:51 GMT'
+    'Content-Length': '1625'
+2025-08-14 19:06:52,526 - azure.identity._internal.get_token_mixin - INFO - ClientSecretCredential.get_token succeeded
+2025-08-14 19:06:52,527 - Agent3 - INFO - ✅ Using Azure AD authentication for voice=en-US-AriaNeural
+2025-08-14 19:06:53,415 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_89e4a988fc7c48448b4bee88c650e454.wav
+INFO:     127.0.0.1:53898 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:06:58,541 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:06:59,416 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_a857e66207224e1b94d7f07a028113a6.wav
+INFO:     127.0.0.1:53924 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:07:02,304 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:07:03,179 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_bcfc64ee9ad54f3fb66640ce1e338f39.wav
+INFO:     127.0.0.1:53935 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:07:06,920 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:07:07,689 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_80bf9bf33e104aefac71eafad1f408fe.wav
+INFO:     127.0.0.1:53957 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:07:11,278 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:07:12,077 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_65bf5bc3abee4de3bde9e3373650cf5a.wav
+INFO:     127.0.0.1:53972 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:07:15,907 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:07:17,637 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:07:17,896 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:07:17,898 - azure.core.pipeline.policies.http_logging_policy - INFO - Request URL: 'https://login.microsoftonline.com/db05faca-c82a-4b9d-b9c5-0f64b6755421/v2.0/.well-known/openid-configuration'
+Request method: 'GET'
+Request headers:
+    'User-Agent': 'azsdk-python-identity/1.23.1 Python/3.11.10 (Windows-10-10.0.19045-SP0)'
+No body was attached to the request
+2025-08-14 19:07:18,137 - azure.core.pipeline.policies.http_logging_policy - INFO - Response status: 200
+Response headers:
+    'Cache-Control': 'max-age=86400, private'
+    'Content-Type': 'application/json; charset=utf-8'
+    'Strict-Transport-Security': 'REDACTED'
+    'X-Content-Type-Options': 'REDACTED'
+    'Access-Control-Allow-Origin': 'REDACTED'
+    'Access-Control-Allow-Methods': 'REDACTED'
+    'P3P': 'REDACTED'
+    'x-ms-request-id': '77af703d-119a-4266-baee-16b128033800'
+    'x-ms-ests-server': 'REDACTED'
+    'x-ms-srs': 'REDACTED'
+    'Content-Security-Policy-Report-Only': 'REDACTED'
+    'X-XSS-Protection': 'REDACTED'
+    'Set-Cookie': 'REDACTED'
+    'Date': 'Thu, 14 Aug 2025 13:37:17 GMT'
+    'Content-Length': '1753'
+2025-08-14 19:07:18,139 - azure.core.pipeline.policies.http_logging_policy - INFO - Request URL: 'https://login.microsoftonline.com/db05faca-c82a-4b9d-b9c5-0f64b6755421/oauth2/v2.0/token'
+Request method: 'POST'
+Request headers:
+    'Accept': 'application/json'
+    'x-client-sku': 'REDACTED'
+    'x-client-ver': 'REDACTED'
+    'x-client-os': 'REDACTED'
+    'x-ms-lib-capability': 'REDACTED'
+    'client-request-id': 'REDACTED'
+    'x-client-current-telemetry': 'REDACTED'
+    'x-client-last-telemetry': 'REDACTED'
+    'User-Agent': 'azsdk-python-identity/1.23.1 Python/3.11.10 (Windows-10-10.0.19045-SP0)'
+A body is sent with the request
+2025-08-14 19:07:18,282 - azure.core.pipeline.policies.http_logging_policy - INFO - Response status: 200
+Response headers:
+    'Cache-Control': 'no-store, no-cache'
+    'Pragma': 'no-cache'
+    'Content-Type': 'application/json; charset=utf-8'
+    'Expires': '-1'
+    'Strict-Transport-Security': 'REDACTED'
+    'X-Content-Type-Options': 'REDACTED'
+    'P3P': 'REDACTED'
+    'client-request-id': 'REDACTED'
+    'x-ms-request-id': 'c889f4c5-2010-4f8b-beee-eb47a39b3700'
+    'x-ms-ests-server': 'REDACTED'
+    'x-ms-clitelem': 'REDACTED'
+    'x-ms-srs': 'REDACTED'
+    'Content-Security-Policy-Report-Only': 'REDACTED'
+    'X-XSS-Protection': 'REDACTED'
+    'Set-Cookie': 'REDACTED'
+    'Date': 'Thu, 14 Aug 2025 13:37:18 GMT'
+    'Content-Length': '1624'
+2025-08-14 19:07:18,285 - azure.identity._internal.get_token_mixin - INFO - ClientSecretCredential.get_token succeeded
+2025-08-14 19:07:18,286 - Agent3 - INFO - ✅ Using Azure AD authentication for voice=en-IN-PrabhatNeural
+2025-08-14 19:07:18,703 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_121126905c554812a13a966e7fa3a67b.wav
+INFO:     127.0.0.1:53992 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:07:19,879 - Agent3 - INFO - ✅ Generated en-IN-PrabhatNeural audio: prab_51ae86c67ce0490e9e563f0d876790ae.wav
+2025-08-14 19:07:20,208 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:07:21,166 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_629d4f182e2a437fa663830485926a4a.wav
+INFO:     127.0.0.1:54011 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:07:22,961 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:07:23,522 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:07:23,791 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:07:24,285 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_6ac4b362b77d409e928f149282d5ee2e.wav
+INFO:     127.0.0.1:54028 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:07:24,869 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:07:26,359 - Agent3 - INFO - ✅ Generated en-IN-PrabhatNeural audio: prab_7dd1511c65da4eb4b1004b41194164e9.wav
+INFO:     127.0.0.1:54025 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:07:26,685 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:07:27,616 - Agent3 - INFO - ✅ Generated en-IN-PrabhatNeural audio: prab_eaadec199b144470bc071c2513e90250.wav
+INFO:     127.0.0.1:54033 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:07:32,522 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:07:33,314 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_e6ea669feb7f4d6dbc83470543829bde.wav
+INFO:     127.0.0.1:54059 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:07:37,521 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:07:38,267 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814185828/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:07:39,411 - Agent3 - INFO - ✅ Generated en-IN-PrabhatNeural audio: prab_4fa576266ae844cf82fd554ed7f2cfc2.wav
+INFO:     127.0.0.1:54081 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:08:44,630 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:08:45,473 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_7bd6af9a831f49f79c17945da2b22332.wav
+INFO:     127.0.0.1:52472 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:08:52,833 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:08:53,576 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_0259580d754b45b0876f905f5fcb91be.wav
+INFO:     127.0.0.1:52503 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:08:56,504 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:08:57,304 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_3cb9fced6dc341ecb2e1c1e00e4a1746.wav
+INFO:     127.0.0.1:52517 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:09:00,881 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:09:01,874 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_2d4359c231304a9892dcf21529e4ab2c.wav
+INFO:     127.0.0.1:52535 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:09:05,300 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:09:06,067 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_7f9150db11134b5a86d5b8b386688f2d.wav
+INFO:     127.0.0.1:52555 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:09:11,013 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:09:11,990 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:09:12,248 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:09:12,776 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_b5cf751cd7bf4ebe8e36031266a10c4f.wav
+INFO:     127.0.0.1:52579 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:09:13,559 - Agent3 - INFO - ✅ Generated en-IN-PrabhatNeural audio: prab_a3afe87b88534cdbb8bf419a3db92485.wav
+INFO:     127.0.0.1:52572 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:09:15,845 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:09:16,751 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_bd6959c63d4c4021a84ebcb11e44ff36.wav
+INFO:     127.0.0.1:52594 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:09:16,965 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:09:17,975 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_c4925bdff0ff492986659af587545bf2.wav
+INFO:     127.0.0.1:52608 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:09:20,394 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:09:21,245 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:09:22,650 - Agent3 - INFO - ✅ Generated en-IN-PrabhatNeural audio: prab_6906670c6ec64e21b6d96b45779c67b8.wav
+INFO:     127.0.0.1:52616 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:09:24,508 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:09:25,300 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_ba5a3e0188174b108b74bdb2ef5fa628.wav
+INFO:     127.0.0.1:52635 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:09:31,373 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:09:32,141 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814190758/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:09:33,052 - Agent3 - INFO - ✅ Generated en-IN-PrabhatNeural audio: prab_23a5e2847ebe40999b7c6c28c3ba2ec9.wav
+INFO:     127.0.0.1:52657 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:16:49,234 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:16:50,157 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_56223d33c8c241ef906ba1e1aa5defc0.wav
+INFO:     127.0.0.1:53175 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:16:56,412 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:16:57,309 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_4ba7ad20a5054ea19a8bb57530627c37.wav
+INFO:     127.0.0.1:53193 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:17:00,765 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:17:01,688 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_3bf1254cefb94137a221256343656a9f.wav
+INFO:     127.0.0.1:53215 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:17:03,774 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:17:04,670 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_b138729fd91846b58bc693c0d8b9c002.wav
+INFO:     127.0.0.1:53222 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:17:10,671 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:17:11,945 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_5e381af9cc1546e08cffcf13a7f7d087.wav
+INFO:     127.0.0.1:53252 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:17:14,374 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:17:14,432 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:17:15,502 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_fde12626b03942e4b9de7aeb6636693c.wav
+INFO:     127.0.0.1:53273 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:17:16,814 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:17:17,799 - Agent3 - INFO - ✅ Generated en-IN-PrabhatNeural audio: prab_92640f444583425d9c2d469cc74d330c.wav
+2025-08-14 19:17:20,421 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:17:21,594 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_c7f69b1460ed4844bd41b1243ea54679.wav
+INFO:     127.0.0.1:53294 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:17:22,357 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:17:25,043 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:17:25,047 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:17:25,758 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_70e6cc91bf354f84a2984c912256a776.wav
+INFO:     127.0.0.1:53316 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:17:26,082 - Agent3 - INFO - ✅ Generated en-IN-PrabhatNeural audio: prab_bbba7d32b60e4b07a663804fb37a109f.wav
+2025-08-14 19:17:26,434 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:17:27,389 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:17:29,410 - Agent3 - INFO - ✅ Generated en-IN-PrabhatNeural audio: prab_918d1842fa794d4d879481fc06129562.wav
+INFO:     127.0.0.1:53327 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:17:29,733 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:17:30,747 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:17:31,631 - Agent3 - INFO - ✅ Generated en-US-AriaNeural audio: aria_2ed49a427de640a0bf73516fd806b10a.wav
+INFO:     127.0.0.1:53340 - "POST /generate-audio HTTP/1.1" 200 OK
+2025-08-14 19:17:32,017 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:17:32,983 - Agent3 - INFO - ✅ Generated en-IN-PrabhatNeural audio: prab_c544086e3dc249468dc460b35cf55d1e.wav
+INFO:     127.0.0.1:53341 - "POST /v1/chat HTTP/1.1" 200 OK
+2025-08-14 19:17:37,641 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-14 19:17:38,392 - httpx - INFO - HTTP Request: GET http://localhost:8008/session/podcast_20250814191613/mute-status?agent=agent3 "HTTP/1.1 200 OK"
+2025-08-14 19:17:39,337 - Agent3 - INFO - ✅ Generated en-IN-PrabhatNeural audio: prab_5f501ca7ad9a4d09ab20a3dbda2234ef.wav
+INFO:     127.0.0.1:53366 - "POST /v1/chat HTTP/1.1" 200 OK
+__________________________________________________________________________________________________________________________________________________________________________
+agent4.py terminal-
+(.venv) PS C:\Users\ypathak1\podcast_generator> uvicorn agent4:app --port 8006
+INFO:     Started server process [19112]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8006 (Press CTRL+C to quit)
+_____________________________________________________________________________________________________________________________________________________________________
+agent5.py terminal -
+(.venv) PS C:\Users\ypathak1\podcast_generator> uvicorn agent5:app --port 8007
+2025-08-14 18:57:58,781 - Agent5 - INFO - ✅ Database initialized at podcast_sessions.db
+2025-08-14 18:57:58,781 - Agent5 - INFO - ✅ Agent5 initialized
+INFO:     Started server process [12884]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8007 (Press CTRL+C to quit)
+______________________________________________________________________________________________________________________________________________________________________________
+graph.py terminal - 
+INFO:     127.0.0.1:54423 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54424 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54425 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54426 - "GET /session/podcast_20250814191613/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54427 - "GET /session/podcast_20250814185828/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54428 - "GET /session/podcast_20250814191613/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54429 - "GET /session/podcast_20250814191613/final-audio HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54430 - "GET /session/podcast_20250814185828/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54431 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54432 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54433 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54434 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54435 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54436 - "GET /session/podcast_20250814191613/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54437 - "GET /session/podcast_20250814185828/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54440 - "GET /session/podcast_20250814185828/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54441 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54442 - "GET /session/podcast_20250814191613/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54443 - "GET /session/podcast_20250814191613/final-audio HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54444 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54445 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54446 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54447 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54448 - "GET /session/podcast_20250814185828/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54449 - "GET /session/podcast_20250814191613/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54450 - "GET /session/podcast_20250814185828/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54451 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54452 - "GET /session/podcast_20250814191613/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54453 - "GET /session/podcast_20250814191613/final-audio HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54454 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54456 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54457 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54458 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54459 - "GET /session/podcast_20250814185828/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54460 - "GET /session/podcast_20250814191613/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54461 - "GET /session/podcast_20250814185828/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54462 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54463 - "GET /session/podcast_20250814191613/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54464 - "GET /session/podcast_20250814191613/final-audio HTTP/1.1" 200 OK
+
+_____________________________________________________________________________________________________________________________________________________________________________
+streamlit terminal-
+(.venv) PS C:\Users\ypathak1\podcast_generator> streamlit run streamlit_app.py
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://10.74.153.88:8501
+
+
+
