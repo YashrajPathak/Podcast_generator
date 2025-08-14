@@ -90,6 +90,58 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ could not create DB parent dir for {settings.DATABASE_PATH}: {e}")
 
+# Retention worker: periodically purge old rows
+async def _retention_worker():
+    import sqlite3, time, math
+    while True:
+        try:
+            cutoff = time.time() - float(settings.LOG_RETENTION_DAYS) * 86400.0
+            deleted_total = 0
+            try:
+                conn = sqlite3.connect(settings.DATABASE_PATH)
+                cur = conn.cursor()
+                # Best-effort deletes; ignore if table/columns don't exist
+                for sql, param in [
+                    ("DELETE FROM events WHERE timestamp < ?", cutoff),
+                    ("DELETE FROM sessions WHERE last_activity < ?", cutoff),
+                ]:
+                    try:
+                        cur.execute(sql, (param,))
+                        deleted_total += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                    except Exception:
+                        pass
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+                try:
+                    if deleted_total > 0:
+                        logger.info(f"retention_deleted_rows N={deleted_total}")
+                except Exception:
+                    pass
+                # Occasional vacuum to reclaim space
+                try:
+                    if deleted_total > 0:
+                        cur.execute("VACUUM")
+                        conn.commit()
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.warning(f"Retention worker DB error: {e}")
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception:
+            # never crash the worker
+            pass
+        # sleep until next interval
+        try:
+            await asyncio.sleep(float(settings.CLEANUP_INTERVAL))
+        except Exception:
+            await asyncio.sleep(3600)
+
 def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT)
 
@@ -784,6 +836,7 @@ async def _startup():
     asyncio.create_task(_periodic_cleanup())
     if settings.GRAPH_INGEST_ENABLED:
         asyncio.create_task(agent._ingest_loop())
+    asyncio.create_task(_retention_worker())
 
 # ========== API Endpoints ==========
 
@@ -958,52 +1011,51 @@ async def resume_info(session_id: str):
 @app.get("/metrics")
 async def metrics():
     try:
-        # Sessions count
+        # sessions count best-effort via DB (fallback to 0)
+        import sqlite3
+        count = 0
         try:
-            sessions = await agent.list_sessions()
-            sessions_count = len(sessions)
+            conn = sqlite3.connect(settings.DATABASE_PATH)
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT COUNT(1) FROM sessions WHERE status != 'ended'")
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    count = int(row[0])
+            except Exception:
+                # fallback: total sessions
+                try:
+                    cur.execute("SELECT COUNT(1) FROM sessions")
+                    row = cur.fetchone()
+                    if row and row[0] is not None:
+                        count = int(row[0])
+                except Exception:
+                    pass
         except Exception:
-            sessions_count = None
-
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
         return {
-            "sessions": sessions_count,
+            "sessions": count,
             "db_path": settings.DATABASE_PATH,
-            "poll_interval": settings.CLEANUP_INTERVAL,
+            "poll_interval": settings.GRAPH_POLL_INTERVAL_SEC,
             "retention_days": settings.LOG_RETENTION_DAYS,
             "time": int(time.time()),
         }
     except Exception as e:
-        logger.error(f"/metrics error: {e}")
+        logger.warning(f"/metrics failed: {e}")
         return {
-            "sessions": None,
+            "sessions": 0,
             "db_path": settings.DATABASE_PATH,
-            "poll_interval": settings.CLEANUP_INTERVAL,
+            "poll_interval": settings.GRAPH_POLL_INTERVAL_SEC,
             "retention_days": settings.LOG_RETENTION_DAYS,
             "time": int(time.time()),
-            "error": str(e),
         }
 
-# --- Lightweight metrics middleware ---
-@app.middleware("http")
-async def _metrics_middleware(request, call_next):
-    start = time.perf_counter()
-    response = await call_next(request)
-    try:
-        dur = time.perf_counter() - start
-        if not str(request.url.path).startswith("/metrics"):
-            async with agent._metrics_lock:
-                agent._metrics["requests_total"] += 1
-                agent._metrics["latency_count"] += 1
-                agent._metrics["latency_sum"] += float(dur)
-                if float(dur) > agent._metrics["latency_max"]:
-                    agent._metrics["latency_max"] = float(dur)
-                if getattr(response, "status_code", 200) >= 400:
-                    agent._metrics["errors_total"] += 1
-    except Exception:
-        # never fail requests due to metrics
-        pass
-    return response
-
+# --- Health endpoint ---
 @app.get("/health")
 async def health():
     global _last_health_log
