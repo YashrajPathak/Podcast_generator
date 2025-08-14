@@ -509,6 +509,9 @@ streamlit terminal-
 
   Local URL: http://localhost:8501
   Network URL: http://10.74.153.88:8501
-
+______________________________________________________________________________________________________________________________________________________________________________
+curl http://localhost:8008/session/podcast_20250814191613/final-audio
+Get-Item .\audio_cache\podcast_20250814191613.wav | Select-Object Name,Length,LastWriteTime
+curl -o final.wav http://localhost:8008/session/podcast_20250814191613/final-audio/file
 
 
