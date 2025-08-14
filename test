@@ -1,0 +1,37 @@
+import asyncio, httpx, time
+
+async def main():
+    g = httpx.AsyncClient(base_url="http://localhost:8008", timeout=30)
+    s = "s1"
+
+    # Start
+    r = await g.post("/run", json={"session_id": s, "event":"start", "target_minutes":0})
+    print("start:", r.json())
+
+    # Topic and turn
+    await g.post("/run", json={"session_id": s, "event":"topic_input", "input":"AI and podcasts"})
+    await g.post("/conversation/user-turn", json={"session_id": s, "text":"Give me intro"})
+
+    # State JSON-safe
+    st = await g.get(f"/session/{s}/state")
+    print("state keys:", list(st.json().keys()))
+
+    # End and finalize
+    await g.post("/run", json={"session_id": s, "event":"end"})
+    for _ in range(20):
+        fa = await g.get(f"/session/{s}/final-audio")
+        j = fa.json()
+        print("final-audio:", j)
+        if j.get("status") == "ready":
+            break
+        await asyncio.sleep(1)
+
+    # Download file
+    if j.get("status") == "ready":
+        file = await g.get(f"/session/{s}/final-audio/file")
+        print("wav size:", len(file.content))
+
+    await g.aclose()
+
+if __name__ == "__main__":
+    asyncio.run(main())
