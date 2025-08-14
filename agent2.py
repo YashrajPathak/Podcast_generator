@@ -188,8 +188,25 @@ class RobustJSONParser:
         }
 
 # ========== Agent ==========
+@retry(stop=stop_after_attempt(settings.MAX_RETRIES),
+       wait=wait_exponential(multiplier=1, min=1, max=8))
+async def _fetch_mute_status_fallback(session_id: str) -> Optional[bool]:
+    """Fallback HTTP fetch to Graph mute-status with retry on transient errors."""
+    async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
+        r = await client.get(
+            f"{settings.ORCHESTRATOR_URL}/session/{session_id}/mute-status",
+            params={"agent": "agent2"},
+        )
+        # Retry on 5xx
+        if r.status_code >= 500:
+            raise RuntimeError(f"transient {r.status_code}")
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        return bool(data.get("muted", False))
+
 async def is_effectively_muted(session_id: Optional[str]) -> bool:
-    """Check Graph /mute-status with agent=agent2 via utils; fallback to direct HTTP."""
+    """Check Graph /mute-status with agent=agent2 via utils; fallback to direct HTTP with retry."""
     if not session_id:
         return False
     try:
@@ -197,17 +214,11 @@ async def is_effectively_muted(session_id: Optional[str]) -> bool:
     except Exception:
         pass
     try:
-        async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
-            r = await client.get(
-                f"{settings.ORCHESTRATOR_URL}/session/{session_id}/mute-status",
-                params={"agent": "agent2"},
-            )
-            if r.status_code == 200:
-                data = r.json()
-                return bool(data.get("muted", False))
+        res = await _fetch_mute_status_fallback(session_id)
+        return bool(res) if res is not None else False
     except Exception as e:
         logger.warning(f"mute check failed: {e}")
-    return False
+        return False
 
 class Agent2:
     """Summarizer & Analyst."""
