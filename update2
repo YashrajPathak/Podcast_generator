@@ -513,5 +513,33 @@ ________________________________________________________________________________
 curl http://localhost:8008/session/podcast_20250814191613/final-audio
 Get-Item .\audio_cache\podcast_20250814191613.wav | Select-Object Name,Length,LastWriteTime
 curl -o final.wav http://localhost:8008/session/podcast_20250814191613/final-audio/file
+_____________________________________________________________________________________________________________________________________________________________________________
+(.venv) PS C:\Users\ypathak1\podcast_generator> curl http://localhost:8008/session/podcast_20250814191613/final-audio
 
 
+StatusCode        : 200
+StatusDescription : OK
+Content           : {"status":"pending","audio_path":null}
+RawContent        : HTTP/1.1 200 OK
+                    Content-Length: 38
+                    Content-Type: application/json
+                    Date: Thu, 14 Aug 2025 14:18:40 GMT
+                    Server: uvicorn
+
+                    {"status":"pending","audio_path":null}
+Headers           : {[Content-Length, 38], [Content-Type, application/json], [Date, Thu, 14 Aug 2025 14:18:40 GMT], [Server, uvicorn]}
+Images            : {}
+InputFields       : {}
+Links             : {}
+ParsedHtml        : mshtml.HTMLDocumentClass
+RawContentLength  : 38
+
+
+
+(.venv) PS C:\Users\ypathak1\podcast_generator> Get-Item .\audio_cache\podcast_20250814191613.wav | Select-Object Name,Length,LastWriteTime
+Get-Item : Cannot find path 'C:\Users\ypathak1\podcast_generator\audio_cache\podcast_20250814191613.wav' because it does not exist.
+At line:1 char:1
++ Get-Item .\audio_cache\podcast_20250814191613.wav | Select-Object Nam ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (C:\Users\ypatha...50814191613.wav:String) [Get-Item], ItemNotFoundException
+    + FullyQualifiedErrorId : PathNotFound,Microsoft.PowerShell.Commands.GetItemCommand
