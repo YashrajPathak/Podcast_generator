@@ -12,6 +12,7 @@ import azure.cognitiveservices.speech as speechsdk
 from azure.identity import ClientSecretCredential
 from pydantic_settings import BaseSettings
 from datetime import datetime
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 __all__ = [
     "settings",
@@ -58,6 +59,7 @@ class Settings(BaseSettings):
     AUDIO_CACHE_TTL: int = 3600
     AGENT_TIMEOUT: float = 15.0
     MAX_TEXT_LENGTH: int = 10000
+    MAX_RETRIES: int = 3
 
     AZURE_SPEECH_KEY: Optional[str] = None
 
@@ -312,24 +314,30 @@ def handle_service_error(error: Exception, service_name: str) -> Dict[str, Any]:
     return create_error_response(f"{service_name} error: {msg}", "Check logs for more details")
 
 # ========== Health Checks ==========
+@retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
+async def _get_json_with_retries(url: str, *, params: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.get(url, params=params)
+        # Retry on 5xx
+        if r.status_code >= 500:
+            raise RuntimeError(f"transient {r.status_code}")
+        try:
+            body = r.json()
+        except Exception:
+            body = {}
+        return {"status_code": r.status_code, "body": body}
+
 async def check_service_health(service_url: str, timeout: float = 5.0) -> Dict[str, Any]:
     t0 = time.time()
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(f"{service_url}/health")
-            latency = time.time() - t0
-            ok = (resp.status_code == 200)
-            body = {}
-            try:
-                body = resp.json()
-            except Exception:
-                pass
-            return {
-                "healthy": ok,
-                "status_code": resp.status_code,
-                "response_time": round(latency, 3),
-                "body": body,
-            }
+        resp = await _get_json_with_retries(f"{service_url}/health", timeout=timeout)
+        latency = time.time() - t0
+        return {
+            "healthy": (resp["status_code"] == 200),
+            "status_code": resp["status_code"],
+            "response_time": round(latency, 3),
+            "body": resp["body"],
+        }
     except Exception as e:
         return {
             "healthy": False,
@@ -362,12 +370,12 @@ async def is_session_muted(session_id: str, agent: Optional[str] = None) -> bool
         return False
     try:
         params = {"agent": agent} if agent else None
-        async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as client:
-            r = await client.get(f"{settings.GRAPH_URL}/session/{session_id}/mute-status", params=params)
-            if r.status_code == 200:
-                data = r.json()
-                return bool(data.get("muted", False))
-            logger.warning(f"mute-status non-200 ({r.status_code}): {r.text}")
+        url = f"{settings.GRAPH_URL}/session/{session_id}/mute-status"
+        resp = await _get_json_with_retries(url, params=params, timeout=settings.AGENT_TIMEOUT)
+        if resp["status_code"] == 200:
+            return bool(resp["body"].get("muted", False))
+        # No retry on 4xx; treat as unmuted/unknown
+        logger.warning(f"mute-status non-200 ({resp['status_code']})")
     except Exception as e:
         logger.warning(f"Mute check failed: {e}")
     return False
