@@ -1,78 +1,60 @@
-PS C:\Users\ypathak1\podcast_generator> & C:/Users/ypathak1/podcast_generator/.venv/Scripts/Activate.ps1
-`AzureChatOpenAI` was deprecated in LangChain 0.0.10 and will be removed in 1.0. An updated version of the class exists in the :class:`~langchain-openai 
-package and should be used instead. To use it run `pip install -U :class:`~langchain-openai` and import as `from :class:`~langchain_openai import AzureChatOpenAI``.
-  self.llm = AzureChatOpenAI(
-2025-08-14 14:31:41,917 - Agent1 - INFO - 🚀 Agent1 initialized successfully
-INFO:     Started server process [3100]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
-2025-08-14 14:35:26,642 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814143356
-2025-08-14 14:35:28,274 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
-2025-08-14 14:35:29,196 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:35:29,197 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:35:32,369 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
-2025-08-14 14:35:34,616 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:35:34,618 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:35:34,846 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814143356
-2025-08-14 14:35:36,233 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
-2025-08-14 14:35:39,188 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:35:39,189 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:35:40,352 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814143356
-2025-08-14 14:35:41,425 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
-2025-08-14 14:35:42,725 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
-2025-08-14 14:35:43,965 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:35:43,976 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814143356
-2025-08-14 14:35:43,979 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:35:45,040 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:35:45,042 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:35:46,092 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
-2025-08-14 14:35:47,118 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814143356
-2025-08-14 14:35:47,393 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:35:47,394 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:35:48,195 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
-2025-08-14 14:35:48,852 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
-2025-08-14 14:35:50,610 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:35:50,635 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:35:52,664 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:35:52,666 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:35:53,917 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
-2025-08-14 14:35:53,919 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814143356
-2025-08-14 14:35:55,803 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:35:55,804 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:35:56,065 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814143356
-2025-08-14 14:35:56,106 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
-2025-08-14 14:35:56,879 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
-2025-08-14 14:35:57,960 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
-2025-08-14 14:35:58,923 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:35:58,929 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:36:00,404 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:36:00,407 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:36:00,409 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:36:00,415 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:36:01,075 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814143356
-2025-08-14 14:36:02,027 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
-2025-08-14 14:36:04,009 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:36:04,010 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:36:05,153 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
-2025-08-14 14:36:05,154 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
-2025-08-14 14:36:07,184 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:36:07,185 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:36:07,186 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:36:07,187 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:36:09,283 - Agent1 - INFO - 💬 Processing chat for session podcast_20250814143356
-2025-08-14 14:36:09,653 - httpx - INFO - HTTP Request: POST http://localhost:8004/generate-audio "HTTP/1.1 200 OK"
-2025-08-14 14:36:10,657 - httpx - INFO - HTTP Request: POST https://wj1riubyrrhgxpiopenai.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
-2025-08-14 14:36:11,387 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-2025-08-14 14:36:11,388 - Utils - WARNING - mute-status non-200 (404)
-2025-08-14 14:36:11,652 - httpx - INFO - HTTP Request: GET http://localhost:8008/conversation/session/podcast_20250814143356/mute-status?agent=agent1 "HTTP/1.1 404 Not Found"
-(.venv) PS C:\Users\ypathak1\podcast_generator> uvicorn agent1:app --port 8001
-C:\Users\ypathak1\podcast_generator\agent1.py:295: LangChainDeprecationWarning: The class `AzureChatOpenAI` was deprecated in LangChain 0.0.10 and will be removed in 1.0. An updated version of the class exists in the :class:`~langchain-openai package and should be used instead. To use it run `pip install 
--U :class:`~langchain-openai` and import as `from :class:`~langchain_openai import AzureChatOpenAI``.                                                    TP/1.1 404 Not Found"
-  self.llm = AzureChatOpenAI(
-2025-08-14 17:57:58,335 - Agent1 - INFO - 🚀 Agent1 initialized successfully
-INFO:     Started server process [252]
-INFO:     Waiting for application startup.
-[Agent1] ⚠️ Azure config issues: missing:AZURE_OPENAI_KEY, missing:AZURE_OPENAI_ENDPOINT, missing:AZURE_OPENAI_DEPLOYMENT, missing:OPENAI_API_VERSION    
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53264 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53269 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53270 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53271 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53272 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53273 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53274 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53275 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53279 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53280 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53281 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53282 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53283 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53284 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53285 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53286 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53287 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53288 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53289 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53290 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53291 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53292 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53293 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53294 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53295 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53296 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53297 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53298 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53300 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53301 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53302 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53303 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53305 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53306 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53307 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53309 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53311 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53312 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53314 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53315 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53317 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53318 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53319 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53320 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53321 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53322 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53323 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53325 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53326 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53328 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53330 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53331 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53332 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53333 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53334 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53335 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53336 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53337 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53339 - "GET /debug/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53340 - "GET /sessions HTTP/1.1" 200 OK
