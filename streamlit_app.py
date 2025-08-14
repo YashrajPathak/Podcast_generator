@@ -9,6 +9,11 @@ from datetime import datetime
 from dotenv import load_dotenv
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import queue
+from pathlib import Path
+import io
+import csv
+import numpy as np
+import wave
 
 # Load environment
 load_dotenv()
@@ -16,6 +21,10 @@ GRAPH_BASE = os.getenv("GRAPH_BASE", "http://localhost:8008")
 AGENT1_URL = os.getenv("AGENT1_URL", "http://localhost:8001")
 AGENT4_URL = os.getenv("AGENT4_URL", "http://localhost:8006")
 AGENT5_URL = os.getenv("AGENT5_URL", "http://localhost:8007")
+
+# Mic thresholds (env-overridable)
+MIC_MIN_SECONDS = float(os.getenv("MIC_MIN_SECONDS", "0.4"))
+MIC_MIN_LEVEL = int(os.getenv("MIC_MIN_LEVEL", "200"))  # avg |int16| level to treat as not-silent
 
 # API Endpoints
 GRAPH_SESSIONS = f"{GRAPH_BASE}/sessions"
@@ -31,6 +40,9 @@ GRAPH_EXPORT = f"{GRAPH_BASE}/session"  # + /{session_id}/export?format=...
 RTC_CONFIG = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
+RTC_CFG = RTCConfiguration({
+    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+})
 
 # Initialize session state
 def init_session_state():
@@ -50,7 +62,10 @@ def init_session_state():
         "audio_ctx": None,
         "audio_queue": queue.Queue(),
         "last_metrics": None,
-        "active_tab": "Control Room"
+        "active_tab": "Control Room",
+        "is_running": False,
+        "export_done": False,
+        "target_minutes": 0,
     }
     
     for key, value in defaults.items():
@@ -61,9 +76,52 @@ init_session_state()
 st.set_page_config(page_title="Podcast Control Room", page_icon="🎙", layout="wide")
 
 # --- Helper Functions ---
+def _with_retries(send, should_retry=None, max_retries=None, base_delay=None, verbose_env_var: str = "VERBOSE_RETRY"):
+    """Generic retry wrapper for httpx calls.
+
+    Args:
+        send: zero-arg callable that returns an httpx.Response
+        should_retry: optional callable(response) -> bool to signal retry despite 2xx-4xx
+        max_retries: optional int; falls back to env MAX_RETRIES or 3
+        base_delay: optional float seconds; falls back to env RETRY_BASE_DELAY or 0.5
+        verbose_env_var: env var name; when truthy, emits st.info about attempts
+    Returns:
+        httpx.Response
+    Raises:
+        Last exception if all retries exhausted, or RuntimeError signaled by should_retry
+    """
+    import os, time, random
+    mr = int(max_retries if max_retries is not None else os.getenv("MAX_RETRIES", 3))
+    bd = float(base_delay if base_delay is not None else os.getenv("RETRY_BASE_DELAY", 0.5))
+    verbose = os.getenv(verbose_env_var, "").lower() in {"1", "true", "yes", "on"}
+    last_err = None
+    for attempt in range(mr):
+        try:
+            resp = send()
+            # default transient retry: 5xx
+            transient = getattr(resp, "status_code", 500) >= 500
+            if should_retry is not None:
+                transient = bool(should_retry(resp)) or transient
+            if transient:
+                raise RuntimeError(f"Transient HTTP {resp.status_code}")
+            return resp
+        except Exception as e:
+            last_err = e
+            if attempt >= mr - 1:
+                break
+            # jittered exponential backoff
+            delay = min(8.0, bd * (2 ** attempt)) * (0.8 + 0.4 * random.random())
+            if verbose:
+                try:
+                    st.info(f"Retrying ({attempt+1}/{mr-1}) in {delay:.2f}s: {e}")
+                except Exception:
+                    pass
+            time.sleep(delay)
+    raise last_err
+
 def get_sessions():
     try:
-        r = httpx.get(GRAPH_SESSIONS, timeout=5)
+        r = _with_retries(lambda: httpx.get(GRAPH_SESSIONS, timeout=5))
         r.raise_for_status()
         data = r.json()
         st.session_state.registry_keys = data.get("registry_keys", st.session_state.registry_keys)
@@ -74,7 +132,9 @@ def get_sessions():
 
 def get_state(session_id: str):
     try:
-        r = httpx.get(f"{GRAPH_STATE}/{session_id}/state", timeout=5)
+        url = f"{GRAPH_STATE}/{session_id}/state"
+        # Do not retry 404 (treated as missing session)
+        r = _with_retries(lambda: httpx.get(url, timeout=5), should_retry=lambda resp: resp.status_code >= 500)
         if r.status_code == 404:
             return None
         r.raise_for_status()
@@ -83,7 +143,7 @@ def get_state(session_id: str):
         st.error(f"Failed to get state: {e}")
         return None
 
-def post_run(event: str, input_text: str = None, agents=None, voices=None, max_turns=None):
+def post_run(event: str, input_text: str = None, agents=None, voices=None, max_turns=None, target_minutes: int = None):
     payload = {
         "session_id": st.session_state.session_id,
         "event": event
@@ -96,11 +156,20 @@ def post_run(event: str, input_text: str = None, agents=None, voices=None, max_t
         payload["voices"] = voices
     if max_turns is not None: 
         payload["max_turns"] = max_turns
+    if target_minutes is not None:
+        payload["target_minutes"] = int(target_minutes)
         
     try:
-        r = httpx.post(GRAPH_RUN, json=payload, timeout=10)
+        r = _with_retries(lambda: httpx.post(GRAPH_RUN, json=payload, timeout=10))
         r.raise_for_status()
         st.success(f"Action completed: {event}")
+        if event == "start":
+            st.session_state.is_running = True
+            st.session_state.export_done = False
+            if target_minutes is not None:
+                st.session_state.target_minutes = int(target_minutes)
+        if event == "end":
+            st.session_state.is_running = False
         return r.json()
     except Exception as e:
         st.error(f"Failed to execute {event}: {e}")
@@ -109,7 +178,8 @@ def post_run(event: str, input_text: str = None, agents=None, voices=None, max_t
 def toggle_mute(agent: str, mute: bool):
     try:
         action = "mute" if mute else "unmute"
-        r = httpx.post(f"{GRAPH_MUTE}/{st.session_state.session_id}/{action}?agent={agent}", timeout=5)
+        url = f"{GRAPH_MUTE}/{st.session_state.session_id}/{action}?agent={agent}"
+        r = _with_retries(lambda: httpx.post(url, timeout=5))
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -118,10 +188,8 @@ def toggle_mute(agent: str, mute: bool):
 
 def set_voice(agent: str, voice: str):
     try:
-        r = httpx.post(
-            f"{GRAPH_VOICES}/{st.session_state.session_id}/voices?agent={agent}&voice={voice}", 
-            timeout=5
-        )
+        url = f"{GRAPH_VOICES}/{st.session_state.session_id}/voices?agent={agent}&voice={voice}"
+        r = _with_retries(lambda: httpx.post(url, timeout=5))
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -130,11 +198,8 @@ def set_voice(agent: str, voice: str):
 
 def set_agents(agents: list):
     try:
-        r = httpx.post(
-            f"{GRAPH_SET_AGENTS}/{st.session_state.session_id}/agents", 
-            json=agents, 
-            timeout=5
-        )
+        url = f"{GRAPH_SET_AGENTS}/{st.session_state.session_id}/agents"
+        r = _with_retries(lambda: httpx.post(url, json=agents, timeout=5))
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -148,7 +213,7 @@ def send_user_turn(text: str, is_interruption=False):
             "text": text,
             "is_interruption": is_interruption
         }
-        r = httpx.post(GRAPH_USER_TURN, json=payload, timeout=10)
+        r = _with_retries(lambda: httpx.post(GRAPH_USER_TURN, json=payload, timeout=10))
         r.raise_for_status()
         st.success("User turn sent to panel!")
         return r.json()
@@ -158,10 +223,8 @@ def send_user_turn(text: str, is_interruption=False):
 
 def export_session(format: str = "html"):
     try:
-        r = httpx.post(
-            f"{GRAPH_EXPORT}/{st.session_state.session_id}/export?format={format}", 
-            timeout=30
-        )
+        url = f"{GRAPH_EXPORT}/{st.session_state.session_id}/export?format={format}"
+        r = _with_retries(lambda: httpx.post(url, timeout=30))
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -170,7 +233,8 @@ def export_session(format: str = "html"):
 
 def get_metrics():
     try:
-        r = httpx.get(f"{AGENT5_URL}/metrics", timeout=5)
+        url = f"{AGENT5_URL}/metrics"
+        r = _with_retries(lambda: httpx.get(url, timeout=5))
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -179,10 +243,11 @@ def get_metrics():
 
 def send_audio_to_agent1(bytes_wav: bytes, filename: str):
     files = {"file": (filename, bytes_wav, "audio/wav")}
-    data = {"input_type": "audio", "session_id": st.session_state.session_id}
+    data = {"session_id": st.session_state.session_id}
     
     try:
-        r = httpx.post(f"{AGENT1_URL}/v1/input", files=files, data=data, timeout=20)
+        url = f"{AGENT1_URL}/conversation/user-audio"
+        r = _with_retries(lambda: httpx.post(url, files=files, data=data, timeout=30))
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -206,11 +271,18 @@ def render_sidebar():
             value=st.session_state.session_id
         )
         
+        target = st.select_slider("Target duration (min)", options=[0,1,2,3,4,5,6,7,8,9,10], value=st.session_state.get("target_minutes", 3), help="0 = legacy (no duration cap)")
+        
         col1, col2 = st.columns(2)
-        if col1.button("▶️ Start", use_container_width=True):
-            post_run("start", agents=st.session_state.picked_agents)
-        if col2.button("⏹ End", use_container_width=True):
+        if col1.button("▶️ Start", use_container_width=True, disabled=st.session_state.is_running):
+            post_run("start", agents=st.session_state.picked_agents, target_minutes=target)
+        if col2.button("⏹ End", use_container_width=True, disabled=not st.session_state.is_running):
             post_run("end")
+    
+        # Stop & Export convenience
+        if st.sidebar.button("⏹➡️ Stop & Export", use_container_width=True, disabled=not st.session_state.is_running):
+            post_run("end")
+            # export will be triggered in Export tab or on ended state below
     
     # Agent Configuration
     with st.sidebar.expander("🧑‍🤝‍🧑 Agents", expanded=True):
@@ -251,7 +323,7 @@ def render_sidebar():
         
         if st.button("🔄 Reload Registry", use_container_width=True):
             try:
-                r = httpx.post(f"{GRAPH_BASE}/registry/reload", timeout=5)
+                r = _with_retries(lambda: httpx.post(f"{GRAPH_BASE}/registry/reload", timeout=5))
                 r.raise_for_status()
                 st.success("Registry reloaded!")
             except Exception as e:
@@ -280,9 +352,12 @@ def render_input_panel():
     
     with tab2:
         message = st.text_area("Your Message", height=100)
-        if st.button("Send Message", key="send_message"):
+        c1, c2 = st.columns([1,1])
+        if c1.button("Send Message", key="send_message"):
             if message.strip():
                 send_user_turn(message.strip())
+        if c2.button("Stop Session", key="stop_session"):
+            post_run("end")
     
     with tab3:
         interrupt = st.text_area("Interruption", height=100)
@@ -291,12 +366,96 @@ def render_input_panel():
                 send_user_turn(interrupt.strip(), is_interruption=True)
     
     with tab4:
-        st.warning("Audio input requires additional setup")
+        st.caption("Upload a short WAV/MP3 mic clip to interrupt the panel.")
         audio_file = st.file_uploader("Upload audio", type=["wav", "mp3"])
         if audio_file and st.button("Process Audio"):
             result = send_audio_to_agent1(audio_file.getvalue(), audio_file.name)
             if result:
-                st.success(f"Audio processed: {result.get('response')}")
+                st.success(f"Mic interrupt sent. Transcript: {result.get('transcript','(n/a)')}")
+
+        st.divider()
+        st.caption("Experimental: Live mic via WebRTC → WAV upload")
+        ctx = webrtc_streamer(
+            key="mic_webrtc",
+            mode=WebRtcMode.SENDONLY,
+            audio_receiver_size=1024,
+            rtc_configuration=RTC_CFG,
+            media_stream_constraints={"audio": True, "video": False},
+        )
+
+        # Permission/availability guidance
+        if not ctx:
+            st.warning("Mic capture not initialized. Check browser support and refresh.")
+        elif not ctx.state.playing:
+            st.info("Click 'Allow' when prompted to enable microphone access.")
+
+        colw1, colw2 = st.columns(2)
+        if colw1.button("Clear Mic Buffer", key="clear_webrtc") and ctx and ctx.state.playing:
+            try:
+                if ctx.audio_receiver:
+                    while True:
+                        ctx.audio_receiver.get_frame(timeout=0.01)
+            except queue.Empty:
+                pass
+
+        if colw2.button("Send WebRTC Audio", key="send_webrtc") and ctx and ctx.state.playing:
+            pcm_chunks = []
+            sample_rate = 24000
+            got_any = False
+            try:
+                if not ctx.audio_receiver:
+                    st.error("No audio receiver active")
+                else:
+                    while True:
+                        try:
+                            frame = ctx.audio_receiver.get_frame(timeout=0.01)
+                        except queue.Empty:
+                            break
+                        if frame is None:
+                            break
+                        # Convert to mono int16, preserve frame sample_rate
+                        try:
+                            arr = frame.to_ndarray(format="s16", layout="mono")  # shape: (samples,)
+                            pcm_chunks.append(arr.tobytes())
+                            sample_rate = frame.sample_rate or sample_rate
+                            got_any = True
+                        except Exception:
+                            pass
+            except Exception as e:
+                st.error(f"Capture failed: {e}")
+
+            if got_any:
+                # Debounce by duration and simple energy check
+                try:
+                    total_samples = sum(len(c) for c in pcm_chunks) // 2  # int16
+                    duration = total_samples / float(sample_rate or 24000)
+                    if duration < MIC_MIN_SECONDS:
+                        st.warning(f"Captured clip too short ({duration:.2f}s < {MIC_MIN_SECONDS:.2f}s). Try again.")
+                        return
+                    import numpy as _np
+                    joined = b"".join(pcm_chunks)
+                    levels = _np.frombuffer(joined, dtype=_np.int16)
+                    mean_level = float(_np.mean(_np.abs(levels))) if levels.size else 0.0
+                    if mean_level < MIC_MIN_LEVEL:
+                        st.warning("Detected near-silence. Speak louder/closer and try again.")
+                        return
+                except Exception:
+                    # Non-fatal analysis failure; continue
+                    pass
+                # Wrap to WAV in-memory
+                bio = io.BytesIO()
+                try:
+                    with wave.open(bio, "wb") as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(int(sample_rate))
+                        wf.writeframes(b"".join(pcm_chunks))
+                    wav_bytes = bio.getvalue()
+                    res = send_audio_to_agent1(wav_bytes, filename=f"webrtc_{int(time.time())}.wav")
+                    if res:
+                        st.success(f"WebRTC mic sent. Transcript: {res.get('transcript','(n/a)')}")
+                except Exception as e:
+                    st.error(f"WAV encode failed: {e}")
 
 def render_agent_status():
     st.subheader("👥 Agent Status")
@@ -306,6 +465,81 @@ def render_agent_status():
         st.info("No active session")
         return
         
+    # Progress
+    t_ms = int(state.get("target_ms") or 0)
+    a_ms = int(state.get("audio_ms") or 0)
+    if t_ms > 0:
+        pct = max(0.0, min(1.0, a_ms / t_ms))
+        st.progress(pct, text=f"Audio {a_ms/1000:.1f}s / {t_ms/1000:.1f}s")
+        if state.get("ended"):
+            st.success(f"Session ended: {state.get('ended_reason')}")
+            st.session_state.is_running = False
+            
+            # Offer direct final WAV download if present and readable
+            fw = state.get("final_wav")
+            if fw and Path(fw).exists():
+                try:
+                    data = Path(fw).read_bytes()
+                    st.download_button(
+                        label="⬇️ Download Final WAV",
+                        data=data,
+                        file_name=Path(fw).name,
+                        mime="audio/wav"
+                    )
+                except Exception:
+                    pass
+            
+            # Build and offer transcript downloads (JSON and CSV)
+            try:
+                turn_audio = state.get("turn_audio", {}) or {}
+                history = state.get("history", []) or []
+                transcript = []
+                for item in history:
+                    turn_id = item.get("turn_id")
+                    agent = item.get("agent") or item.get("speaker")
+                    text = (item.get("text") or item.get("response") or "").strip()
+                    ms = 0
+                    if turn_id is not None and str(turn_id) in {str(k) for k in turn_audio.keys()}:
+                        # turn_audio keys may be int or str; normalize lookup
+                        info = turn_audio.get(turn_id) or turn_audio.get(str(turn_id)) or {}
+                        ms = int(info.get("ms") or 0)
+                    transcript.append({
+                        "turn_id": turn_id,
+                        "speaker": agent,
+                        "ms": ms,
+                        "text": text,
+                    })
+
+                # JSON
+                json_bytes = json.dumps({
+                    "session_id": state.get("session_id"),
+                    "target_ms": state.get("target_ms"),
+                    "audio_ms": state.get("audio_ms"),
+                    "ended_reason": state.get("ended_reason"),
+                    "turns": transcript,
+                }, ensure_ascii=False, indent=2).encode("utf-8")
+                st.download_button(
+                    label="⬇️ Download Transcript (JSON)",
+                    data=json_bytes,
+                    file_name=f"{state.get('session_id','session')}_transcript.json",
+                    mime="application/json"
+                )
+
+                # CSV
+                csv_buf = io.StringIO()
+                writer = csv.DictWriter(csv_buf, fieldnames=["turn_id", "speaker", "ms", "text"])
+                writer.writeheader()
+                for row in transcript:
+                    writer.writerow(row)
+                st.download_button(
+                    label="⬇️ Download Transcript (CSV)",
+                    data=csv_buf.getvalue().encode("utf-8"),
+                    file_name=f"{state.get('session_id','session')}_transcript.csv",
+                    mime="text/csv"
+                )
+            except Exception:
+                pass
+    
     cols = st.columns(len(st.session_state.picked_agents))
     for i, agent in enumerate(st.session_state.picked_agents):
         muted = state.get("mute", {}).get(agent, False)
@@ -331,22 +565,30 @@ def render_conversation():
             st.divider()
 
 def render_export():
-    st.subheader("📤 Export Session")
-    col1, col2 = st.columns([1, 2])
-    format = col1.selectbox("Format", ["html", "pdf", "json", "txt"])
-    
-    if col2.button("Generate Export"):
-        result = export_session(format)
-        if result and "download_url" in result:
-            st.success("Export created successfully!")
-            st.markdown(f"**[Download Export]({result['download_url']})**")
-        elif result:
-            st.download_button(
-                label="Download Export",
-                data=json.dumps(result, indent=2),
-                file_name=f"podcast_export.{format}",
-                mime="application/json" if format=="json" else "text/plain"
-            )
+    st.subheader("📦 Export")
+    fmt = st.selectbox("Format", ["zip", "json"], index=0)
+    ended = False
+    try:
+        s = get_state(st.session_state.session_id)
+        ended = bool(s and s.get("ended"))
+    except Exception:
+        pass
+    auto_hint = "(auto-allowed after session end)" if ended else ""
+    if st.button(f"Generate Export Bundle {auto_hint}", disabled=st.session_state.export_done and ended):
+        try:
+            r = _with_retries(lambda: httpx.get(f"{GRAPH_EXPORT}/{st.session_state.session_id}/export", params={"format": fmt}, timeout=30))
+            r.raise_for_status()
+            data = r.json()
+            st.session_state.export_done = True
+            sid = st.session_state.session_id
+            st.success(f"Export complete for session {sid} (format: {fmt})")
+            st.json(data)
+            if data.get("download_url"):
+                suggested = f"podcast_{sid}.{fmt}"
+                st.markdown(f"[⬇️ Download export]({data['download_url']})  ")
+                st.caption(f"Suggested filename: {suggested}")
+        except Exception as e:
+            st.error(f"Export failed: {e}")
 
 def render_metrics():
     st.subheader("📊 System Metrics")
