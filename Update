@@ -1,0 +1,960 @@
+# agent1.py – 🎙 Production-Grade Conversational Host Agent (v2.1.3-clean, patched)
+
+import os
+import json
+import asyncio
+import logging
+from typing import Union, Optional, Any, Dict
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_community.chat_models import AzureChatOpenAI
+from httpx import AsyncClient, Timeout
+from tempfile import NamedTemporaryFile
+from tenacity import retry, stop_after_attempt, wait_exponential
+from pathlib import Path
+from enum import Enum
+import time
+from io import BytesIO
+import struct
+import shutil
+
+# Optional deps for richer file parsing (txt/csv/docx/pdf)
+try:
+    import pandas as pd
+except Exception:
+    pd = None
+try:
+    from docx import Document
+except Exception:
+    Document = None
+try:
+    from PyPDF2 import PdfReader
+except Exception:
+    PdfReader = None
+
+# Utilities (existing in your repo)
+from utils import (
+    parse_voice_command,
+    transcribe_audio,
+    validate_audio_file,
+    clean_text_for_processing,
+    create_error_response,   # assumed (message, stage) signature
+    is_session_muted,        # orchestrator-aware mute
+    validate_session_id      # guard session ids
+)
+
+# ========== Settings ==========
+class Settings(BaseSettings):
+    AZURE_OPENAI_KEY: str
+    AZURE_OPENAI_ENDPOINT: str
+    AZURE_OPENAI_DEPLOYMENT: str = "gpt-4o"
+    OPENAI_API_VERSION: str = "2024-05-01-preview"
+
+    AGENT2_URL: str = "http://localhost:8002"
+    AGENT3_URL: str = "http://localhost:8004"
+    GRAPH_URL: str = "http://localhost:8008"
+
+    MAX_AUDIO_SIZE: int = 5 * 1024 * 1024
+    MAX_FILE_SIZE: int = 10 * 1024 * 1024
+    AUDIO_CACHE_TTL: int = 3600
+    AGENT_TIMEOUT: float = 15.0
+    MAX_TEXT_LENGTH: int = 10000
+    MAX_RETRIES: int = 3
+
+    class Config:
+        env_file = ".env"
+        extra = "ignore"
+
+try:
+    settings = Settings()
+except Exception as e:
+    print(f"❌ Agent1 Configuration Error: {e}")
+    raise
+
+# ========== Logging ==========
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("Agent1")
+
+# ========== Models ==========
+class InputType(str, Enum):
+    TEXT = "text"
+    AUDIO = "audio"
+    FILE = "file"
+    COMMAND = "command"
+
+class CommandType(str, Enum):
+    ROUTE = "route"
+    INJECT = "inject"
+    MEMORY = "memory"
+
+class Command(BaseModel):
+    type: CommandType
+    target: Optional[str] = None
+    content: str = Field(..., min_length=1, max_length=1000)
+    session_id: str = Field(..., min_length=1, max_length=100)
+
+class ChatRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=10000)
+    session_id: str = Field(default="default")
+    voice: str = Field(default="en-US-AriaNeural")
+    conversation_mode: str = Field(default="agent_to_agent")
+    is_conversation_turn: bool = Field(default=False)
+    is_interruption: bool = Field(default=False)
+    turn_number: Optional[int] = None
+    max_turns: Optional[int] = None
+    conversation_context: Optional[str] = None
+
+class ChatResponse(BaseModel):
+    response: str
+    audio_path: Optional[str] = None
+    session_id: str
+    status: str = "success"
+    processing_time: Optional[float] = None
+    agent_info: Optional[Dict[str, Any]] = None
+    turn_number: Optional[int] = None
+
+# ========== Robust JSON Parser (ported from Agent2) ==========
+class RobustJSONParser:
+    """Stack-based JSON extractor with sane fallbacks."""
+
+    @staticmethod
+    def extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
+        # Try direct parse first
+        try:
+            obj = json.loads(text)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+        # Find largest balanced JSON object {...}
+        best_obj = None
+        stack = []
+        start_idx = None
+        for i, ch in enumerate(text):
+            if ch == '{':
+                stack.append(i)
+                if start_idx is None:
+                    start_idx = i
+            elif ch == '}':
+                if stack:
+                    stack.pop()
+                    if not stack and start_idx is not None:
+                        candidate = text[start_idx : i + 1]
+                        try:
+                            obj = json.loads(candidate)
+                            if isinstance(obj, dict):
+                                best_obj = obj
+                        except Exception:
+                            pass
+                        start_idx = None
+        return best_obj
+
+    @staticmethod
+    def safe_text(obj: Any) -> str:
+        try:
+            return str(obj)
+        except Exception:
+            return ""
+
+# ========== Managers ==========
+class PauseManager:
+    def __init__(self):
+        self._pause_flags: Dict[str, bool] = {}
+        self._pause_events: Dict[str, asyncio.Event] = {}
+
+    async def request_pause(self, session_id: str):
+        self._pause_flags[session_id] = True
+        if session_id not in self._pause_events:
+            self._pause_events[session_id] = asyncio.Event()
+        self._pause_events[session_id].clear()
+
+    async def resume(self, session_id: str):
+        self._pause_flags[session_id] = False
+        if session_id in self._pause_events:
+            self._pause_events[session_id].set()
+
+    def is_paused(self, session_id: str) -> bool:
+        return self._pause_flags.get(session_id, False)
+
+    async def wait_if_paused(self, session_id: str):
+        if self.is_paused(session_id):
+            logger.info(f"⏸️ Pause engaged for session {session_id}. Waiting…")
+            await self._pause_events[session_id].wait()
+            logger.info(f"▶️ Resumed session {session_id}.")
+
+class MemoryManager:
+    def __init__(self, max_entries_per_session: int = 100):
+        self.memory: Dict[str, Dict[str, Any]] = {}
+        self.max_entries = max_entries_per_session
+        self.muted_sessions: Dict[str, bool] = {}
+        self.personalities: Dict[str, str] = {}
+        self.voice_by_session: Dict[str, str] = {}
+
+    async def store(self, session_id: str, key: str, value: Any):
+        if session_id not in self.memory:
+            self.memory[session_id] = {}
+        if len(self.memory[session_id]) >= self.max_entries:
+            oldest_key = next(iter(self.memory[session_id]))
+            del self.memory[session_id][oldest_key]
+        self.memory[session_id][key] = {"value": value, "timestamp": time.time()}
+
+    async def retrieve(self, session_id: str, key: str) -> Any:
+        if session_id in self.memory and key in self.memory[session_id]:
+            return self.memory[session_id][key]["value"]
+        return None
+
+    async def get_context(self, session_id: str, max_entries: int = 10) -> Dict[str, Any]:
+        if session_id not in self.memory:
+            return {}
+        sorted_entries = sorted(self.memory[session_id].items(), key=lambda x: x[1]["timestamp"], reverse=True)[:max_entries]
+        return {key: entry["value"] for key, entry in sorted_entries}
+
+    async def clear_session(self, session_id: str):
+        if session_id in self.memory:
+            del self.memory[session_id]
+
+    async def set_muted(self, session_id: str, muted: bool):
+        self.muted_sessions[session_id] = muted
+
+    def is_muted(self, session_id: str) -> bool:
+        return self.muted_sessions.get(session_id, False)
+
+    async def set_personality(self, session_id: str, personality: str):
+        self.personalities[session_id] = personality
+
+    def get_personality(self, session_id: str) -> Optional[str]:
+        return self.personalities.get(session_id)
+
+    async def set_voice(self, session_id: str, voice: str):
+        self.voice_by_session[session_id] = voice
+
+    def get_voice(self, session_id: str) -> Optional[str]:
+        return self.voice_by_session.get(session_id)
+
+class CommandRouter:
+    def __init__(self, agent):
+        self.agent = agent
+
+    async def route(self, command: Command) -> Dict[str, Any]:
+        try:
+            if command.type == CommandType.ROUTE:
+                return await self._to_agent2(command)
+            elif command.type == CommandType.INJECT:
+                return await self._inject(command)
+            elif command.type == CommandType.MEMORY:
+                return await self._memory(command)
+            else:
+                return create_error_response("Unknown command type", "command_routing")
+        except Exception as e:
+            logger.error(f"❌ Command routing failed: {e}")
+            return create_error_response(f"Command routing failed: {str(e)}", "command_routing")
+
+    @retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
+    async def _to_agent2(self, command: Command) -> Dict[str, Any]:
+        try:
+            async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
+                payload = {"raw_script": command.content, "session_id": command.session_id}
+                resp = await client.post(f"{settings.AGENT2_URL}/v1/summarize", json=payload)
+                resp.raise_for_status()
+                return resp.json()
+        except Exception as e:
+            logger.error(f"❌ Agent2 routing failed: {e}")
+            return create_error_response(f"Agent2 routing failed: {str(e)}", "agent2_routing")
+
+    async def _inject(self, command: Command) -> Dict[str, Any]:
+        try:
+            await self.agent.memory.store(command.session_id, "injected_content", command.content)
+            return {"status": "success", "message": "Content injected successfully", "content": command.content}
+        except Exception as e:
+            logger.error(f"❌ Content injection failed: {e}")
+            return create_error_response(f"Content injection failed: {str(e)}", "content_injection")
+
+    async def _memory(self, command: Command) -> Dict[str, Any]:
+        try:
+            if command.content.startswith("set context "):
+                context = command.content[12:]
+                await self.agent.memory.store(command.session_id, "context", context)
+                return {"status": "success", "message": "Context set successfully", "context": context}
+            elif command.content.startswith("get context"):
+                context = await self.agent.memory.retrieve(command.session_id, "context")
+                return {"status": "success", "context": context or "No context found"}
+            else:
+                return create_error_response("Unknown memory command", "memory_command")
+        except Exception as e:
+            logger.error(f"❌ Memory command failed: {e}")
+            return create_error_response(f"Memory command failed: {str(e)}", "memory_command")
+
+# ========== Agent ==========
+class Agent1:
+    """Enhanced conversational host agent."""
+    def __init__(self):
+        self.llm = AzureChatOpenAI(
+            deployment_name=settings.AZURE_OPENAI_DEPLOYMENT,
+            api_key=settings.AZURE_OPENAI_KEY,
+            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+            api_version=settings.OPENAI_API_VERSION,
+            temperature=0.7,
+            timeout=settings.AGENT_TIMEOUT,
+            max_tokens=1000,
+        )
+        self._start_time = time.time()
+        self.memory = MemoryManager()
+        self.command_router = CommandRouter(self)
+        self.pause_manager = PauseManager()
+
+    def _extract_text_from_llm_output(self, raw: str) -> str:
+        """Robustly extract human-readable text from possibly JSON-like LLM output.
+        Preference order if JSON dict: response > text > content > join stringy values.
+        If list: join stringy elements. Otherwise return raw.
+        """
+        if not isinstance(raw, str):
+            try:
+                raw = str(raw)
+            except Exception:
+                return ""
+        raw = raw.strip()
+        if not raw:
+            return ""
+        # Try direct JSON parse
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                for key in ("response", "text", "content"):
+                    if key in obj and isinstance(obj[key], str) and obj[key].strip():
+                        return obj[key].strip()
+                # Otherwise, collect stringy values
+                parts = []
+                for v in obj.values():
+                    if isinstance(v, str):
+                        parts.append(v.strip())
+                if parts:
+                    return "\n".join(p for p in parts if p)
+                return raw
+            if isinstance(obj, list):
+                parts = []
+                for item in obj:
+                    if isinstance(item, str):
+                        parts.append(item.strip())
+                    elif isinstance(item, dict):
+                        # take common text fields
+                        for k in ("response", "text", "content"):
+                            if k in item and isinstance(item[k], str):
+                                parts.append(item[k].strip())
+                                break
+                if parts:
+                    return "\n".join(p for p in parts if p)
+                return raw
+        except Exception:
+            pass
+        # Try to extract embedded JSON
+        parsed = RobustJSONParser.extract_json_from_text(raw)
+        if isinstance(parsed, dict):
+            for key in ("response", "text", "content"):
+                if key in parsed and isinstance(parsed[key], str) and parsed[key].strip():
+                    return parsed[key].strip()
+            parts = []
+            for v in parsed.values():
+                if isinstance(v, str):
+                    parts.append(v.strip())
+            if parts:
+                return "\n".join(p for p in parts if p)
+        return raw
+
+    async def handle_input(
+        self,
+        data: Union[str, UploadFile, None],
+        input_type: str,
+        session_id: str,
+        voice: str,
+        bg: BackgroundTasks
+    ) -> Dict[str, Any]:
+        start_time = time.time()
+        try:
+            if not validate_session_id(session_id):
+                raise ValueError("Invalid session_id")
+
+            logger.info(f"📝 Processing {input_type} input for session {session_id}")
+            await self.pause_manager.wait_if_paused(session_id)
+            await self.memory.set_voice(session_id, voice)
+
+            processed_text = await self._process_input_data(data, input_type, bg)
+            response = await self._generate_response(processed_text, session_id, voice)
+
+            await self.memory.store(session_id, "last_input", processed_text)
+            await self.memory.store(session_id, "last_response", response)
+
+            effective_mute = await is_session_muted(session_id, "agent1")
+            processing_time = time.time() - start_time
+            resolved_voice = voice or self.memory.get_voice(session_id) or "en-US-AriaNeural"
+            return {
+                "response": response.get("response", "No response generated"),
+                "audio_path": response.get("audio_path"),
+                "session_id": session_id,
+                "status": "success",
+                "processing_time": processing_time,
+                "agent_info": {
+                    "agent": "agent1",
+                    "input_type": input_type,
+                    "voice": voice,
+                    "muted": effective_mute,
+                    "tts": {"voice": resolved_voice, "speed": 1.0, "pitch": 1.0}
+                }
+            }
+        except Exception as e:
+            logger.error(f"❌ Input processing failed: {e}")
+            return create_error_response(f"Input processing failed: {e}", "input_processing")
+
+    @retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
+    async def handle_chat(self, request: ChatRequest) -> ChatResponse:
+        start_time = time.time()
+        try:
+            if not validate_session_id(request.session_id):
+                raise ValueError("Invalid session_id")
+
+            logger.info(f"💬 Processing chat for session {request.session_id}")
+            await self.pause_manager.wait_if_paused(request.session_id)
+
+            system_prompt = self._build_conversation_prompt(request)
+            context = await self.memory.get_context(request.session_id, max_entries=5)
+
+            response = await self._generate_conversational_response(
+                request.text, request.session_id, request.voice, system_prompt, context
+            )
+
+            await self.memory.store(request.session_id, "last_chat_input", request.text)
+            await self.memory.store(request.session_id, "last_chat_response", response)
+
+            effective_mute = await is_session_muted(request.session_id, "agent1")
+            processing_time = time.time() - start_time
+            resolved_voice = request.voice or self.memory.get_voice(request.session_id) or "en-US-AriaNeural"
+            return ChatResponse(
+                response=response.get("response", "No response generated"),
+                audio_path=response.get("audio_path"),
+                session_id=request.session_id,
+                status="success",
+                processing_time=processing_time,
+                agent_info={
+                    "agent": "agent1",
+                    "conversation_mode": request.conversation_mode,
+                    "is_interruption": request.is_interruption,
+                    "voice": request.voice,
+                    "muted": effective_mute,
+                    "tts": {"voice": resolved_voice, "speed": 1.0, "pitch": 1.0}
+                },
+                turn_number=request.turn_number
+            )
+        except Exception as e:
+            logger.error(f"❌ Chat processing failed: {e}")
+            return ChatResponse(
+                response=f"Error: {e}",
+                session_id=request.session_id,
+                status="error",
+                processing_time=time.time() - start_time
+            )
+
+    async def _process_input_data(
+        self,
+        data: Union[str, UploadFile, None],
+        input_type: str,
+        bg: BackgroundTasks
+    ) -> str:
+        try:
+            try:
+                kind = InputType(input_type)
+            except Exception:
+                raise ValueError(f"Unsupported input type: {input_type}")
+
+            if kind == InputType.TEXT:
+                if isinstance(data, str) and data.strip():
+                    return clean_text_for_processing(data, settings.MAX_TEXT_LENGTH)
+                raise ValueError("Text input must be a non-empty string")
+
+            elif kind == InputType.AUDIO:
+                if isinstance(data, UploadFile):
+                    content = await data.read()
+                    if len(content) > settings.MAX_AUDIO_SIZE:
+                        raise ValueError(f"Audio too large (>{settings.MAX_AUDIO_SIZE} bytes)")
+                    temp_file = NamedTemporaryFile(delete=False, suffix=".wav")
+                    temp_file.write(content)
+                    temp_file.close()
+                    bg.add_task(self._cleanup_file, temp_file.name)
+
+                    vr = validate_audio_file(temp_file.name)
+                    if not vr.get("valid", False):
+                        raise ValueError(f"Audio validation failed: {vr.get('error', 'unknown')}")
+
+                    transcribed = await transcribe_audio(temp_file.name)
+                    if not transcribed:
+                        raise ValueError("Failed to transcribe audio")
+                    return clean_text_for_processing(transcribed, settings.MAX_TEXT_LENGTH)
+                raise ValueError("Audio input must be an uploaded file")
+
+            elif kind == InputType.FILE:
+                if isinstance(data, UploadFile):
+                    raw = await data.read()
+                    if len(raw) > settings.MAX_FILE_SIZE:
+                        raise ValueError(f"File too large (>{settings.MAX_FILE_SIZE} bytes)")
+                    filename = data.filename or ""
+                    ext = Path(filename).suffix.lower()
+                    text_content = ""
+
+                    if ext in [".txt", ".md"]:
+                        try:
+                            text_content = raw.decode("utf-8", errors="ignore")
+                        except Exception:
+                            text_content = raw.decode("latin-1", errors="ignore")
+
+                    elif ext == ".csv":
+                        if pd is None:
+                            raise ValueError("pandas not installed for CSV parsing")
+                        try:
+                            df = pd.read_csv(BytesIO(raw))
+                            text_content = df.to_csv(index=False)
+                        except Exception as e:
+                            raise ValueError(f"CSV parsing failed: {e}")
+
+                    elif ext == ".docx":
+                        if Document is None:
+                            raise ValueError("python-docx not installed for DOCX parsing")
+                        try:
+                            doc = Document(BytesIO(raw))
+                            text_content = "\n".join(p.text for p in doc.paragraphs)
+                        except Exception as e:
+                            raise ValueError(f"DOCX parsing failed: {e}")
+
+                    elif ext == ".pdf":
+                        if PdfReader is None:
+                            raise ValueError("PyPDF2 not installed for PDF parsing")
+                        try:
+                            reader = PdfReader(BytesIO(raw))
+                            text_content = "\n".join((page.extract_text() or "") for page in reader.pages)
+                        except Exception as e:
+                            raise ValueError(f"PDF parsing failed: {e}")
+
+                    else:
+                        try:
+                            text_content = raw.decode("utf-8", errors="ignore")
+                        except Exception:
+                            text_content = raw.decode("latin-1", errors="ignore")
+
+                    if not text_content.strip():
+                        raise ValueError(f"Unsupported/empty file format: {filename}")
+
+                    header = f"[Uploaded File: {filename}]\n\n"
+                    return clean_text_for_processing(header + text_content, settings.MAX_TEXT_LENGTH)
+
+                raise ValueError("File input must be an uploaded file")
+
+            elif kind == InputType.COMMAND:
+                if isinstance(data, str) and data.strip():
+                    return parse_voice_command(data)
+                raise ValueError("Command input must be a non-empty string")
+
+            else:
+                raise ValueError(f"Unsupported input type: {input_type}")
+
+        except Exception as e:
+            logger.error(f"❌ Input processing failed: {e}")
+            raise
+
+    async def _cleanup_file(self, file_path: str):
+        try:
+            if os.path.exists(file_path):
+                os.unlink(file_path)
+                logger.debug(f"🗑️ Cleaned up temporary file: {file_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to cleanup file {file_path}: {e}")
+
+    @retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
+    async def _generate_response(self, text: str, session_id: str, voice: Optional[str] = "en-US-AriaNeural") -> Dict[str, Any]:
+        try:
+            await self.pause_manager.wait_if_paused(session_id)
+            context = await self.memory.get_context(session_id, max_entries=3)
+            system_prompt = self._build_system_prompt(context, session_id)
+
+            messages = [SystemMessage(content=system_prompt), HumanMessage(content=text)]
+            resp = await self.llm.ainvoke(messages)
+            response_text_raw = resp.content
+            response_text = self._extract_text_from_llm_output(response_text_raw)
+
+            audio_path = None
+            if voice and not await is_session_muted(session_id, "agent1"):
+                audio_path = await self._generate_audio(response_text, voice, session_id)
+
+            return {"response": response_text, "audio_path": audio_path}
+        except Exception as e:
+            logger.error(f"❌ Response generation failed: {e}")
+            raise
+
+    @retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
+    async def _generate_conversational_response(self, text: str, session_id: str, voice: str, system_prompt: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            await self.pause_manager.wait_if_paused(session_id)
+
+            messages = [SystemMessage(content=system_prompt)]
+            if context:
+                context_text = "\n".join([f"{k}: {v}" for k, v in context.items()])
+                messages.append(SystemMessage(content=f"Context: {context_text}"))
+            messages.append(HumanMessage(content=text))
+
+            resp = await self.llm.ainvoke(messages)
+            response_text_raw = resp.content
+            response_text = self._extract_text_from_llm_output(response_text_raw)
+
+            audio_path = None
+            if not await is_session_muted(session_id, "agent1"):
+                chosen_voice = voice or self.memory.get_voice(session_id) or "en-US-AriaNeural"
+                audio_path = await self._generate_audio(response_text, chosen_voice, session_id)
+
+            return {"response": response_text, "audio_path": audio_path}
+        except Exception as e:
+            logger.error(f"❌ Conversational response generation failed: {e}")
+            raise
+
+    def _build_system_prompt(self, context: Dict[str, Any], session_id: str) -> str:
+        base_prompt = """You are Agent1, an enthusiastic host and moderator for podcast discussions. Your role is to:
+1) Guide conversations naturally and engagingly
+2) Ask insightful questions to keep discussions flowing
+3) Summarize key points when appropriate
+4) Maintain a conversational, podcast-like tone
+5) Adapt your style based on the topic and context
+Keep responses concise (2–3 sentences) and engaging."""
+        personality = self.memory.get_personality(session_id)
+        if personality:
+            base_prompt += f"\n\nPersonality Override: {personality}"
+        if context:
+            context_text = "\n".join([f"- {k}: {v}" for k, v in context.items()])
+            base_prompt += f"\n\nRecent context:\n{context_text}"
+        return base_prompt
+
+    def _build_conversation_prompt(self, request: ChatRequest) -> str:
+        base_prompt = """You are Agent1, an enthusiastic host and moderator for podcast discussions in a multi-agent conversation.
+- Respond naturally to the conversation flow
+- Keep responses concise (2–3 sentences), engaging, podcast-style
+- Build on previous responses
+- Ask follow-up questions when relevant"""
+        if request.is_interruption:
+            base_prompt += "\n\nRespond to a user interruption directly and succinctly."
+        if request.turn_number and request.max_turns:
+            base_prompt += f"\n\nThis is turn {request.turn_number} of {request.max_turns}."
+        if request.conversation_context:
+            base_prompt += f"\n\nConversation context: {request.conversation_context}"
+        personality = self.memory.get_personality(request.session_id)
+        if personality:
+            base_prompt += f"\n\nPersonality Override: {personality}"
+        return base_prompt
+
+    # Treat TTS failures as non-fatal; pass session_id to Agent3
+    @retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
+    async def _generate_audio(self, text: str, voice: str, session_id: str) -> Optional[str]:
+        try:
+            if not text or len(text) > 1000:
+                logger.warning("⚠️ Text too long or empty for TTS")
+                return None
+            async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
+                resp = await client.post(
+                    f"{settings.AGENT3_URL}/generate-audio",
+                    json={"text": text, "voice": voice, "speed": 1.0, "pitch": 1.0, "session_id": session_id}
+                )
+                resp.raise_for_status()
+                result = resp.json()
+            return result.get("audio_path")
+        except Exception as e:
+            logger.warning(f"⚠️ Audio generation failed (non-fatal): {e}")
+            return None
+
+# ========== FastAPI App ==========
+if "app" not in globals():
+    app = FastAPI(title="🎙 Agent1 - Conversational Host", version="2.1.3")
+    # Tighten CORS to only the Streamlit UI origin
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[os.getenv("UI_ORIGIN", "http://localhost:8501")],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
+        allow_credentials=False,
+    )
+
+# Initialize agent
+try:
+    agent = Agent1()
+    logger.info("🚀 Agent1 initialized successfully")
+except Exception as e:
+    logger.critical(f"❌ Failed to initialize Agent1: {e}")
+    raise
+
+# ========== API Endpoints ==========
+@app.post("/v1/input", response_model=Dict[str, Any])
+async def input_handler(
+    input_type: str = Form(...),
+    session_id: str = Form(...),
+    voice: str = Form("en-US-AriaNeural"),
+    input_data: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    background_tasks: BackgroundTasks = BackgroundTasks()
+):
+    if not validate_session_id(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+
+    try:
+        kind = InputType(input_type)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Unsupported input type: {input_type}")
+
+    payload: Union[str, UploadFile, None]
+    if kind in (InputType.AUDIO, InputType.FILE):
+        payload = file
+        if payload is None:
+            raise HTTPException(status_code=400, detail="file is required for audio/file input types")
+    else:
+        payload = input_data
+        if not payload:
+            raise HTTPException(status_code=400, detail="input_data is required for text/command input types")
+
+    return await agent.handle_input(payload, input_type, session_id, voice, background_tasks)
+
+@app.post("/v1/chat", response_model=ChatResponse)
+async def chat_handler(request: ChatRequest):
+    if not validate_session_id(request.session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+    return await agent.handle_chat(request)
+
+@app.post("/v1/command")
+async def command_handler(command: Command):
+    if not validate_session_id(command.session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+    return await agent.command_router.route(command)
+
+@app.post("/v1/interrupt/{session_id}")
+async def interrupt(session_id: str):
+    if not validate_session_id(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+    await agent.pause_manager.request_pause(session_id)
+    return {"status": "interruption_triggered", "session_id": session_id, "mode": "paused"}
+
+@app.post("/v1/pause/{session_id}")
+async def pause_session(session_id: str):
+    if not validate_session_id(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+    await agent.pause_manager.request_pause(session_id)
+    return {"status": "paused", "session_id": session_id}
+
+@app.post("/v1/resume/{session_id}")
+async def resume_session(session_id: str):
+    if not validate_session_id(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+    await agent.pause_manager.resume(session_id)
+    return {"status": "resumed", "session_id": session_id}
+
+@app.post("/v1/mute/{session_id}")
+async def mute_session(session_id: str):
+    if not validate_session_id(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+    await agent.memory.set_muted(session_id, True)
+    return {"status": "muted", "session_id": session_id}
+
+@app.post("/v1/unmute/{session_id}")
+async def unmute_session(session_id: str):
+    if not validate_session_id(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+    await agent.memory.set_muted(session_id, False)
+    return {"status": "unmuted", "session_id": session_id}
+
+@app.post("/v1/personality/{session_id}")
+async def set_personality(session_id: str, personality: str = Form(...)):
+    if not validate_session_id(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+    await agent.memory.set_personality(session_id, personality)
+    return {"status": "ok", "session_id": session_id, "personality": personality}
+
+@app.post("/v1/voice/{session_id}")
+async def set_voice(session_id: str, voice: str = Form(...)):
+    if not validate_session_id(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+    await agent.memory.set_voice(session_id, voice)
+    return {"status": "ok", "session_id": session_id, "voice": voice}
+
+@app.post("/v1/mic-interrupt")
+async def mic_interrupt(
+    session_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Accept mic audio, transcribe, and forward to Graph as an interrupt."""
+    if not session_id or not validate_session_id(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+
+    # Basic MIME/type checks
+    try:
+        ctype = (file.content_type or "").lower()
+        if not ctype.startswith("audio/") and ctype not in {"application/octet-stream", ""}:
+            raise HTTPException(status_code=415, detail=f"Unsupported content-type: {ctype}")
+    except Exception:
+        pass
+
+    tmp_path: Optional[str] = None
+    try:
+        # Use NamedTemporaryFile we already import; avoid tempfile.NameError
+        with NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp_path = tmp.name
+            shutil.copyfileobj(file.file, tmp)
+            tmp.flush()
+
+        # Sniff WAV header (RIFF....WAVE)
+        try:
+            with open(tmp_path, "rb") as fh:
+                header = fh.read(12)
+            if len(header) < 12 or header[0:4] != b"RIFF" or header[8:12] != b"WAVE":
+                raise HTTPException(status_code=415, detail="Only WAV (RIFF/WAVE) audio is supported")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=400, detail="Unable to read audio header")
+
+        # Deep validator parity (sample rate/channels/etc.)
+        vr = validate_audio_file(tmp_path)
+        if not vr.get("valid", False):
+            raise HTTPException(status_code=415, detail=f"Audio validation failed: {vr.get('error','unknown')}")
+
+        transcript = await transcribe_audio(tmp_path)
+        if not transcript or not transcript.strip():
+            raise HTTPException(status_code=422, detail="Transcription failed or empty")
+
+        # Prefer canonical user-turn interrupt path
+        async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
+            try:
+                payload_ut = {"session_id": session_id, "text": transcript.strip(), "is_interruption": True}
+                graph_result = await _post_user_turn_with_retries(
+                    client,
+                    f"{settings.GRAPH_URL}/conversation/user-turn",
+                    payload_ut,
+                )
+                if graph_result is None:
+                    raise RuntimeError("user-turn returned non-200")
+                forward_path = "user-turn"
+            except Exception:
+                # Fallback to /run event=interrupt for compatibility
+                import asyncio as _asyncio  # local import to avoid top-level changes
+                payload = {"session_id": session_id, "event": "interrupt", "input": transcript.strip()}
+                graph_result = None
+                last_err = None
+                for _attempt in range(int(getattr(settings, "MAX_RETRIES", 3))):
+                    try:
+                        r = await client.post(f"{settings.GRAPH_URL}/run", json=payload)
+                        # Retry on 5xx as transient
+                        if getattr(r, "status_code", 500) >= 500:
+                            raise RuntimeError(f"Graph /run transient {r.status_code}: {r.text[:200]}")
+                        r.raise_for_status()
+                        graph_result = r.json()
+                        last_err = None
+                        break
+                    except Exception as _e:
+                        last_err = _e
+                        if _attempt >= int(getattr(settings, "MAX_RETRIES", 3)) - 1:
+                            break
+                        await _asyncio.sleep(min(8, 2 ** _attempt))
+                if last_err is not None:
+                    raise last_err
+                forward_path = "run:interrupt"
+
+        return {
+            "status": "ok",
+            "session_id": session_id,
+            "transcript": transcript.strip(),
+            "forwarded": True,
+            "forward_path": forward_path,
+            "graph": graph_result
+        }
+    finally:
+        try:
+            file.file.close()
+        except Exception:
+            pass
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+@app.post("/conversation/user-audio")
+async def user_audio_alias(
+    session_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    return await mic_interrupt(session_id=session_id, file=file)
+
+@app.get("/health")
+async def health():
+    try:
+        required = [
+            bool(settings.AZURE_OPENAI_KEY),
+            bool(settings.AZURE_OPENAI_ENDPOINT),
+            bool(settings.AZURE_OPENAI_DEPLOYMENT),
+        ]
+        return {
+            "status": "healthy" if all(required) else "degraded",
+            "service": "Agent1 - Conversational Host",
+            "version": "2.1.3",
+            "uptime": time.time() - agent._start_time,
+            "pause_supported": True,
+            "mute_supported": True
+        }
+    except Exception as e:
+        logger.error(f"❌ Health check failed: {e}")
+        return {"status": "unhealthy", "error": str(e)}
+
+@app.get("/")
+async def root():
+    return {
+        "service": "Agent1 - Conversational Host",
+        "version": "2.1.3",
+        "description": "Production-grade conversational host agent for podcast discussions",
+        "endpoints": {
+            "input": "/v1/input",
+            "chat": "/v1/chat",
+            "command": "/v1/command",
+            "interrupt": "/v1/interrupt/{session_id}",
+            "pause": "/v1/pause/{session_id}",
+            "resume": "/v1/resume/{session_id}",
+            "mute": "/v1/mute/{session_id}",
+            "unmute": "/v1/unmute/{session_id}",
+            "personality": "/v1/personality/{session_id}",
+            "voice": "/v1/voice/{session_id}",
+            "health": "/health",
+            "mic-interrupt": "/v1/mic-interrupt"
+        },
+        "features": [
+            "Multi-input support (text, audio, file, command)",
+            "Conversational chat with context memory",
+            "Command routing and interruption handling",
+            "Azure OpenAI integration (timeouts + retries)",
+            "Audio generation via Agent3 (retry-hardened)",
+            "Pause/Resume session control",
+            "Orchestrator-aware mute (global/per-agent)",
+            "Session personality override",
+            "Session voice pinning",
+            "Rich file parsing (txt/csv/docx/pdf)",
+            "Size guards for uploads"
+        ]
+    }
+
+@retry(stop=stop_after_attempt(settings.MAX_RETRIES),
+       wait=wait_exponential(multiplier=1, min=1, max=8))
+async def _post_user_turn_with_retries(client: AsyncClient, url: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Post to Graph /conversation/user-turn with retries on 5xx; no retry on 4xx.
+    Returns parsed JSON on 200, None on non-200 4xx.
+    """
+    r = await client.post(url, json=payload)
+    if r.status_code >= 500:
+        # transient; trigger retry
+        raise RuntimeError(f"Graph user-turn transient {r.status_code}")
+    if r.status_code != 200:
+        return None
+    return r.json()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001, log_level="info")
