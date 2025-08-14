@@ -62,8 +62,8 @@ class Settings(BaseSettings):
     MAX_RETRIES: int = 3
 
     # Graph ingest worker
-    GRAPH_INGEST_ENABLED: bool = True
-    GRAPH_POLL_INTERVAL_SEC: float = 3.0
+    GRAPH_INGEST_ENABLED: bool = False
+    GRAPH_POLL_INTERVAL_SEC: float = 10.0
 
     class Config:
         env_file = ".env"
@@ -1123,6 +1123,38 @@ async def root():
             "Session list + resume helpers + manual notes"
         ]
     }
+
+# ---- Debug config endpoint (safe, no secrets)
+from typing import List as _List
+import os as _os
+
+def _present(k: str) -> bool:
+    v = _os.getenv(k, "")
+    return bool(v and v.strip())
+
+def _looks_url(k: str) -> bool:
+    v = _os.getenv(k, "")
+    return v.startswith("http://") or v.startswith("https://")
+
+def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[str], url_vars: _List[str] = []):
+    @app.get("/debug/config")
+    def debug_config():
+        ok = {}
+        for k in required_vars:
+            ok[k] = "present" if _present(k) else "MISSING"
+        for k in url_vars:
+            if _present(k):
+                ok[k] = ok.get(k, "present")
+            ok[f"{k}_is_url"] = "ok" if _looks_url(k) else "INVALID_URL"
+        return {"service": service_name, "vars": ok}
+
+# Attach
+attach_debug_config(
+    app,
+    "agent5",
+    required_vars=["GRAPH_URL","AGENT4_URL"],
+    url_vars=["GRAPH_URL","AGENT4_URL"]
+)
 
 if __name__ == "__main__":
     import uvicorn
