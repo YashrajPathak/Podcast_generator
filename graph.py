@@ -299,6 +299,9 @@ class SessionState(BaseModel):
 # ========= Persistence =========
 STATE_DIR = Path(settings.STATE_DIR)
 STATE_DIR.mkdir(parents=True, exist_ok=True)
+# Ensure final audio cache directory exists
+FINAL_DIR = Path(settings.FINAL_AUDIO_DIR)
+FINAL_DIR.mkdir(parents=True, exist_ok=True)
 
 def _session_path(sid: str) -> Path:
     return STATE_DIR / f"{sid}.json"
@@ -385,6 +388,26 @@ class MemoryStore:
         return st
 
 store = MemoryStore()
+
+# Centralized session end helper to ensure single transition and unified logging
+async def _end_session(state: SessionState, reason: str):
+    try:
+        if state.ended and state.ended_reason:
+            return
+    except Exception:
+        # if attributes missing, proceed to set
+        pass
+    state.ended = True
+    state.ended_reason = reason
+    state.updated_at = time.time()
+    await store.upsert(state)
+    try:
+        logger.info(
+            f"session_end session_id={state.session_id} topic={state.topic} reason={state.ended_reason} "
+            f"turns={len(state.history)} audio_ms={state.audio_ms} target_ms={state.target_ms} final_wav={state.final_wav}"
+        )
+    except Exception:
+        pass
 
 # ========= Audio Helpers =========
 def _normalize_audio(audio_data: bytes) -> bytes:
@@ -549,17 +572,7 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
         except Exception:
             pass
         if state.target_ms and state.audio_ms >= state.target_ms and not state.ended:
-            state.ended = True
-            state.ended_reason = "target_duration_reached"
-            state.updated_at = time.time()
-            await store.upsert(state)
-            try:
-                logger.info(
-                    f"session_end session_id={state.session_id} reason=target_duration_reached turns={len(state.history)} "
-                    f"audio_ms={state.audio_ms} target_ms={state.target_ms} final_wav={state.final_wav}"
-                )
-            except Exception:
-                pass
+            await _end_session(state, "target_duration_reached")
             break
 
     state.current_round += 1
@@ -605,12 +618,7 @@ async def run_event(ev: RunEvent):
         return {"status": "started", "session_id": ev.session_id, "target_ms": state.target_ms}
 
     if ev.event == "end":
-        state.ended = True
-        if state.audio_broadcast_task:
-            state.audio_broadcast_task.cancel()
-        state.updated_at = time.time()
-        state.ended_reason = state.ended_reason or "manual_end"
-        await store.upsert(state)
+        await _end_session(state, "manual_end")
         return {"status": "ended", "session_id": ev.session_id}
 
     if ev.event == "pause":
@@ -637,7 +645,11 @@ async def run_event(ev: RunEvent):
         state.topic = ev.input.strip()
         state.updated_at = time.time()
         await store.upsert(state)
-        await _round_robin_once(state)
+        try:
+            await _round_robin_once(state)
+        except Exception:
+            await _end_session(state, "error")
+            raise HTTPException(status_code=500, detail="Orchestration error")
         return {"status": "ok", "session_id": ev.session_id}
 
     if ev.event in ("message", "interrupt"):
@@ -653,7 +665,15 @@ async def run_event(ev: RunEvent):
             timestamp=time.time()
         )
         state.history.append(turn)
-        await _round_robin_once(state, user_context=ev.input.strip(), is_interrupt=(ev.event=="interrupt"))
+        if ev.event == "interrupt":
+            await _end_session(state, "interrupted_stop")
+            return {"status": "ok", "session_id": ev.session_id}
+        # message path continues orchestration
+        try:
+            await _round_robin_once(state, user_context=ev.input.strip(), is_interrupt=False)
+        except Exception:
+            await _end_session(state, "error")
+            raise HTTPException(status_code=500, detail="Orchestration error")
         return {"status": "ok", "session_id": ev.session_id}
 
     raise HTTPException(status_code=400, detail=f"Unknown event: {ev.event}")
@@ -690,6 +710,20 @@ async def reload_registry():
     global REGISTRY
     REGISTRY = _load_registry()
     return {"status": "ok", "count": len(REGISTRY)}
+
+@app.get("/registry")
+async def get_registry():
+    """Return the current agent registry and its source path.
+    This allows UIs and other services to consume a single source of truth.
+    """
+    try:
+        return {
+            "path": str(Path(settings.REGISTRY_PATH).resolve()),
+            "count": len(REGISTRY),
+            "agents": REGISTRY,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/session/{session_id}/state")
 async def session_state(session_id: str):
@@ -743,7 +777,7 @@ async def health(request: Request, background_tasks: BackgroundTasks):
     global _last_health_snapshot, _last_health_log_ts
     try:
         # snapshot: number of active sessions + current ts
-        sessions = await store.list_sessions()
+        sessions = list(store.sessions.keys())
         snap = {"sessions": len(sessions)}
         now = time.time()
         should_log = False
