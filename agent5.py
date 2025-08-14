@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     LOG_RETENTION_DAYS: int = 30
     CLEANUP_INTERVAL: int = 3600          # 1 hour
     MAX_LOG_ENTRIES_RETURNED: int = 500   # safety cap for polling
+    HEALTH_LOG_DEBOUNCE_SECONDS: int = 30
 
     # Azure OpenAI (for /v1/chat helper)
     AZURE_OPENAI_KEY: Optional[str] = None
@@ -80,6 +81,14 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("Agent5")
+
+# Ensure DB directory exists (if a directory component is provided)
+try:
+    db_parent = Path(settings.DATABASE_PATH).parent
+    if str(db_parent) and str(db_parent) not in (".", ""):
+        db_parent.mkdir(parents=True, exist_ok=True)
+except Exception as e:
+    logger.warning(f"⚠️ could not create DB parent dir for {settings.DATABASE_PATH}: {e}")
 
 def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT)
@@ -742,14 +751,21 @@ app = FastAPI(
     version="2.4.0"
 )
 
+# Compute allowed origins from env (UI_ORIGINS comma-separated, fallback UI_ORIGIN)
+origins = [o.strip() for o in os.getenv("UI_ORIGINS", os.getenv("UI_ORIGIN", "http://localhost:8501")).split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origins=origins,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    allow_credentials=False,
+    max_age=86400,
 )
 
 # Initialize agent
 agent = Agent5()
+
+_last_health_log: float = 0.0
 
 # ---- Startup background tasks ----
 @app.on_event("startup")
@@ -942,33 +958,30 @@ async def resume_info(session_id: str):
 @app.get("/metrics")
 async def metrics():
     try:
-        sessions_total = await anyio.to_thread.run_sync(agent.db.count_sessions)
-        events_total = await anyio.to_thread.run_sync(agent.db.count_events)
-        async with agent._metrics_lock:
-            m = dict(agent._metrics)
-        avg_latency = (m["latency_sum"] / m["latency_count"]) if m["latency_count"] else 0.0
+        # Sessions count
+        try:
+            sessions = await agent.list_sessions()
+            sessions_count = len(sessions)
+        except Exception:
+            sessions_count = None
+
         return {
-            "status": "ok",
-            "service": "Agent5 - Logger & Orchestrator",
-            "version": "2.4.0",
-            "uptime_sec": round(time.time() - agent._start_time, 3),
-            "requests_total": m["requests_total"],
-            "errors_total": m["errors_total"],
-            "latency": {
-                "count": m["latency_count"],
-                "sum_sec": round(m["latency_sum"], 6),
-                "max_sec": round(m["latency_max"], 6),
-                "avg_sec": round(avg_latency, 6),
-            },
-            "db": {
-                "sessions_total": sessions_total,
-                "events_total": events_total,
-                "path": settings.DATABASE_PATH,
-            }
+            "sessions": sessions_count,
+            "db_path": settings.DATABASE_PATH,
+            "poll_interval": settings.CLEANUP_INTERVAL,
+            "retention_days": settings.LOG_RETENTION_DAYS,
+            "time": int(time.time()),
         }
     except Exception as e:
-        logger.error(f"❌ metrics failed: {e}")
-        raise HTTPException(status_code=500, detail="metrics failed")
+        logger.error(f"/metrics error: {e}")
+        return {
+            "sessions": None,
+            "db_path": settings.DATABASE_PATH,
+            "poll_interval": settings.CLEANUP_INTERVAL,
+            "retention_days": settings.LOG_RETENTION_DAYS,
+            "time": int(time.time()),
+            "error": str(e),
+        }
 
 # --- Lightweight metrics middleware ---
 @app.middleware("http")
@@ -993,10 +1006,15 @@ async def _metrics_middleware(request, call_next):
 
 @app.get("/health")
 async def health():
+    global _last_health_log
     try:
+        now = time.time()
+        if now - _last_health_log < settings.HEALTH_LOG_DEBOUNCE_SECONDS:
+            return {"status": "ok"}
         sid = f"health_{int(time.time())}"
         await agent.create_session(sid, {"health": True})
         ok = await agent.log_event(SessionEvent(session_id=sid, event_type="health_ping", content={"ok": True}))
+        _last_health_log = now
         return {
             "status": "healthy" if ok else "degraded",
             "service": "Agent5 - Logger & Orchestrator",
