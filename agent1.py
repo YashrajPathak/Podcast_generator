@@ -20,6 +20,7 @@ import time
 from io import BytesIO
 import struct
 import shutil
+from dotenv import load_dotenv
 
 # Optional deps for richer file parsing (txt/csv/docx/pdf)
 try:
@@ -46,6 +47,9 @@ from utils import (
     validate_session_id      # guard session ids
 )
 
+# Ensure .env is loaded even if CWD differs
+load_dotenv()
+
 # ========== Settings ==========
 class Settings(BaseSettings):
     AZURE_OPENAI_KEY: str
@@ -66,6 +70,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        env_file_encoding = "utf-8"
         extra = "ignore"
 
 try:
@@ -713,6 +718,16 @@ async def startup():
         print(f"[Agent1] ⚠️ Azure config issues: {', '.join(issues)}")
     else:
         print("[Agent1] ✅ Azure config looks good")
+    # Startup diagnostics (non-secret): show CWD and presence booleans
+    try:
+        cwd = os.getcwd()
+        present = {k: bool(os.getenv(k)) for k in [
+            "AZURE_OPENAI_KEY","AZURE_OPENAI_ENDPOINT","AZURE_OPENAI_DEPLOYMENT","OPENAI_API_VERSION","GRAPH_URL"
+        ]}
+        print(f"[Agent1] CWD: {cwd}")
+        print(f"[Agent1] Env presence: {present}")
+    except Exception:
+        pass
 
 # Debug config endpoint (safe, no secrets)
 def _present(k: str) -> bool:
