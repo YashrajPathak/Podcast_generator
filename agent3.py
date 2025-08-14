@@ -756,6 +756,38 @@ async def root():
         ]
     }
 
+# ---- Debug config endpoint (safe, no secrets)
+from typing import List as _List
+import os as _os
+
+def _present(k: str) -> bool:
+    v = _os.getenv(k, "")
+    return bool(v and v.strip())
+
+def _looks_url(k: str) -> bool:
+    v = _os.getenv(k, "")
+    return v.startswith("http://") or v.startswith("https://")
+
+def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[str], url_vars: _List[str] = []):
+    @app.get("/debug/config")
+    def debug_config():
+        ok = {}
+        for k in required_vars:
+            ok[k] = "present" if _present(k) else "MISSING"
+        for k in url_vars:
+            if _present(k):
+                ok[k] = ok.get(k, "present")
+            ok[f"{k}_is_url"] = "ok" if _looks_url(k) else "INVALID_URL"
+        return {"service": service_name, "vars": ok}
+
+# Attach
+attach_debug_config(
+    app,
+    "agent3",
+    required_vars=["CLIENT_ID","CLIENT_SECRET","TENANT_ID","RESOURCE_ID","SPEECH_REGION","GRAPH_URL"],
+    url_vars=["GRAPH_URL"]
+)
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("agent3:app", host="0.0.0.0", port=8004, log_level="info", reload=False)
