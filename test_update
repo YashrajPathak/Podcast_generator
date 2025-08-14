@@ -1,9 +1,10 @@
 (.venv) PS C:\Users\ypathak1\podcast_generator> python test.py
 start: {'status': 'started', 'session_id': 's1', 'target_ms': 0}
+graph debug: {'service': 'graph', 'vars': {'AGENT1_URL': 'MISSING', 'AGENT2_URL': 'MISSING', 'AGENT3_URL': 'MISSING', 'AGENT4_URL': 'MISSING', 'AGENT5_URL': 'MISSING', 'AGENT1_URL_is_url': 'INVALID_URL', 'AGENT2_URL_is_url': 'INVALID_URL', 'AGENT3_URL_is_url': 'INVALID_URL', 'AGENT4_URL_is_url': 'INVALID_URL', 'AGENT5_URL_is_url': 'INVALID_URL'}}
 Traceback (most recent call last):
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_transports\default.py", line 101, in map_httpcore_exceptions   
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_transports\default.py", line 101, in map_httpcore_exceptions
     yield
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_transports\default.py", line 394, in handle_async_request      
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_transports\default.py", line 394, in handle_async_request
     resp = await self._pool.handle_async_request(req)
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_async\connection_pool.py", line 256, in handle_async_request
@@ -19,7 +20,7 @@ Traceback (most recent call last):
   File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_async\http11.py", line 106, in handle_async_request
     ) = await self._receive_response_headers(**kwargs)
         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_async\http11.py", line 177, in _receive_response_headers    
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_async\http11.py", line 177, in _receive_response_headers
     event = await self._receive_event(timeout=timeout)
             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_async\http11.py", line 217, in _receive_event
@@ -36,7 +37,7 @@ httpcore.ReadTimeout
 The above exception was the direct cause of the following exception:
 
 Traceback (most recent call last):
-  File "C:\Users\ypathak1\podcast_generator\test.py", line 37, in <module>
+  File "C:\Users\ypathak1\podcast_generator\test.py", line 49, in <module>
     asyncio.run(main())
   File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 190, in run
     return runner.run(main)
@@ -47,8 +48,9 @@ Traceback (most recent call last):
   File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 654, in run_until_complete
     return future.result()
            ^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\test.py", line 12, in main
-    await g.post("/run", json={"session_id": s, "event":"topic_input", "input":"AI and podcasts"})
+  File "C:\Users\ypathak1\podcast_generator\test.py", line 25, in main
+    r = await g.post("/run", json={"session_id": s, "event": "topic_input", "input": "AI and podcasts"})
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_client.py", line 1859, in post
     return await self.request(
            ^^^^^^^^^^^^^^^^^^^
