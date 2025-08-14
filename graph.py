@@ -478,26 +478,56 @@ async def _finalize_audio(state: SessionState) -> Optional[str]:
         # If already finalized, return existing path
         if state.final_wav and Path(state.final_wav).exists():
             return state.final_wav
-        # Obtain mixed audio bytes from mixer; fall back to concatenating turn audio if needed later
-        mixed = mixer.get_mixed_audio()
-        if not mixed:
-            return None
+
         out_path = FINAL_DIR / f"{state.session_id}.wav"
-        # Write WAV with settings.SAMPLE_RATE and 16-bit mono
-        with wav.open(str(out_path), 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(settings.SAMPLE_WIDTH)
-            wf.setframerate(settings.SAMPLE_RATE)
-            wf.writeframes(mixed)
-        state.final_wav = str(out_path)
-        state.updated_at = time.time()
-        await store.upsert(state)
+
+        # 1) Try mixed audio buffer first
+        mixed = mixer.get_mixed_audio()
+        if mixed:
+            with wav.open(str(out_path), 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(settings.SAMPLE_WIDTH)
+                wf.setframerate(settings.SAMPLE_RATE)
+                wf.writeframes(mixed)
+            state.final_wav = str(out_path)
+            state.updated_at = time.time()
+            await store.upsert(state)
+            try:
+                size = out_path.stat().st_size
+                logger.info(f"finalize_audio session_id={state.session_id} file={out_path} bytes={size} source=mixer")
+            except Exception:
+                pass
+            return str(out_path)
+
+        # 2) Fallback: stitch per-turn WAV clips in chronological order
         try:
-            size = out_path.stat().st_size
-            logger.info(f"finalize_audio session_id={state.session_id} file={out_path} bytes={size}")
+            ordered = [state.turn_audio[k] for k in sorted(state.turn_audio.keys()) if isinstance(state.turn_audio.get(k), dict)]
+            clip_paths = [d.get("path") for d in ordered if d.get("path")]
+        except Exception:
+            ordered, clip_paths = [], []
+        if clip_paths:
+            stitched = _stitch_wavs(clip_paths, str(out_path))
+            if stitched:
+                state.final_wav = stitched
+                state.updated_at = time.time()
+                await store.upsert(state)
+                try:
+                    size = Path(stitched).stat().st_size if Path(stitched).exists() else 0
+                    logger.info(
+                        f"finalize_audio session_id={state.session_id} file={stitched} bytes={size} source=stitch clips={len(clip_paths)}"
+                    )
+                except Exception:
+                    pass
+                return stitched
+
+        # No audio available
+        try:
+            logger.info(
+                f"finalize_audio_no_data session_id={state.session_id} history={len(state.history)} clips={len(clip_paths) if 'clip_paths' in locals() else 0}"
+            )
         except Exception:
             pass
-        return str(out_path)
+        return None
     except Exception as e:
         logger.warning(f"⚠️ finalize_audio failed for {state.session_id}: {e}")
         return None
@@ -1118,8 +1148,17 @@ async def get_final_audio(session_id: str):
     st = await store.get(session_id)
     if not st:
         raise HTTPException(status_code=404, detail="Session not found")
-    if not st.final_wav or not Path(st.final_wav).exists():
-        return {"status": "pending", "audio_path": None}
+
+    # If not finalized yet, but session has ended, attempt best-effort finalize now
+    if (not st.final_wav or not Path(st.final_wav).exists()):
+        if st.ended:
+            try:
+                await _finalize_audio(st)
+            except Exception:
+                pass
+        if not st.final_wav or not Path(st.final_wav).exists():
+            return {"status": "pending", "audio_path": None}
+
     return {"status": "ready", "audio_path": st.final_wav}
 
 @app.get("/session/{session_id}/final-audio/file")
