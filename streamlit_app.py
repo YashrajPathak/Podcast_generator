@@ -14,6 +14,13 @@ import io
 import csv
 import numpy as np
 import wave
+import requests
+import threading
+from io import BytesIO
+try:
+    import websocket  # websocket-client
+except Exception:
+    websocket = None
 
 # Load environment
 load_dotenv()
@@ -21,6 +28,10 @@ GRAPH_BASE = os.getenv("GRAPH_BASE", "http://localhost:8008")
 AGENT1_URL = os.getenv("AGENT1_URL", "http://localhost:8001")
 AGENT4_URL = os.getenv("AGENT4_URL", "http://localhost:8006")
 AGENT5_URL = os.getenv("AGENT5_URL", "http://localhost:8007")
+GRAPH_BASE_URL = os.getenv("GRAPH_BASE_URL", "http://localhost:8008").rstrip("/")
+POLL_FINAL_AUDIO_SEC = int(os.getenv("UI_POLL_FINAL_AUDIO_SEC", "7"))
+UI_AUTO_REFRESH_SEC = int(os.getenv("UI_AUTO_REFRESH_SEC", "7"))
+UI_LIVE_PLAYBACK = os.getenv("UI_LIVE_PLAYBACK", "false").lower() in {"1","true","yes"}
 
 # Mic thresholds (env-overridable)
 MIC_MIN_SECONDS = float(os.getenv("MIC_MIN_SECONDS", "0.4"))
@@ -275,6 +286,91 @@ def send_audio_to_agent1(bytes_wav: bytes, filename: str):
     except Exception as e:
         st.error(f"Audio processing failed: {e}")
         return None
+
+def _ws_url_from_http(base_http: str, session_id: str) -> str:
+    # Convert http(s)://host:port -> ws(s)://host:port
+    if base_http.startswith("https://"):
+        ws_base = "wss://" + base_http[len("https://"):]
+    elif base_http.startswith("http://"):
+        ws_base = "ws://" + base_http[len("http://"):]
+    else:
+        ws_base = "ws://" + base_http
+    return f"{ws_base}/ws/audio/{session_id}"
+
+def _start_live_ws(session_id: str):
+    if not websocket:
+        return
+    if st.session_state.get("_live_ws_running"):
+        return
+    st.session_state.setdefault("_live_audio_buffer", bytearray())
+    st.session_state["_live_ws_running"] = True
+
+    def on_message(wsapp, message: bytes):
+        try:
+            # Append incoming PCM/WAV bytes
+            st.session_state["_live_audio_buffer"] += message
+        except Exception:
+            pass
+
+    def on_error(wsapp, error):
+        st.session_state["_live_ws_running"] = False
+
+    def on_close(wsapp, status_code, msg):
+        st.session_state["_live_ws_running"] = False
+
+    def run():
+        url = _ws_url_from_http(GRAPH_BASE_URL, session_id)
+        wsapp = websocket.WebSocketApp(url, on_message=on_message, on_error=on_error, on_close=on_close)
+        try:
+            wsapp.run_forever()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+
+def _render_live_audio_if_any():
+    buf = st.session_state.get("_live_audio_buffer")
+    if not buf or len(buf) < 4096:
+        return
+    try:
+        # Wrap as WAV header if needed: Graph sends WAV frames via FileResponse or mixed stream
+        # Here, we assume chunks are already WAV-framed by stream manager; if raw PCM, this will not play.
+        b = bytes(buf)
+        st.audio(BytesIO(b), format="audio/wav")
+    except Exception:
+        pass
+
+def _poll_and_render_final_audio(session_id: str):
+    try:
+        url = f"{GRAPH_BASE_URL}/session/{session_id}/final-audio"
+        r = requests.get(url, timeout=5)
+        if r.status_code != 200:
+            return
+        data = r.json()
+        if data.get("status") == "ready" and data.get("audio_path"):
+            audio_file_url = f"{GRAPH_BASE_URL}/session/{session_id}/final-audio/file"
+            st.audio(audio_file_url, format="audio/wav")
+    except Exception:
+        pass
+
+def _render_graph_debug_config_sidebar():
+    try:
+        url = f"{GRAPH_BASE_URL}/debug/config"
+        r = requests.get(url, timeout=3)
+        if r.status_code == 200 and r.headers.get("content-type", "").startswith("application/json"):
+            data = r.json()
+            with st.sidebar.expander("Graph debug/config", expanded=False):
+                st.text(f"service: {data.get('service','graph')}")
+                vars_map = data.get("vars", {})
+                rows = [{"var": k, "status": v} for k, v in vars_map.items()]
+                st.dataframe(rows, hide_index=True, use_container_width=True)
+        else:
+            with st.sidebar.expander("Graph debug/config", expanded=False):
+                st.warning("Graph /debug/config not JSON or not 200")
+    except Exception:
+        with st.sidebar.expander("Graph debug/config", expanded=False):
+            st.error("Failed to load Graph /debug/config")
 
 # --- UI Components ---
 def render_sidebar():
@@ -706,6 +802,7 @@ st.session_state.active_tab = st.sidebar.radio(
     index=0
 )
 
+_render_graph_debug_config_sidebar()
 render_sidebar()
 
 if st.session_state.active_tab == "Control Room":
@@ -715,7 +812,19 @@ elif st.session_state.active_tab == "Export":
 elif st.session_state.active_tab == "Metrics":
     render_metrics()
 
+# After session status / controls are rendered and session_id is known
+try:
+    if "session_id" in st.session_state and st.session_state["session_id"]:
+        # Live playback (optional)
+        if UI_LIVE_PLAYBACK:
+            _start_live_ws(st.session_state["session_id"])
+            _render_live_audio_if_any()
+        # Final audio on completion (always available)
+        _poll_and_render_final_audio(st.session_state["session_id"])
+except Exception:
+    pass
+
 # Auto-refresh logic
 if st.session_state.auto_refresh:
-    time.sleep(2)
+    time.sleep(UI_AUTO_REFRESH_SEC)
     st.rerun()
