@@ -18,6 +18,8 @@ from pathlib import Path
 from enum import Enum
 import time
 from io import BytesIO
+import struct
+import shutil
 
 # Optional deps for richer file parsing (txt/csv/docx/pdf)
 try:
@@ -53,6 +55,7 @@ class Settings(BaseSettings):
 
     AGENT2_URL: str = "http://localhost:8002"
     AGENT3_URL: str = "http://localhost:8004"
+    GRAPH_URL: str = "http://localhost:8008"
 
     MAX_AUDIO_SIZE: int = 5 * 1024 * 1024
     MAX_FILE_SIZE: int = 10 * 1024 * 1024
@@ -250,7 +253,7 @@ class CommandRouter:
             logger.error(f"❌ Command routing failed: {e}")
             return create_error_response(f"Command routing failed: {str(e)}", "command_routing")
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
+    @retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
     async def _to_agent2(self, command: Command) -> Dict[str, Any]:
         try:
             async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
@@ -659,25 +662,22 @@ Keep responses concise (2–3 sentences) and engaging."""
                 )
                 resp.raise_for_status()
                 result = resp.json()
-                return result.get("audio_path")
+            return result.get("audio_path")
         except Exception as e:
             logger.warning(f"⚠️ Audio generation failed (non-fatal): {e}")
             return None
 
 # ========== FastAPI App ==========
-app = FastAPI(
-    title="🎙️ Agent1 - Conversational Host",
-    description="Production-grade conversational host agent for podcast discussions",
-    version="2.1.3"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if "app" not in globals():
+    app = FastAPI(title="🎙 Agent1 - Conversational Host", version="2.1.3")
+    # Tighten CORS to only the Streamlit UI origin
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[os.getenv("UI_ORIGIN", "http://localhost:8501")],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
+        allow_credentials=False,
+    )
 
 # Initialize agent
 try:
@@ -778,6 +778,95 @@ async def set_voice(session_id: str, voice: str = Form(...)):
     await agent.memory.set_voice(session_id, voice)
     return {"status": "ok", "session_id": session_id, "voice": voice}
 
+@app.post("/v1/mic-interrupt")
+async def mic_interrupt(
+    session_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Accept mic audio, transcribe, and forward to Graph as an interrupt."""
+    if not session_id or not validate_session_id(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+
+    # Basic MIME/type checks
+    try:
+        ctype = (file.content_type or "").lower()
+        if not ctype.startswith("audio/") and ctype not in {"application/octet-stream", ""}:
+            raise HTTPException(status_code=415, detail=f"Unsupported content-type: {ctype}")
+    except Exception:
+        pass
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            tmp.flush()
+
+        # Sniff WAV header (RIFF....WAVE)
+        try:
+            with open(tmp.name, "rb") as fh:
+                header = fh.read(12)
+            if len(header) < 12 or header[0:4] != b"RIFF" or header[8:12] != b"WAVE":
+                raise HTTPException(status_code=415, detail="Only WAV (RIFF/WAVE) audio is supported")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=400, detail="Unable to read audio header")
+
+        transcript = await transcribe_audio(tmp.name)
+        if not transcript or not transcript.strip():
+            raise HTTPException(status_code=422, detail="Transcription failed or empty")
+
+        # Prefer canonical user-turn interrupt path
+        async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
+            try:
+                payload_ut = {"session_id": session_id, "text": transcript.strip(), "is_interruption": True}
+                graph_result = await _post_user_turn_with_retries(
+                    client,
+                    f"{settings.GRAPH_URL}/conversation/user-turn",
+                    payload_ut,
+                )
+                if graph_result is None:
+                    raise RuntimeError("user-turn returned non-200")
+            except Exception:
+                # Fallback to /run event=interrupt for compatibility
+                import asyncio as _asyncio  # local import to avoid top-level changes
+                payload = {"session_id": session_id, "event": "interrupt", "input": transcript.strip()}
+                graph_result = None
+                last_err = None
+                for _attempt in range(int(getattr(settings, "MAX_RETRIES", 3))):
+                    try:
+                        r = await client.post(f"{settings.GRAPH_URL}/run", json=payload)
+                        # Retry on 5xx as transient
+                        if getattr(r, "status_code", 500) >= 500:
+                            raise RuntimeError(f"Graph /run transient {r.status_code}: {r.text[:200]}")
+                        r.raise_for_status()
+                        graph_result = r.json()
+                        last_err = None
+                        break
+                    except Exception as _e:
+                        last_err = _e
+                        if _attempt >= int(getattr(settings, "MAX_RETRIES", 3)) - 1:
+                            break
+                        await _asyncio.sleep(min(8, 2 ** _attempt))
+                if last_err is not None:
+                    raise last_err
+        return {"status": "ok", "session_id": session_id, "transcript": transcript.strip(), "forwarded": True, "graph": graph_result}
+    finally:
+        try:
+            file.file.close()
+        except Exception:
+            pass
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+
+@app.post("/conversation/user-audio")
+async def user_audio_alias(
+    session_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    return await mic_interrupt(session_id=session_id, file=file)
+
 @app.get("/health")
 async def health():
     try:
@@ -815,7 +904,8 @@ async def root():
             "unmute": "/v1/unmute/{session_id}",
             "personality": "/v1/personality/{session_id}",
             "voice": "/v1/voice/{session_id}",
-            "health": "/health"
+            "health": "/health",
+            "mic-interrupt": "/v1/mic-interrupt"
         },
         "features": [
             "Multi-input support (text, audio, file, command)",
@@ -831,6 +921,20 @@ async def root():
             "Size guards for uploads"
         ]
     }
+
+@retry(stop=stop_after_attempt(settings.MAX_RETRIES),
+       wait=wait_exponential(multiplier=1, min=1, max=8))
+async def _post_user_turn_with_retries(client: AsyncClient, url: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Post to Graph /conversation/user-turn with retries on 5xx; no retry on 4xx.
+    Returns parsed JSON on 200, None on non-200 4xx.
+    """
+    r = await client.post(url, json=payload)
+    if r.status_code >= 500:
+        # transient; trigger retry
+        raise RuntimeError(f"Graph user-turn transient {r.status_code}")
+    if r.status_code != 200:
+        return None
+    return r.json()
 
 if __name__ == "__main__":
     import uvicorn
