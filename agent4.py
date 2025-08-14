@@ -13,6 +13,7 @@ import io
 import json
 import time
 import zipfile
+import shutil
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
@@ -410,6 +411,37 @@ async def export_now(req: ExportRequest):
         html_path = out_dir / "index.html"
         _write_text(html_path, html_text)
 
+        # 4b) Optional: bring stitched final WAV into the export directory if Graph provided it
+        final_wav_path: Optional[Path] = None
+        try:
+            fw = (req.metadata or {}).get("final_wav")
+            if fw:
+                src = Path(str(fw)).resolve()
+                if src.exists() and src.is_file():
+                    final_wav_path = (out_dir / "final.wav").resolve()
+                    try:
+                        if src != final_wav_path:
+                            _ensure_dir(final_wav_path.parent)
+                            shutil.copyfile(str(src), str(final_wav_path))
+                    except Exception as _e:
+                        logger.warning(f"final_wav copy skipped: {_e}")
+        except Exception:
+            # best-effort only; do not fail export
+            pass
+
+        # 4c) If final.wav exists, add a link into HTML (best-effort)
+        try:
+            if final_wav_path and final_wav_path.exists():
+                try:
+                    existing = html_path.read_text(encoding="utf-8")
+                    link_html = f'\n  <div class="sub">Download final audio: <a href="/download/file?path={final_wav_path}">final.wav</a></div>\n'
+                    injected = existing.replace("</body>", f"{link_html}</body>")
+                    _write_text(html_path, injected)
+                except Exception as _e:
+                    logger.warning(f"could not inject final.wav link: {_e}")
+        except Exception:
+            pass
+
         # 5) Optional: index.pdf (if reportlab present or explicitly requested as format)
         pdf_path = None
         if fmt == "pdf" or REPORTLAB_AVAILABLE:
@@ -425,6 +457,8 @@ async def export_now(req: ExportRequest):
             "final_script.txt": str(script_path),
             "index.html": str(html_path),
         }
+        if final_wav_path and final_wav_path.exists():
+            files["final.wav"] = str(final_wav_path)
         if pdf_path and Path(pdf_path).exists():
             files["index.pdf"] = str(pdf_path)
 
