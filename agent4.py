@@ -49,25 +49,103 @@ except Exception:
 def _write_pdf_from_text(path: Path, title: str, text: str):
     if not REPORTLAB_AVAILABLE:
         raise RuntimeError("ReportLab not available for PDF export")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    c = canvas.Canvas(str(path), pagesize=LETTER)
-    width, height = LETTER
-    margin = 50
-    y = height - margin
-    c.setTitle(title or "Export")
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(margin, y, title or "Export")
-    y -= 24
-    c.setFont("Helvetica", 10)
-    for line in text.splitlines():
-        if y < margin:
-            c.showPage()
+    import time as _t
+    attempts = int(getattr(settings, "MAX_RETRIES", 3))
+    base = float(getattr(settings, "RETRY_BASE_DELAY", 0.5))
+    last_err: Optional[Exception] = None
+    for i in range(attempts):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            c = canvas.Canvas(str(path), pagesize=LETTER)
+            width, height = LETTER
+            margin = 50
             y = height - margin
+            c.setTitle(title or "Export")
+            c.setFont("Helvetica-Bold", 14)
+            c.drawString(margin, y, title or "Export")
+            y -= 24
             c.setFont("Helvetica", 10)
-        c.drawString(margin, y, line[:110])
-        y -= 14
-    c.showPage()
-    c.save()
+            for line in text.splitlines():
+                if y < margin:
+                    c.showPage()
+                    y = height - margin
+                    c.setFont("Helvetica", 10)
+                c.drawString(margin, y, line[:110])
+                y -= 14
+            c.showPage()
+            c.save()
+            return
+        except Exception as e:
+            last_err = e
+            if i < attempts - 1:
+                _t.sleep(min(8.0, base * (2 ** i)))
+            else:
+                raise
+
+def _ensure_dir(path: Path):
+    import time as _t
+    attempts = int(getattr(settings, "MAX_RETRIES", 3))
+    base = float(getattr(settings, "RETRY_BASE_DELAY", 0.5))
+    last_err: Optional[Exception] = None
+    for i in range(attempts):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return
+        except Exception as e:
+            last_err = e
+            if i < attempts - 1:
+                _t.sleep(min(8.0, base * (2 ** i)))
+            else:
+                raise
+
+def _write_text(path: Path, content: str):
+    import time as _t
+    attempts = int(getattr(settings, "MAX_RETRIES", 3))
+    base = float(getattr(settings, "RETRY_BASE_DELAY", 0.5))
+    for i in range(attempts):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8") as f:
+                f.write(content)
+            return
+        except Exception:
+            if i < attempts - 1:
+                _t.sleep(min(8.0, base * (2 ** i)))
+            else:
+                raise
+
+def _write_json(path: Path, obj: Dict[str, Any]):
+    import time as _t
+    attempts = int(getattr(settings, "MAX_RETRIES", 3))
+    base = float(getattr(settings, "RETRY_BASE_DELAY", 0.5))
+    for i in range(attempts):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8") as f:
+                json.dump(obj, f, ensure_ascii=False, indent=2)
+            return
+        except Exception:
+            if i < attempts - 1:
+                _t.sleep(min(8.0, base * (2 ** i)))
+            else:
+                raise
+
+def _zip_dir(src_dir: Path, out_zip: Path):
+    import time as _t
+    attempts = int(getattr(settings, "MAX_RETRIES", 3))
+    base = float(getattr(settings, "RETRY_BASE_DELAY", 0.5))
+    for i in range(attempts):
+        try:
+            with zipfile.ZipFile(out_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for p in src_dir.glob("**/*"):
+                    if p.is_file():
+                        zf.write(p, p.relative_to(src_dir))
+            return
+        except Exception:
+            if i < attempts - 1:
+                _t.sleep(min(8.0, base * (2 ** i)))
+            else:
+                raise
 
 # ========= Settings =========
 class Settings(BaseSettings):
@@ -75,11 +153,19 @@ class Settings(BaseSettings):
     DEFAULT_FORMAT: str = "zip"   # json|txt|html|zip
     MAX_TEXT_LENGTH: int = 100000
     ALLOW_LISTING: bool = True    # enable the lightweight /list endpoint
+    MAX_RETRIES: int = 3
+    RETRY_BASE_DELAY: float = 0.5
     class Config:
         env_file = ".env"
         extra = "ignore"
 
 settings = Settings()
+# Allow AGENT4_* env overrides for retry knobs
+try:
+    settings.MAX_RETRIES = int(os.getenv("AGENT4_MAX_RETRIES", settings.MAX_RETRIES))
+    settings.RETRY_BASE_DELAY = float(os.getenv("AGENT4_RETRY_BASE_DELAY", settings.RETRY_BASE_DELAY))
+except Exception:
+    pass
 
 # ========= Logging =========
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - agent4 - %(levelname)s - %(message)s")
@@ -119,9 +205,6 @@ def _safe_title(session_id: str, title: Optional[str]) -> str:
     base = base or "session"
     ts = time.strftime("%Y%m%d_%H%M%S")
     return f"{base}_{ts}"
-
-def _ensure_dir(path: Path):
-    path.mkdir(parents=True, exist_ok=True)
 
 def _mk_transcript_lines(
     convo: List[Dict[str, Any]],
@@ -206,18 +289,6 @@ def _mk_html(topic: Optional[str], convo: List[Dict[str, Any]], include_ts: bool
 </body>
 </html>"""
     return html
-
-def _write_text(path: Path, content: str):
-    path.write_text(content, encoding="utf-8")
-
-def _write_json(path: Path, obj: Dict[str, Any]):
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
-
-def _zip_dir(src_dir: Path, out_zip: Path):
-    with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-        for p in src_dir.rglob("*"):
-            if p.is_file():
-                zf.write(p, p.relative_to(src_dir))
 
 # ========= FastAPI app =========
 app = FastAPI(
