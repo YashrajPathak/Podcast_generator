@@ -470,6 +470,7 @@ async def _end_session(state: SessionState, reason: str):
             pass
 
 # ========= Audio Helpers =========
+import base64
 
 # Write the current mixed audio buffer to a WAV file and return its path
 async def _finalize_audio(state: SessionState) -> Optional[str]:
@@ -690,6 +691,29 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
 
     state.current_round += 1
 
+# ========= JSON Safety Helper =========
+from typing import Any as _Any
+
+def _to_json_safe(obj: _Any) -> _Any:
+    """Recursively convert bytes/buffer-like types to JSON-safe structures.
+    - bytes/bytearray/memoryview -> {"__type__":"bytes","b64": base64}
+    - collections -> recurse
+    """
+    try:
+        if isinstance(obj, (bytes, bytearray, memoryview)):
+            try:
+                return {"__type__": "bytes", "b64": base64.b64encode(bytes(obj)).decode("ascii")}
+            except Exception:
+                return {"__type__": "bytes", "len": len(obj)}
+        if isinstance(obj, dict):
+            return {k: _to_json_safe(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple, set)):
+            return [_to_json_safe(v) for v in obj]
+        return obj
+    except Exception:
+        # In worst case, return string repr to avoid encoder crashes
+        return str(obj)
+
 # ========= API Endpoints =========
 @app.websocket("/ws/audio/{session_id}")
 async def websocket_audio(websocket: WebSocket, session_id: str):
@@ -866,7 +890,7 @@ async def session_state(session_id: str):
     st = await store.get(session_id)
     if not st:
         raise HTTPException(status_code=404, detail="Session not found")
-    return {
+    payload = {
         "session_id": st.session_id,
         "topic": st.topic,
         "created_at": st.created_at,
@@ -880,6 +904,7 @@ async def session_state(session_id: str):
         "max_turns_per_round": st.max_turns_per_round,
         "history": [t.dict() for t in st.history],
     }
+    return JSONResponse(content=_to_json_safe(payload))
 
 @app.get("/conversation/session/{session_id}/state")
 async def compat_state_proxy(session_id: str):
@@ -901,7 +926,7 @@ async def compat_state_proxy(session_id: str):
             detail="Session not found",
             headers={"X-Session-Status": "not_found"}
         )
-    return st.dict()
+    return JSONResponse(content=_to_json_safe(st.dict()))
 
 _last_health_snapshot = {"sessions": 0}
 _last_health_log_ts: float = 0.0
