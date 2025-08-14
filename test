@@ -1,23 +1,36 @@
 import asyncio, httpx, time
 
+GRAPH = "http://localhost:8008"
+
 async def main():
-    g = httpx.AsyncClient(base_url="http://localhost:8008", timeout=30)
+    # Longer timeout to tolerate orchestration
+    g = httpx.AsyncClient(base_url=GRAPH, timeout=httpx.Timeout(60.0))
+
     s = "s1"
 
-    # Start
-    r = await g.post("/run", json={"session_id": s, "event":"start", "target_minutes":0})
+    # Start with only agent1 to reduce dependencies
+    r = await g.post("/run", json={
+        "session_id": s,
+        "event": "start",
+        "agents": ["agent1"],
+        "target_minutes": 0
+    })
     print("start:", r.json())
 
-    # Topic and turn
-    await g.post("/run", json={"session_id": s, "event":"topic_input", "input":"AI and podcasts"})
-    await g.post("/conversation/user-turn", json={"session_id": s, "text":"Give me intro"})
+    # Optional sanity check
+    dbg = await g.get("/debug/config")
+    print("graph debug:", dbg.json())
 
-    # State JSON-safe
-    st = await g.get(f"/session/{s}/state")
-    print("state keys:", list(st.json().keys()))
+    # Topic step (may take longer than default timeouts otherwise)
+    r = await g.post("/run", json={"session_id": s, "event": "topic_input", "input": "AI and podcasts"})
+    print("topic_input:", r.json())
+
+    # Add a user turn
+    r = await g.post("/conversation/user-turn", json={"session_id": s, "text": "Give me intro"})
+    print("user_turn:", r.json())
 
     # End and finalize
-    await g.post("/run", json={"session_id": s, "event":"end"})
+    await g.post("/run", json={"session_id": s, "event": "end"})
     for _ in range(20):
         fa = await g.get(f"/session/{s}/final-audio")
         j = fa.json()
@@ -26,7 +39,6 @@ async def main():
             break
         await asyncio.sleep(1)
 
-    # Download file
     if j.get("status") == "ready":
         file = await g.get(f"/session/{s}/final-audio/file")
         print("wav size:", len(file.content))
