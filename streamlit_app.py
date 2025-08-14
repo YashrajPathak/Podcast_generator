@@ -35,6 +35,7 @@ GRAPH_VOICES = f"{GRAPH_BASE}/session" # + /{session_id}/voices?agent=..&voice=.
 GRAPH_SET_AGENTS = f"{GRAPH_BASE}/session"  # + /{session_id}/agents
 GRAPH_USER_TURN = f"{GRAPH_BASE}/conversation/user-turn"
 GRAPH_EXPORT = f"{GRAPH_BASE}/session"  # + /{session_id}/export?format=...
+GRAPH_REGISTRY = f"{GRAPH_BASE}/registry"
 
 # WebRTC config
 RTC_CONFIG = RTCConfiguration(
@@ -66,6 +67,10 @@ def init_session_state():
         "is_running": False,
         "export_done": False,
         "target_minutes": 0,
+        # UI debounce locks
+        "run_busy": False,
+        "export_busy": False,
+        "registry": None,
     }
     
     for key, value in defaults.items():
@@ -159,6 +164,11 @@ def post_run(event: str, input_text: str = None, agents=None, voices=None, max_t
     if target_minutes is not None:
         payload["target_minutes"] = int(target_minutes)
         
+    # Debounce: lock while request in-flight
+    if st.session_state.run_busy:
+        st.warning("Action already in progress…")
+        return None
+    st.session_state.run_busy = True
     try:
         r = _with_retries(lambda: httpx.post(GRAPH_RUN, json=payload, timeout=10))
         r.raise_for_status()
@@ -174,6 +184,8 @@ def post_run(event: str, input_text: str = None, agents=None, voices=None, max_t
     except Exception as e:
         st.error(f"Failed to execute {event}: {e}")
         return None
+    finally:
+        st.session_state.run_busy = False
 
 def toggle_mute(agent: str, mute: bool):
     try:
@@ -241,6 +253,16 @@ def get_metrics():
         st.error(f"Failed to get metrics: {e}")
         return None
 
+def get_registry():
+    """Fetch centralized registry from Graph."""
+    try:
+        r = _with_retries(lambda: httpx.get(GRAPH_REGISTRY, timeout=10))
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        st.warning(f"Failed to fetch registry: {e}")
+        return None
+
 def send_audio_to_agent1(bytes_wav: bytes, filename: str):
     files = {"file": (filename, bytes_wav, "audio/wav")}
     data = {"session_id": st.session_state.session_id}
@@ -274,15 +296,15 @@ def render_sidebar():
         target = st.select_slider("Target duration (min)", options=[0,1,2,3,4,5,6,7,8,9,10], value=st.session_state.get("target_minutes", 3), help="0 = legacy (no duration cap)")
         
         col1, col2 = st.columns(2)
-        if col1.button("▶️ Start", use_container_width=True, disabled=st.session_state.is_running):
+        if col1.button("▶️ Start", use_container_width=True, disabled=st.session_state.is_running or st.session_state.run_busy):
             post_run("start", agents=st.session_state.picked_agents, target_minutes=target)
-        if col2.button("⏹ End", use_container_width=True, disabled=not st.session_state.is_running):
+        if col2.button("⏹ End", use_container_width=True, disabled=not st.session_state.is_running or st.session_state.run_busy):
             post_run("end")
     
         # Stop & Export convenience
-        if st.sidebar.button("⏹➡️ Stop & Export", use_container_width=True, disabled=not st.session_state.is_running):
+        if st.sidebar.button("⏹➡️ Stop & Export", use_container_width=True, disabled=not st.session_state.is_running or st.session_state.run_busy or st.session_state.export_busy):
             post_run("end")
-            # export will be triggered in Export tab or on ended state below
+            # export is handled in Export tab guarded by export_done
     
     # Agent Configuration
     with st.sidebar.expander("🧑‍🤝‍🧑 Agents", expanded=True):
@@ -328,6 +350,19 @@ def render_sidebar():
                 st.success("Registry reloaded!")
             except Exception as e:
                 st.error(f"Reload failed: {e}")
+
+    # Registry quick-view
+    if st.session_state.get("registry") is None:
+        st.session_state.registry = get_registry()
+    if st.sidebar.button("Load Registry"):
+        st.session_state.registry = get_registry()
+    if st.session_state.get("registry"):
+        reg = st.session_state.registry
+        st.sidebar.caption(f"Registry: {reg.get('count', 0)} agents")
+        try:
+            st.sidebar.json(reg.get("agents", {}), expanded=False)
+        except Exception:
+            pass
 
 def render_audio_player():
     st.subheader("🔊 Live Audio Stream")
@@ -574,21 +609,66 @@ def render_export():
     except Exception:
         pass
     auto_hint = "(auto-allowed after session end)" if ended else ""
-    if st.button(f"Generate Export Bundle {auto_hint}", disabled=st.session_state.export_done and ended):
-        try:
-            r = _with_retries(lambda: httpx.get(f"{GRAPH_EXPORT}/{st.session_state.session_id}/export", params={"format": fmt}, timeout=30))
-            r.raise_for_status()
-            data = r.json()
-            st.session_state.export_done = True
-            sid = st.session_state.session_id
-            st.success(f"Export complete for session {sid} (format: {fmt})")
-            st.json(data)
-            if data.get("download_url"):
-                suggested = f"podcast_{sid}.{fmt}"
-                st.markdown(f"[⬇️ Download export]({data['download_url']})  ")
-                st.caption(f"Suggested filename: {suggested}")
-        except Exception as e:
-            st.error(f"Export failed: {e}")
+    # Debounce export
+    disabled_now = st.session_state.export_busy or (st.session_state.export_done and ended)
+    if st.button(f"Generate Export Bundle {auto_hint}", disabled=disabled_now):
+        if st.session_state.export_busy:
+            st.info("Export already in progress…")
+        else:
+            st.session_state.export_busy = True
+            try:
+                r = _with_retries(lambda: httpx.get(f"{GRAPH_EXPORT}/{st.session_state.session_id}/export", params={"format": fmt}, timeout=30))
+                r.raise_for_status()
+                data = r.json()
+                st.session_state.export_done = True
+                sid = st.session_state.session_id
+                st.success(f"Export complete for session {sid} (format: {fmt})")
+                st.json(data)
+                if data.get("download_url"):
+                    suggested = f"podcast_{sid}.{fmt}"
+                    st.markdown(f"[⬇️ Download export]({data['download_url']})  ")
+                    st.caption(f"Suggested filename: {suggested}")
+                # Always provide a reliable ZIP link when format is zip, regardless of download_url presence
+                try:
+                    if fmt == "zip":
+                        # Prefer Agent4 base from Graph registry
+                        a4_base = None
+                        reg = st.session_state.get("registry")
+                        if reg and isinstance(reg.get("agents"), dict):
+                            a4 = reg["agents"].get("agent4") or {}
+                            a4_base = str(a4.get("url", "")).rstrip("/")
+                        if not a4_base:
+                            a4_base = AGENT4_URL.rstrip("/")
+                        zip_url = f"{a4_base}/download/zip?title_or_session=Podcast_{sid}"
+                        st.markdown(f"[🗜️ Download ZIP]({zip_url})")
+                except Exception:
+                    pass
+                # Show final.wav download if present in files map
+                try:
+                    files = data.get("files", {}) or {}
+                    fin = files.get("final.wav")
+                    if fin:
+                        # Prefer registry Agent4 URL if available
+                        a4_base = None
+                        reg = st.session_state.get("registry")
+                        if reg and isinstance(reg.get("agents"), dict):
+                            a4 = reg["agents"].get("agent4") or {}
+                            a4_base = str(a4.get("url", "")).rstrip("/")
+                        if not a4_base:
+                            a4_base = AGENT4_URL.rstrip("/")
+                        dl = f"{a4_base}/download/file?path={fin}"
+                        st.markdown(f"[🎵 Download final.wav]({dl})")
+                except Exception as _e:
+                    st.caption("final.wav link unavailable")
+            except Exception as e:
+                st.error(f"Export failed: {e}")
+            finally:
+                st.session_state.export_busy = False
+    # Optional explicit re-export
+    if ended and st.session_state.export_done:
+        if st.button("Re-export", disabled=st.session_state.export_busy):
+            st.session_state.export_done = False
+            st.rerun()
 
 def render_metrics():
     st.subheader("📊 System Metrics")
@@ -601,10 +681,11 @@ def render_metrics():
         
     metrics = st.session_state.last_metrics
     col1, col2, col3 = st.columns(3)
-    col1.metric("Uptime", f"{metrics.get('uptime_sec', 0)}s")
-    col2.metric("Sessions", metrics.get("session_count", 0))
-    col3.metric("Avg Latency", f"{metrics.get('avg_latency', 0):.2f}ms")
-    
+    col1.metric("Sessions", metrics.get("sessions", 0))
+    col2.metric("Poll Interval", f"{metrics.get('poll_interval', 0)}s")
+    col3.metric("Retention Days", metrics.get("retention_days", 0))
+    st.code(metrics.get("db_path", ""), language="text")
+    st.caption(f"Metrics time: {metrics.get('time', 0)}")
     st.json(metrics, expanded=False)
 
 def render_control_room():
