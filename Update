@@ -1,60 +1,118 @@
-INFO:     127.0.0.1:53264 - "GET /debug/config HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53269 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53270 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53271 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53272 - "GET /sessions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53273 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53274 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53275 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53279 - "GET /debug/config HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53280 - "GET /sessions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53281 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53282 - "GET /debug/config HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53283 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53284 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53285 - "GET /sessions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53286 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53287 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53288 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53289 - "GET /debug/config HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53290 - "GET /sessions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53291 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53292 - "GET /debug/config HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53293 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53294 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53295 - "GET /sessions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53296 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53297 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53298 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53300 - "GET /debug/config HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53301 - "GET /sessions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53302 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53303 - "GET /debug/config HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53305 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53306 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53307 - "GET /sessions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53309 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53311 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53312 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53314 - "GET /debug/config HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53315 - "GET /sessions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53317 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53318 - "GET /debug/config HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53319 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53320 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53321 - "GET /sessions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53322 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53323 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53325 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53326 - "GET /debug/config HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53328 - "GET /sessions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53330 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53331 - "GET /debug/config HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53332 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53333 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53334 - "GET /sessions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53335 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53336 - "GET /session/podcast_20250814185828/state HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53337 - "GET /session/podcast_20250814185828/final-audio HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53339 - "GET /debug/config HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53340 - "GET /sessions HTTP/1.1" 200 OK
+  result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 328, in app
+    content = await serialize_response(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 202, in serialize_response
+    return jsonable_encoder(response_content)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\encoders.py", line 289, in jsonable_encoder
+    encoded_value = jsonable_encoder(
+                    ^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\encoders.py", line 303, in jsonable_encoder
+    jsonable_encoder(
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\encoders.py", line 289, in jsonable_encoder
+    encoded_value = jsonable_encoder(
+                    ^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\encoders.py", line 318, in jsonable_encoder
+    return ENCODERS_BY_TYPE[type(obj)](obj)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\encoders.py", line 59, in <lambda>
+    bytes: lambda o: o.decode(),
+                     ^^^^^^^^^^
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc0 in position 24: invalid start byte
+INFO:     127.0.0.1:52798 - "GET /session/podcast_20250814190758/state HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 328, in app
+    content = await serialize_response(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 202, in serialize_response
+    return jsonable_encoder(response_content)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\encoders.py", line 289, in jsonable_encoder
+    encoded_value = jsonable_encoder(
+                    ^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\encoders.py", line 303, in jsonable_encoder
+    jsonable_encoder(
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\encoders.py", line 289, in jsonable_encoder
+    encoded_value = jsonable_encoder(
+                    ^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\encoders.py", line 318, in jsonable_encoder
+    return ENCODERS_BY_TYPE[type(obj)](obj)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\encoders.py", line 59, in <lambda>
+    bytes: lambda o: o.decode(),
+                     ^^^^^^^^^^
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc0 in position 24: invalid start byte
