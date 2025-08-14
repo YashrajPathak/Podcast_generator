@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
+import wave as wav
 
 from fastapi import (
     FastAPI, HTTPException, Query, Body, WebSocket, 
@@ -43,6 +44,7 @@ class Settings(BaseSettings):
     PORT: int = 8008
     AGENT_TIMEOUT: float = 30.0
     MAX_TURNS_PER_ROUND: int = 5
+    MAX_RETRIES: int = 3
     DEFAULT_AGENTS: List[str] = ["agent1", "agent2", "agent3"]
     DEFAULT_VOICES: Dict[str, str] = {
         "agent1": "en-US-AriaNeural",
@@ -56,6 +58,7 @@ class Settings(BaseSettings):
     SAMPLE_RATE: int = 24000
     SAMPLE_WIDTH: int = 2  # 16-bit audio
     HEALTH_CHECK_RATE_LIMIT: str = "10/minute"
+    FINAL_AUDIO_DIR: str = "audio_cache"
 
     class Config:
         env_file = ".env"
@@ -72,12 +75,15 @@ app = FastAPI(
 )
 
 # Middleware
+# Compute allowed origins from env (UI_ORIGINS comma-separated, fallback UI_ORIGIN)
+origins = [o.strip() for o in os.getenv("UI_ORIGINS", os.getenv("UI_ORIGIN", "http://localhost:8501")).split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"], 
-    allow_headers=["*"],
+    allow_origins=origins,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    allow_credentials=False,
+    max_age=86400,
 )
 
 # ========= Rate Limiting with Fallback =========
@@ -249,6 +255,8 @@ class RunEvent(BaseModel):
     agents: Optional[List[str]] = None
     voices: Optional[Dict[str,str]] = None
     max_turns: Optional[int] = None
+    # Allow 0 or None to mean "no duration target" (legacy behavior)
+    target_minutes: Optional[int] = Field(default=None, ge=0, le=10)
 
 class Turn(BaseModel):
     turn_id: int
@@ -273,6 +281,11 @@ class SessionState(BaseModel):
     max_turns_per_round: int = settings.MAX_TURNS_PER_ROUND
     history: List[Turn] = []
     audio_broadcast_task: Optional[Any] = None
+    target_ms: int = 0
+    audio_ms: int = 0
+    ended_reason: Optional[str] = None
+    turn_audio: Dict[int, Dict[str, Any]] = {}
+    final_wav: Optional[str] = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -377,8 +390,45 @@ store = MemoryStore()
 def _normalize_audio(audio_data: bytes) -> bytes:
     return audio_data
 
+def _wav_ms(file_path: Optional[str]) -> int:
+    if not file_path:
+        return 0
+    try:
+        with wav.open(str(file_path), 'rb') as f:
+            frames = f.getnframes()
+            rate = f.getframerate()
+            return int((frames / float(rate)) * 1000)
+    except Exception:
+        return 0
+
+def _stitch_wavs(paths: List[str], out_path: str) -> Optional[str]:
+    if not paths:
+        return None
+    try:
+        # Use params from first file
+        with wav.open(paths[0], 'rb') as src0:
+            n_channels = src0.getnchannels()
+            sampwidth = src0.getsampwidth()
+            framerate = src0.getframerate()
+        with wav.open(out_path, 'wb') as out:
+            out.setnchannels(n_channels)
+            out.setsampwidth(sampwidth)
+            out.setframerate(framerate)
+            for p in paths:
+                try:
+                    with wav.open(p, 'rb') as s:
+                        if s.getnchannels() != n_channels or s.getsampwidth() != sampwidth or s.getframerate() != framerate:
+                            # skip incompatible clip
+                            continue
+                        out.writeframes(s.readframes(s.getnframes()))
+                except Exception:
+                    continue
+        return out_path
+    except Exception:
+        return None
+
 # ========= Agent Communication =========
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
+@retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
 async def _agent_chat(
     agent_key: str, 
     *, 
@@ -411,14 +461,23 @@ async def _agent_chat(
         r = await client.post(url, json=payload)
         if r.status_code != 200:
             raise RuntimeError(f"{agent_key} chat failed ({r.status_code}): {r.text}")
-        
         data = r.json()
-        audio_data = bytes.fromhex(data.get("audio_hex", ""))
-        return (
-            data.get("response", "").strip(),
-            _normalize_audio(audio_data),
-            data.get("audio_path")
-        )
+    
+    audio_hex = data.get("audio_hex", "") or ""
+    audio_data = bytes.fromhex(audio_hex) if audio_hex else b""
+    audio_path = data.get("audio_path")
+    # If hex not provided but we have a file path, read bytes for streaming
+    if not audio_data and audio_path:
+        try:
+            audio_data = Path(audio_path).read_bytes()
+        except Exception:
+            audio_data = b""
+    logger.info(f"agent_turn_ok session_id={session_id} agent={agent_key} text_len={len(text)} audio_bytes={len(audio_data)}")
+    return (
+        data.get("response", "").strip(),
+        _normalize_audio(audio_data),
+        audio_path
+    )
 
 # ========= Orchestration Core =========
 async def _round_robin_once(state: SessionState, user_context: Optional[str] = None, is_interrupt: bool = False):
@@ -477,6 +536,32 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
         state.updated_at = time.time()
         await store.upsert(state)
 
+        # Track audio duration and check target
+        try:
+            if turn.audio_path:
+                ms = _wav_ms(turn.audio_path)
+                state.turn_audio[turn.turn_id] = {"path": turn.audio_path, "ms": ms, "speaker": turn.agent}
+                state.audio_ms += ms
+                logger.info(
+                    f"turn_done session_id={state.session_id} turn_id={turn.turn_id} agent={turn.agent} ms={ms} "
+                    f"audio_ms={state.audio_ms} target_ms={state.target_ms}"
+                )
+        except Exception:
+            pass
+        if state.target_ms and state.audio_ms >= state.target_ms and not state.ended:
+            state.ended = True
+            state.ended_reason = "target_duration_reached"
+            state.updated_at = time.time()
+            await store.upsert(state)
+            try:
+                logger.info(
+                    f"session_end session_id={state.session_id} reason=target_duration_reached turns={len(state.history)} "
+                    f"audio_ms={state.audio_ms} target_ms={state.target_ms} final_wav={state.final_wav}"
+                )
+            except Exception:
+                pass
+            break
+
     state.current_round += 1
 
 # ========= API Endpoints =========
@@ -502,19 +587,29 @@ async def run_event(ev: RunEvent):
         state.agent_order = ev.agents or state.agent_order
         if ev.voices:
             state.voices.update(ev.voices)
+        # duration target from UI; if 0 or None -> disable target (legacy behavior)
+        if ev.target_minutes is None or ev.target_minutes == 0:
+            state.target_ms = 0
+        else:
+            state.target_ms = int(ev.target_minutes * 60_000)
+        state.audio_ms = 0
+        state.ended_reason = None
+        state.turn_audio = {}
+        state.final_wav = None
         state.updated_at = time.time()
-        
+         
         #if not state.audio_broadcast_task:
          #   state.audio_broadcast_task = asyncio.create_task(audio_broadcaster(ev.session_id))
-        
+         
         await store.upsert(state)
-        return {"status": "started", "session_id": ev.session_id}
+        return {"status": "started", "session_id": ev.session_id, "target_ms": state.target_ms}
 
     if ev.event == "end":
         state.ended = True
         if state.audio_broadcast_task:
             state.audio_broadcast_task.cancel()
         state.updated_at = time.time()
+        state.ended_reason = state.ended_reason or "manual_end"
         await store.upsert(state)
         return {"status": "ended", "session_id": ev.session_id}
 
@@ -638,48 +733,31 @@ async def compat_state_proxy(session_id: str):
         )
     return st.dict()
 
+_last_health_snapshot = {"sessions": 0}
+_last_health_log_ts: float = 0.0
+HEALTH_DEBOUNCE_SECONDS = int(os.getenv("GRAPH_HEALTH_DEBOUNCE_SECONDS", "30"))
+
 @app.get("/health")
 @limiter.limit(settings.HEALTH_CHECK_RATE_LIMIT)
 async def health(request: Request, background_tasks: BackgroundTasks):
-    status = {
-        "status": "healthy",
-        "service": "Hybrid Podcast Orchestrator",
-        "version": "3.2",
-        "rate_limiting_enabled": not isinstance(limiter, DummyLimiter),
-        "details": {}
-    }
-    
+    global _last_health_snapshot, _last_health_log_ts
     try:
-        # Test registry access
-        registry = _load_registry()
-        status["details"]["registry"] = {
-            "count": len(registry),
-            "accessible": True
-        }
-        
-        # Test WebSocket connections
-        ws_count = sum(len(v) for v in manager.active_connections.values())
-        status["details"]["websockets"] = {
-            "active_connections": ws_count,
-            "healthy": True
-        }
-            
-        # Test audio mixer
-        mixer_test = len(mixer.active_streams)
-        status["details"]["audio_mixer"] = {
-            "active_streams": mixer_test,
-            "healthy": True
-        }
-            
-        # Schedule cleanup of any residual health check sessions
-        background_tasks.add_task(_cleanup_health_sessions)
-        
-    except Exception as e:
-        status["status"] = "unhealthy"
-        status["error"] = str(e)
-        logger.error(f"Health check failed: {e}", exc_info=True)
-        
-    return status
+        # snapshot: number of active sessions + current ts
+        sessions = await store.list_sessions()
+        snap = {"sessions": len(sessions)}
+        now = time.time()
+        should_log = False
+        if snap != _last_health_snapshot:
+            should_log = True
+            _last_health_snapshot = snap
+        elif now - _last_health_log_ts >= HEALTH_DEBOUNCE_SECONDS:
+            should_log = True
+        if should_log:
+            logger.info(f"/health snapshot: sessions={snap['sessions']} ts={int(now)}")
+            _last_health_log_ts = now
+        return {"status": "ok", "sessions": snap["sessions"], "ts": int(now)}
+    except Exception:
+        return {"status": "error"}
 
 @app.get("/session/{session_id}/mute-status")
 async def mute_status(session_id: str, agent: Optional[str] = Query(None)):
@@ -735,6 +813,40 @@ async def export_session(session_id: str, format: str = Query("html")):
     if not st:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    # Prepare stitched WAV from per-turn audio
+    ordered = [st.turn_audio[k] for k in sorted(st.turn_audio.keys()) if isinstance(st.turn_audio.get(k), dict)]
+    clip_paths = [d.get("path") for d in ordered if d.get("path")]
+    final_dir = Path(settings.FINAL_AUDIO_DIR)
+    try:
+        final_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        logger.warning(f"⚠️ could not create FINAL_AUDIO_DIR={final_dir}: {e}")
+    try:
+        logger.info(
+            f"export_begin session_id={session_id} clips={len(clip_paths)} out_dir={final_dir}"
+        )
+    except Exception:
+        pass
+    out_file = str(final_dir / f"final_{session_id}.wav")
+    stitched = _stitch_wavs(clip_paths, out_file) if clip_paths else None
+    if stitched:
+        st.final_wav = stitched
+        st.updated_at = time.time()
+        await store.upsert(st)
+        try:
+            size = Path(stitched).stat().st_size if Path(stitched).exists() else 0
+            logger.info(
+                f"export_done session_id={session_id} file={stitched} bytes={size} clips={len(clip_paths)}"
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            logger.info(f"export_no_audio session_id={session_id} clips={len(clip_paths)}")
+        except Exception:
+            pass
+        return {"status": "no_audio", "message": "No audio clips to stitch"}
+
     agent4 = REGISTRY.get("agent4", {})
     base = str(agent4.get("url","")).rstrip("/")
     if not base:
@@ -757,14 +869,22 @@ async def export_session(session_id: str, format: str = Query("html")):
         "format": format,
         "title": f"Podcast_{session_id}",
         "content": content,
-        "metadata": {"topic": st.topic, "agents": st.agent_order},
+        "metadata": {"topic": st.topic, "agents": st.agent_order, "target_ms": st.target_ms, "audio_ms": st.audio_ms, "ended_reason": st.ended_reason, "final_wav": st.final_wav},
         "include_audio_links": True,
         "include_timestamps": True,
         "session_id": session_id
     }
+    return await _post_agent4_export(base, req)
+
+@retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
+async def _post_agent4_export(base_url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
-        r = await c.post(f"{base}/export", json=req)
+        r = await c.post(f"{base_url}/export", json=payload)
+        if r.status_code >= 500:
+            # trigger retry on transient errors
+            raise RuntimeError(f"agent4 5xx: {r.status_code}")
         if r.status_code != 200:
+            # no retry for client errors
             raise HTTPException(status_code=500, detail=f"Agent4 export failed: {r.text}")
         return r.json()
 
