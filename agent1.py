@@ -4,7 +4,7 @@ import os
 import json
 import asyncio
 import logging
-from typing import Union, Optional, Any, Dict
+from typing import Union, Optional, Any, Dict, List as _List
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -687,6 +687,62 @@ except Exception as e:
     logger.critical(f"❌ Failed to initialize Agent1: {e}")
     raise
 
+# Explicit Azure OpenAI env validation on startup
+REQUIRED_ENV = [
+    "AZURE_OPENAI_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_OPENAI_DEPLOYMENT",
+    "OPENAI_API_VERSION",
+]
+
+def _env_issues() -> list:
+    issues = []
+    for k in REQUIRED_ENV:
+        if not os.getenv(k):
+            issues.append(f"missing:{k}")
+    # basic formatting checks
+    ep = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+    if ep and not ep.startswith("http"):
+        issues.append("invalid:AZURE_OPENAI_ENDPOINT")
+    return issues
+
+@app.on_event("startup")
+async def startup():
+    issues = _env_issues()
+    if issues:
+        print(f"[Agent1] ⚠️ Azure config issues: {', '.join(issues)}")
+    else:
+        print("[Agent1] ✅ Azure config looks good")
+
+# Debug config endpoint (safe, no secrets)
+def _present(k: str) -> bool:
+    v = os.getenv(k, "")
+    return bool(v and v.strip())
+
+def _looks_url(k: str) -> bool:
+    v = os.getenv(k, "")
+    return v.startswith("http://") or v.startswith("https://")
+
+def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[str], url_vars: _List[str] = []):
+    @app.get("/debug/config")
+    def debug_config():
+        ok = {}
+        for k in required_vars:
+            ok[k] = "present" if _present(k) else "MISSING"
+        for k in url_vars:
+            if _present(k):
+                ok[k] = ok.get(k, "present")
+            ok[f"{k}_is_url"] = "ok" if _looks_url(k) else "INVALID_URL"
+        return {"service": service_name, "vars": ok}
+
+# Attach
+attach_debug_config(
+    app,
+    "agent1",
+    required_vars=["AZURE_OPENAI_KEY","AZURE_OPENAI_ENDPOINT","AZURE_OPENAI_DEPLOYMENT","OPENAI_API_VERSION","GRAPH_URL"],
+    url_vars=["GRAPH_URL"]
+)
+
 # ========== API Endpoints ==========
 @app.post("/v1/input", response_model=Dict[str, Any])
 async def input_handler(
@@ -869,23 +925,12 @@ async def user_audio_alias(
 
 @app.get("/health")
 async def health():
-    try:
-        required = [
-            bool(settings.AZURE_OPENAI_KEY),
-            bool(settings.AZURE_OPENAI_ENDPOINT),
-            bool(settings.AZURE_OPENAI_DEPLOYMENT),
-        ]
-        return {
-            "status": "healthy" if all(required) else "degraded",
-            "service": "Agent1 - Conversational Host",
-            "version": "2.1.3",
-            "uptime": time.time() - agent._start_time,
-            "pause_supported": True,
-            "mute_supported": True
-        }
-    except Exception as e:
-        logger.error(f"❌ Health check failed: {e}")
-        return {"status": "unhealthy", "error": str(e)}
+    issues = _env_issues()
+    return {
+        "status": "ok" if not issues else "degraded",
+        "env_ok": len(issues) == 0,
+        "issues": issues,
+    }
 
 @app.get("/")
 async def root():
