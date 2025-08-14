@@ -569,6 +569,38 @@ except Exception as e:
     logger.critical(f"❌ Failed to initialize Agent2: {e}")
     raise
 
+# ---- Debug config endpoint (safe, no secrets)
+from typing import List as _List
+import os as _os
+
+def _present(k: str) -> bool:
+    v = _os.getenv(k, "")
+    return bool(v and v.strip())
+
+def _looks_url(k: str) -> bool:
+    v = _os.getenv(k, "")
+    return v.startswith("http://") or v.startswith("https://")
+
+def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[str], url_vars: _List[str] = []):
+    @app.get("/debug/config")
+    def debug_config():
+        ok = {}
+        for k in required_vars:
+            ok[k] = "present" if _present(k) else "MISSING"
+        for k in url_vars:
+            if _present(k):
+                ok[k] = ok.get(k, "present")
+            ok[f"{k}_is_url"] = "ok" if _looks_url(k) else "INVALID_URL"
+        return {"service": service_name, "vars": ok}
+
+# Attach
+attach_debug_config(
+    app,
+    "agent2",
+    required_vars=["AZURE_OPENAI_KEY","AZURE_OPENAI_ENDPOINT","AZURE_OPENAI_DEPLOYMENT","OPENAI_API_VERSION","ORCHESTRATOR_URL"],
+    url_vars=["ORCHESTRATOR_URL"]
+)
+
 # ========== API Endpoints ==========
 @app.post("/v1/summarize", response_model=SummarizeResponse)
 async def summarize_handler(request: SummarizeRequest):
@@ -617,6 +649,7 @@ async def root():
             "chat": "/v1/chat",
             "command": "/v1/command",
             "health": "/health",
+            "debug/config": "/debug/config",
         },
         "features": [
             "Comprehensive summarization",
