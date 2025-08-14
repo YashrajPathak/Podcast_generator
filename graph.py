@@ -471,6 +471,9 @@ async def _end_session(state: SessionState, reason: str):
 
 # ========= Audio Helpers =========
 import base64
+from dotenv import load_dotenv
+# Ensure .env variables are also present in process environment so debug/config reflects them
+load_dotenv(override=False)
 
 # Write the current mixed audio buffer to a WAV file and return its path
 async def _finalize_audio(state: SessionState) -> Optional[str]:
@@ -1195,6 +1198,31 @@ def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[st
                 ok[k] = ok.get(k, "present")
             ok[f"{k}_is_url"] = "ok" if _looks_url(k) else "INVALID_URL"
         return {"service": service_name, "vars": ok}
+
+    # Also expose effective runtime configuration values and registry entries
+    @app.get("/debug/effective")
+    def debug_effective():
+        try:
+            reg_path = str(Path(settings.REGISTRY_PATH).resolve())
+        except Exception:
+            reg_path = settings.REGISTRY_PATH
+        return {
+            "service": service_name,
+            "settings": {
+                "AGENT1_URL": settings.AGENT1_URL,
+                "AGENT2_URL": settings.AGENT2_URL,
+                "AGENT3_URL": settings.AGENT3_URL,
+                "AGENT4_URL": settings.AGENT4_URL,
+                "AGENT5_URL": settings.AGENT5_URL,
+                "FINAL_AUDIO_DIR": settings.FINAL_AUDIO_DIR,
+                "REGISTRY_PATH": reg_path,
+            },
+            "registry": {
+                "path": reg_path,
+                "count": len(REGISTRY),
+                "agents": REGISTRY,
+            }
+        }
 
 # Startup event
 @app.on_event("startup")
