@@ -1,4 +1,4 @@
-# agent1.py – 🎙 Production-Grade Conversational Host Agent (v2.1.3-clean)
+# agent1.py – 🎙 Production-Grade Conversational Host Agent (v2.1.4)
 
 import os
 import json
@@ -10,7 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_community.chat_models import AzureChatOpenAI
+# Prefer non-deprecated package; fallback if not installed yet
+try:
+    from langchain_openai import AzureChatOpenAI
+except Exception:
+    from langchain_community.chat_models import AzureChatOpenAI  # deprecated, but fallback
+
 from httpx import AsyncClient, Timeout
 from tempfile import NamedTemporaryFile
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -18,10 +23,10 @@ from pathlib import Path
 from enum import Enum
 import time
 from io import BytesIO
-import struct
 import shutil
 from dotenv import load_dotenv
 import tempfile
+
 # Optional deps for richer file parsing (txt/csv/docx/pdf)
 try:
     import pandas as pd
@@ -43,7 +48,8 @@ from utils import (
     validate_audio_file,
     clean_text_for_processing,
     create_error_response,   # assumed (message, stage) signature
-    is_session_muted,        # orchestrator-aware mute
+    # NOTE: we DO NOT rely on utils.is_session_muted here (it may use a bad URL).
+    # We implement a local, normalized version below.
     validate_session_id      # guard session ids
 )
 
@@ -83,6 +89,34 @@ except Exception as e:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("Agent1")
 
+# ========== Local helpers (normalized Graph URL + mute check) ==========
+def _graph_base_normalized() -> str:
+    """Return GRAPH_URL without trailing slash or stray '/conversation' suffix."""
+    base = (settings.GRAPH_URL or "http://localhost:8008").rstrip("/")
+    if base.endswith("/conversation"):
+        logger.warning("[Agent1][URL] GRAPH_URL had trailing '/conversation'; stripping for API calls")
+        base = base[:-len("/conversation")]
+    return base
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=6))
+async def is_session_muted_a1(session_id: str, agent: str) -> bool:
+    """Agent1-local mute check hitting the correct Graph path with debug logs."""
+    base = _graph_base_normalized()
+    url = f"{base}/session/{session_id}/mute-status"
+    try:
+        async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
+            r = await client.get(url, params={"agent": agent})
+            if r.status_code != 200:
+                logger.warning(f"[Agent1][MUTE] GET {url} -> {r.status_code} {r.text[:200]}")
+                return False
+            data = r.json()
+            muted = bool(data.get("muted", False))
+            logger.debug(f"[Agent1][MUTE] session={session_id} agent={agent} muted={muted}")
+            return muted
+    except Exception as e:
+        logger.warning(f"[Agent1][MUTE] EXC {e}")
+        return False
+
 # ========== Models ==========
 class InputType(str, Enum):
     TEXT = "text"
@@ -121,7 +155,7 @@ class ChatResponse(BaseModel):
     agent_info: Optional[Dict[str, Any]] = None
     turn_number: Optional[int] = None
 
-# ========== Robust JSON Parser (ported from Agent2) ==========
+# ========== Robust JSON Parser ==========
 class RobustJSONParser:
     """Stack-based JSON extractor with sane fallbacks."""
 
@@ -240,11 +274,12 @@ class MemoryManager:
     def get_voice(self, session_id: str) -> Optional[str]:
         return self.voice_by_session.get(session_id)
 
+
 class CommandRouter:
     def __init__(self, agent):
         self.agent = agent
 
-    async def route(self, command: Command) -> Dict[str, Any]:
+    async def route(self, command: "Command") -> Dict[str, Any]:
         try:
             if command.type == CommandType.ROUTE:
                 return await self._to_agent2(command)
@@ -259,18 +294,21 @@ class CommandRouter:
             return create_error_response(f"Command routing failed: {str(e)}", "command_routing")
 
     @retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
-    async def _to_agent2(self, command: Command) -> Dict[str, Any]:
+    async def _to_agent2(self, command: "Command") -> Dict[str, Any]:
         try:
             async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
                 payload = {"raw_script": command.content, "session_id": command.session_id}
-                resp = await client.post(f"{settings.AGENT2_URL}/v1/summarize", json=payload)
+                url = f"{settings.AGENT2_URL}/v1/summarize"
+                logger.debug(f"[Agent1][→A2] POST {url} len(raw_script)={len(command.content)}")
+                resp = await client.post(url, json=payload)
+                logger.debug(f"[Agent1][→A2] status={resp.status_code}")
                 resp.raise_for_status()
                 return resp.json()
         except Exception as e:
             logger.error(f"❌ Agent2 routing failed: {e}")
             return create_error_response(f"Agent2 routing failed: {str(e)}", "agent2_routing")
 
-    async def _inject(self, command: Command) -> Dict[str, Any]:
+    async def _inject(self, command: "Command") -> Dict[str, Any]:
         try:
             await self.agent.memory.store(command.session_id, "injected_content", command.content)
             return {"status": "success", "message": "Content injected successfully", "content": command.content}
@@ -278,7 +316,7 @@ class CommandRouter:
             logger.error(f"❌ Content injection failed: {e}")
             return create_error_response(f"Content injection failed: {str(e)}", "content_injection")
 
-    async def _memory(self, command: Command) -> Dict[str, Any]:
+    async def _memory(self, command: "Command") -> Dict[str, Any]:
         try:
             if command.content.startswith("set context "):
                 context = command.content[12:]
@@ -312,10 +350,7 @@ class Agent1:
         self.pause_manager = PauseManager()
 
     def _extract_text_from_llm_output(self, raw: str) -> str:
-        """Robustly extract human-readable text from possibly JSON-like LLM output.
-        Preference order if JSON dict: response > text > content > join stringy values.
-        If list: join stringy elements. Otherwise return raw.
-        """
+        """Robustly extract human-readable text from possibly JSON-like LLM output."""
         if not isinstance(raw, str):
             try:
                 raw = str(raw)
@@ -331,11 +366,7 @@ class Agent1:
                 for key in ("response", "text", "content"):
                     if key in obj and isinstance(obj[key], str) and obj[key].strip():
                         return obj[key].strip()
-                # Otherwise, collect stringy values
-                parts = []
-                for v in obj.values():
-                    if isinstance(v, str):
-                        parts.append(v.strip())
+                parts = [v.strip() for v in obj.values() if isinstance(v, str)]
                 if parts:
                     return "\n".join(p for p in parts if p)
                 return raw
@@ -345,11 +376,9 @@ class Agent1:
                     if isinstance(item, str):
                         parts.append(item.strip())
                     elif isinstance(item, dict):
-                        # take common text fields
                         for k in ("response", "text", "content"):
                             if k in item and isinstance(item[k], str):
-                                parts.append(item[k].strip())
-                                break
+                                parts.append(item[k].strip()); break
                 if parts:
                     return "\n".join(p for p in parts if p)
                 return raw
@@ -361,10 +390,7 @@ class Agent1:
             for key in ("response", "text", "content"):
                 if key in parsed and isinstance(parsed[key], str) and parsed[key].strip():
                     return parsed[key].strip()
-            parts = []
-            for v in parsed.values():
-                if isinstance(v, str):
-                    parts.append(v.strip())
+            parts = [v.strip() for v in parsed.values() if isinstance(v, str)]
             if parts:
                 return "\n".join(p for p in parts if p)
         return raw
@@ -392,7 +418,7 @@ class Agent1:
             await self.memory.store(session_id, "last_input", processed_text)
             await self.memory.store(session_id, "last_response", response)
 
-            effective_mute = await is_session_muted(session_id, "agent1")
+            effective_mute = await is_session_muted_a1(session_id, "agent1")
             processing_time = time.time() - start_time
             resolved_voice = voice or self.memory.get_voice(session_id) or "en-US-AriaNeural"
             return {
@@ -433,7 +459,7 @@ class Agent1:
             await self.memory.store(request.session_id, "last_chat_input", request.text)
             await self.memory.store(request.session_id, "last_chat_response", response)
 
-            effective_mute = await is_session_muted(request.session_id, "agent1")
+            effective_mute = await is_session_muted_a1(request.session_id, "agent1")
             processing_time = time.time() - start_time
             resolved_voice = request.voice or self.memory.get_voice(request.session_id) or "en-US-AriaNeural"
             return ChatResponse(
@@ -582,13 +608,18 @@ class Agent1:
             system_prompt = self._build_system_prompt(context, session_id)
 
             messages = [SystemMessage(content=system_prompt), HumanMessage(content=text)]
+            logger.debug(f"[Agent1][LLM] ainvoke messages={len(messages)} session={session_id}")
             resp = await self.llm.ainvoke(messages)
             response_text_raw = resp.content
             response_text = self._extract_text_from_llm_output(response_text_raw)
+            logger.debug(f"[Agent1][LLM] session={session_id} out_len={len(response_text)}")
 
             audio_path = None
-            if voice and not await is_session_muted(session_id, "agent1"):
-                audio_path = await self._generate_audio(response_text, voice, session_id)
+            if voice:
+                muted = await is_session_muted_a1(session_id, "agent1")
+                logger.debug(f"[Agent1][TTS] session={session_id} muted={muted} voice={voice}")
+                if not muted:
+                    audio_path = await self._generate_audio(response_text, voice, session_id)
 
             return {"response": response_text, "audio_path": audio_path}
         except Exception as e:
@@ -606,13 +637,17 @@ class Agent1:
                 messages.append(SystemMessage(content=f"Context: {context_text}"))
             messages.append(HumanMessage(content=text))
 
+            logger.debug(f"[Agent1][LLM] convo ainvoke msgs={len(messages)} session={session_id}")
             resp = await self.llm.ainvoke(messages)
             response_text_raw = resp.content
             response_text = self._extract_text_from_llm_output(response_text_raw)
+            logger.debug(f"[Agent1][LLM] convo session={session_id} out_len={len(response_text)}")
 
             audio_path = None
-            if not await is_session_muted(session_id, "agent1"):
-                chosen_voice = voice or self.memory.get_voice(session_id) or "en-US-AriaNeural"
+            muted = await is_session_muted_a1(session_id, "agent1")
+            chosen_voice = voice or self.memory.get_voice(session_id) or "en-US-AriaNeural"
+            logger.debug(f"[Agent1][TTS] session={session_id} muted={muted} chosen_voice={chosen_voice}")
+            if not muted:
                 audio_path = await self._generate_audio(response_text, chosen_voice, session_id)
 
             return {"response": response_text, "audio_path": audio_path}
@@ -661,10 +696,13 @@ Keep responses concise (2–3 sentences) and engaging."""
                 logger.warning("⚠️ Text too long or empty for TTS")
                 return None
             async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
+                url = f"{settings.AGENT3_URL}/generate-audio"
+                logger.debug(f"[Agent1][TTS→A3] POST {url} len(text)={len(text)} voice={voice} session={session_id}")
                 resp = await client.post(
-                    f"{settings.AGENT3_URL}/generate-audio",
+                    url,
                     json={"text": text, "voice": voice, "speed": 1.0, "pitch": 1.0, "session_id": session_id}
                 )
+                logger.debug(f"[Agent1][TTS→A3] status={resp.status_code}")
                 resp.raise_for_status()
                 result = resp.json()
             return result.get("audio_path")
@@ -674,7 +712,7 @@ Keep responses concise (2–3 sentences) and engaging."""
 
 # ========== FastAPI App ==========
 if "app" not in globals():
-    app = FastAPI(title="🎙 Agent1 - Conversational Host", version="2.1.3")
+    app = FastAPI(title="🎙 Agent1 - Conversational Host", version="2.1.4")
     # Tighten CORS to only the Streamlit UI origin
     app.add_middleware(
         CORSMiddleware,
@@ -715,17 +753,18 @@ def _env_issues() -> list:
 async def startup():
     issues = _env_issues()
     if issues:
-        print(f"[Agent1] ⚠️ Azure config issues: {', '.join(issues)}")
+        print(f"[Agent1][STARTUP] ⚠️ Azure config issues: {', '.join(issues)}")
     else:
-        print("[Agent1] ✅ Azure config looks good")
+        print("[Agent1][STARTUP] ✅ Azure config looks good")
     # Startup diagnostics (non-secret): show CWD and presence booleans
     try:
         cwd = os.getcwd()
         present = {k: bool(os.getenv(k)) for k in [
             "AZURE_OPENAI_KEY","AZURE_OPENAI_ENDPOINT","AZURE_OPENAI_DEPLOYMENT","OPENAI_API_VERSION","GRAPH_URL"
         ]}
-        print(f"[Agent1] CWD: {cwd}")
-        print(f"[Agent1] Env presence: {present}")
+        print(f"[Agent1][STARTUP] CWD: {cwd}")
+        print(f"[Agent1][STARTUP] Env presence: {present}")
+        print(f"[Agent1][STARTUP] GRAPH_URL(normalized): {_graph_base_normalized()}")
     except Exception:
         pass
 
@@ -866,14 +905,17 @@ async def mic_interrupt(
     except Exception:
         pass
 
+    tmp_path = None
     try:
+        logger.debug(f"[Agent1][MIC] session={session_id} ctype={file.content_type}")
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             shutil.copyfileobj(file.file, tmp)
             tmp.flush()
+            tmp_path = tmp.name
 
         # Sniff WAV header (RIFF....WAVE)
         try:
-            with open(tmp.name, "rb") as fh:
+            with open(tmp_path, "rb") as fh:
                 header = fh.read(12)
             if len(header) < 12 or header[0:4] != b"RIFF" or header[8:12] != b"WAVE":
                 raise HTTPException(status_code=415, detail="Only WAV (RIFF/WAVE) audio is supported")
@@ -882,31 +924,33 @@ async def mic_interrupt(
         except Exception:
             raise HTTPException(status_code=400, detail="Unable to read audio header")
 
-        transcript = await transcribe_audio(tmp.name)
+        transcript = await transcribe_audio(tmp_path)
         if not transcript or not transcript.strip():
             raise HTTPException(status_code=422, detail="Transcription failed or empty")
 
-        # Prefer canonical user-turn interrupt path
+        # Prefer canonical user-turn interrupt path (attempt normalized base)
+        base = _graph_base_normalized()
+        ut_url = f"{base}/conversation/user-turn"  # try if Graph exposes this
+        fallback_run = f"{base}/run"
+
         async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
             try:
                 payload_ut = {"session_id": session_id, "text": transcript.strip(), "is_interruption": True}
-                graph_result = await _post_user_turn_with_retries(
-                    client,
-                    f"{settings.GRAPH_URL}/conversation/user-turn",
-                    payload_ut,
-                )
+                logger.debug(f"[Agent1][MIC→Graph] POST {ut_url} len(text)={len(payload_ut['text'])}")
+                graph_result = await _post_user_turn_with_retries(client, ut_url, payload_ut)
                 if graph_result is None:
                     raise RuntimeError("user-turn returned non-200")
-            except Exception:
+            except Exception as _first_err:
                 # Fallback to /run event=interrupt for compatibility
-                import asyncio as _asyncio  # local import to avoid top-level changes
+                import asyncio as _asyncio
                 payload = {"session_id": session_id, "event": "interrupt", "input": transcript.strip()}
                 graph_result = None
                 last_err = None
                 for _attempt in range(int(getattr(settings, "MAX_RETRIES", 3))):
                     try:
-                        r = await client.post(f"{settings.GRAPH_URL}/run", json=payload)
-                        # Retry on 5xx as transient
+                        logger.debug(f"[Agent1][MIC→Graph] POST {fallback_run} (interrupt) "
+                                     f"attempt={_attempt+1} len(input)={len(payload['input'])}")
+                        r = await client.post(fallback_run, json=payload)
                         if getattr(r, "status_code", 500) >= 500:
                             raise RuntimeError(f"Graph /run transient {r.status_code}: {r.text[:200]}")
                         r.raise_for_status()
@@ -919,17 +963,20 @@ async def mic_interrupt(
                             break
                         await _asyncio.sleep(min(8, 2 ** _attempt))
                 if last_err is not None:
+                    logger.error(f"[Agent1][MIC→Graph] Fallback /run failed: {last_err}")
                     raise last_err
+
         return {"status": "ok", "session_id": session_id, "transcript": transcript.strip(), "forwarded": True, "graph": graph_result}
     finally:
         try:
             file.file.close()
         except Exception:
             pass
-        try:
-            os.unlink(tmp.name)
-        except Exception:
-            pass
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
 @app.post("/conversation/user-audio")
 async def user_audio_alias(
@@ -951,7 +998,7 @@ async def health():
 async def root():
     return {
         "service": "Agent1 - Conversational Host",
-        "version": "2.1.3",
+        "version": "2.1.4",
         "description": "Production-grade conversational host agent for podcast discussions",
         "endpoints": {
             "input": "/v1/input",
@@ -974,7 +1021,7 @@ async def root():
             "Azure OpenAI integration (timeouts + retries)",
             "Audio generation via Agent3 (retry-hardened)",
             "Pause/Resume session control",
-            "Orchestrator-aware mute (global/per-agent)",
+            "Orchestrator-aware mute (global/per-agent) via normalized Graph URL",
             "Session personality override",
             "Session voice pinning",
             "Rich file parsing (txt/csv/docx/pdf)",
@@ -993,6 +1040,7 @@ async def _post_user_turn_with_retries(client: AsyncClient, url: str, payload: D
         # transient; trigger retry
         raise RuntimeError(f"Graph user-turn transient {r.status_code}")
     if r.status_code != 200:
+        logger.debug(f"[Agent1][MIC→Graph] {url} -> {r.status_code} {r.text[:200]}")
         return None
     return r.json()
 
