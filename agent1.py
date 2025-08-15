@@ -21,7 +21,7 @@ from io import BytesIO
 import struct
 import shutil
 from dotenv import load_dotenv
-
+import tempfile
 # Optional deps for richer file parsing (txt/csv/docx/pdf)
 try:
     import pandas as pd
