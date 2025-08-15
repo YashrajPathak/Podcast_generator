@@ -1,4 +1,4 @@
-# agent2.py – 📝 Production-Grade Summarizer & Analyst Agent (v2.1.3)
+# agent2.py – 📝 Production-Grade Summarizer & Analyst Agent (v2.1.4)
 
 import os
 import json
@@ -15,8 +15,13 @@ from pydantic_settings import BaseSettings
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_community.chat_models import AzureChatOpenAI
+# ✅ non-deprecated client
+from langchain_openai import AzureChatOpenAI
 from httpx import AsyncClient, Timeout
+from dotenv import load_dotenv
+
+# ---------- Load .env early ----------
+load_dotenv()
 
 # If you have these utils in your repo, import; else fall back to locals.
 try:
@@ -40,6 +45,7 @@ except Exception:
     async def utils_is_session_muted(session_id: str, agent: Optional[str] = None) -> bool:
         return False  # noop fallback if utils isn't available
 
+
 # ========== Settings ==========
 class Settings(BaseSettings):
     AZURE_OPENAI_KEY: str
@@ -51,17 +57,20 @@ class Settings(BaseSettings):
     MAX_TEXT_LENGTH: int = 15000
     MAX_RETRIES: int = 3
     MAX_SEGMENTS: int = 10  # hard ceiling
-    ORCHESTRATOR_URL: str = "http://localhost:8008"  # Graph URL for mute status
+    ORCHESTRATOR_URL: str = "http://localhost:8008"  # Graph base (no /conversation)
 
     class Config:
         env_file = ".env"
+        env_file_encoding = "utf-8"
         extra = "ignore"
+
 
 try:
     settings = Settings()
 except Exception as e:
     print(f"❌ Agent2 Configuration Error: {e}")
     raise
+
 
 # ========== Logging ==========
 logging.basicConfig(
@@ -70,6 +79,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Agent2")
 
+
+# ---------- Helpers ----------
+def _orch_base() -> str:
+    """Return normalized orchestrator base URL (no trailing slash or /conversation)."""
+    base = (settings.ORCHESTRATOR_URL or "http://localhost:8008").rstrip("/")
+    if base.endswith("/conversation"):
+        logger.warning("[Agent2] ORCHESTRATOR_URL had trailing /conversation; stripping for API calls")
+        base = base[:-len("/conversation")]
+    return base
+
+
 # ========== Models ==========
 class SummarizeRequest(BaseModel):
     raw_script: str = Field(..., min_length=1, max_length=50000)
@@ -77,6 +97,7 @@ class SummarizeRequest(BaseModel):
     max_segments: int = Field(default=settings.MAX_SEGMENTS, ge=1, le=50)
     include_topics: bool = Field(default=True)
     include_bullet_points: bool = Field(default=True)
+
 
 class SummarizeResponse(BaseModel):
     summary: str
@@ -87,6 +108,7 @@ class SummarizeResponse(BaseModel):
     status: str = "success"
     processing_time: Optional[float] = None
     agent_info: Optional[Dict[str, Any]] = None
+
 
 class ChatRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=10000)
@@ -99,6 +121,7 @@ class ChatRequest(BaseModel):
     max_turns: Optional[int] = None
     conversation_context: Optional[str] = None
 
+
 class ChatResponse(BaseModel):
     response: str
     audio_path: Optional[str] = None
@@ -108,9 +131,11 @@ class ChatResponse(BaseModel):
     agent_info: Optional[Dict[str, Any]] = None
     turn_number: Optional[int] = None
 
+
 class CommandRequest(BaseModel):
     command: str = Field(..., min_length=1, max_length=1000)
     session_id: str = Field(default="default")
+
 
 # ========== Robust JSON Parser ==========
 class RobustJSONParser:
@@ -138,7 +163,7 @@ class RobustJSONParser:
             elif ch == "}" and stack:
                 stack.pop()
                 if not stack and start_idx is not None:
-                    block = text[start_idx : i + 1]
+                    block = text[start_idx: i + 1]
                     try:
                         best_obj = json.loads(block)
                     except Exception:
@@ -159,7 +184,7 @@ class RobustJSONParser:
         l_end = text.rfind("]")
         if l_start != -1 and l_end != -1 and l_end > l_start:
             try:
-                arr = json.loads(text[l_start : l_end + 1])
+                arr = json.loads(text[l_start: l_end + 1])
                 if isinstance(arr, list):
                     return {"segments": arr}
             except Exception:
@@ -187,16 +212,18 @@ class RobustJSONParser:
             "bullet_points": sentences[:max_segments],
         }
 
+
 # ========== Agent ==========
 @retry(stop=stop_after_attempt(settings.MAX_RETRIES),
        wait=wait_exponential(multiplier=1, min=1, max=8))
 async def _fetch_mute_status_fallback(session_id: str) -> Optional[bool]:
     """Fallback HTTP fetch to Graph mute-status with retry on transient errors."""
+    url = f"{_orch_base()}/session/{session_id}/mute-status"
+    params = {"agent": "agent2"}
+    logger.debug(f"[Agent2][MUTE→Graph] GET {url} params={params}")
     async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
-        r = await client.get(
-            f"{settings.ORCHESTRATOR_URL}/session/{session_id}/mute-status",
-            params={"agent": "agent2"},
-        )
+        r = await client.get(url, params=params)
+        logger.debug(f"[Agent2][MUTE→Graph] status={r.status_code}")
         # Retry on 5xx
         if r.status_code >= 500:
             raise RuntimeError(f"transient {r.status_code}")
@@ -205,20 +232,26 @@ async def _fetch_mute_status_fallback(session_id: str) -> Optional[bool]:
         data = r.json()
         return bool(data.get("muted", False))
 
+
 async def is_effectively_muted(session_id: Optional[str]) -> bool:
     """Check Graph /mute-status with agent=agent2 via utils; fallback to direct HTTP with retry."""
     if not session_id:
         return False
     try:
-        return bool(await utils_is_session_muted(session_id, "agent2"))
-    except Exception:
-        pass
+        muted = bool(await utils_is_session_muted(session_id, "agent2"))
+        logger.debug(f"[Agent2][MUTE] utils -> {muted}")
+        return muted
+    except Exception as e:
+        logger.debug(f"[Agent2][MUTE] utils check failed: {e}")
     try:
         res = await _fetch_mute_status_fallback(session_id)
-        return bool(res) if res is not None else False
+        muted2 = bool(res) if res is not None else False
+        logger.debug(f"[Agent2][MUTE] fallback -> {muted2}")
+        return muted2
     except Exception as e:
-        logger.warning(f"mute check failed: {e}")
+        logger.warning(f"[Agent2][MUTE] fallback failed: {e}")
         return False
+
 
 class Agent2:
     """Summarizer & Analyst."""
@@ -234,7 +267,7 @@ class Agent2:
                 timeout=settings.AGENT_TIMEOUT,
             )
             self.json_parser = RobustJSONParser()
-            logger.info("✅ Agent2 initialized")
+            logger.info("✅ Agent2 initialized (LLM ready)")
         except Exception as e:
             logger.critical(f"❌ LLM initialization failed: {e}")
             raise
@@ -243,7 +276,7 @@ class Agent2:
     @retry(stop=stop_after_attempt(settings.MAX_RETRIES),
            wait=wait_exponential(multiplier=1, min=1, max=8))
     async def summarize(self, request: SummarizeRequest) -> SummarizeResponse:
-        start_time = time.time()
+        start = time.time()
         try:
             if not validate_session_id(request.session_id):
                 raise ValueError("Invalid session_id")
@@ -261,8 +294,6 @@ class Agent2:
                     agent_info={"agent": "agent2", "muted": True},
                 )
 
-            logger.info(f"📝 Summarizing content for session {request.session_id}")
-
             cleaned_text = clean_text_for_processing(request.raw_script, settings.MAX_TEXT_LENGTH)
             if not cleaned_text:
                 raise ValueError("Empty or invalid input text")
@@ -279,19 +310,24 @@ class Agent2:
             user_prompt = f"Content to analyze:\n{cleaned_text}"
 
             messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
-            result = await self.llm.agenerate([messages])
-            response_text = result.generations[0][0].text.strip()
+            logger.debug(f"[Agent2][LLM] summarize ainvoke messages={len(messages)} input_len={len(cleaned_text)}")
+            resp = await self.llm.ainvoke(messages)
+            response_text = (resp.content or "").strip()
+            logger.debug(f"[Agent2][LLM] summarize out_len={len(response_text)}")
+
             if not response_text:
                 raise ValueError("LLM returned empty response")
 
             parsed = self.json_parser.extract_json_from_text(response_text)
+            used_fallback = False
             if not parsed:
-                logger.warning("⚠️ JSON parsing failed, using fallback summary")
+                logger.warning("[Agent2] ⚠️ JSON parsing failed, using fallback summary")
                 parsed = self.json_parser.create_fallback_summary(cleaned_text, max_segments=max_segments)
+                used_fallback = True
 
             structured = self._validate_and_structure_summary(parsed, max_segments)
 
-            processing_time = time.time() - start_time
+            elapsed = time.time() - start
             return SummarizeResponse(
                 summary=structured["summary"],
                 segments=structured["segments"],
@@ -299,17 +335,17 @@ class Agent2:
                 bullet_points=structured["bullet_points"],
                 session_id=request.session_id,
                 status="success",
-                processing_time=processing_time,
+                processing_time=elapsed,
                 agent_info={
                     "agent": "agent2",
                     "input_length": len(cleaned_text),
                     "segments_generated": len(structured["segments"]),
                     "topics_identified": len(structured["topics"]),
-                    "parsing_method": "json" if parsed else "fallback",
+                    "parsing_method": "fallback" if used_fallback else "json",
                 },
             )
         except Exception as e:
-            processing_time = time.time() - start_time
+            elapsed = time.time() - start
             error_msg = f"Summarization failed: {str(e)}"
             logger.error(f"❌ {error_msg}")
             return SummarizeResponse(
@@ -319,7 +355,7 @@ class Agent2:
                 bullet_points=[],
                 session_id=request.session_id,
                 status="error",
-                processing_time=processing_time,
+                processing_time=elapsed,
                 agent_info={"error": error_msg},
             )
 
@@ -327,7 +363,7 @@ class Agent2:
     @retry(stop=stop_after_attempt(settings.MAX_RETRIES),
            wait=wait_exponential(multiplier=1, min=1, max=8))
     async def handle_chat(self, request: ChatRequest) -> ChatResponse:
-        start_time = time.time()
+        start = time.time()
         try:
             if not validate_session_id(request.session_id):
                 raise ValueError("Invalid session_id")
@@ -344,8 +380,6 @@ class Agent2:
                     turn_number=request.turn_number,
                 )
 
-            logger.info(f"💬 Processing chat for session {request.session_id}")
-
             system_prompt = (
                 "You are Agent2: an analytical expert and researcher in a podcast panel. "
                 "Provide data-driven, concise (2–3 sentences) insights with a conversational tone."
@@ -355,18 +389,21 @@ class Agent2:
 
             user_message = self._build_chat_user_message(request)
             messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_message)]
-            result = await self.llm.agenerate([messages])
-            response_text = result.generations[0][0].text.strip()
+            logger.debug(f"[Agent2][LLM] chat ainvoke messages={len(messages)} text_len={len(request.text)}")
+            resp = await self.llm.ainvoke(messages)
+            response_text = (resp.content or "").strip()
+            logger.debug(f"[Agent2][LLM] chat out_len={len(response_text)}")
+
             if not response_text:
                 raise ValueError("LLM returned empty response")
 
-            processing_time = time.time() - start_time
+            elapsed = time.time() - start
             return ChatResponse(
                 response=response_text,
                 audio_path=None,
                 session_id=request.session_id,
                 status="success",
-                processing_time=processing_time,
+                processing_time=elapsed,
                 agent_info={
                     "agent": "agent2",
                     "conversation_mode": request.conversation_mode,
@@ -376,20 +413,20 @@ class Agent2:
                 turn_number=request.turn_number,
             )
         except Exception as e:
-            processing_time = time.time() - start_time
+            elapsed = time.time() - start
             error_msg = f"Chat processing failed: {str(e)}"
             logger.error(f"❌ {error_msg}")
             return ChatResponse(
                 response=f"Error: {error_msg}",
                 session_id=request.session_id,
                 status="error",
-                processing_time=processing_time,
+                processing_time=elapsed,
                 turn_number=request.turn_number,
             )
 
     # --------- Command ---------
     async def handle_command(self, request: CommandRequest) -> Dict[str, Any]:
-        start_time = time.time()
+        start = time.time()
         try:
             if not validate_session_id(request.session_id):
                 return {"error": "Invalid session_id", "session_id": request.session_id}
@@ -429,13 +466,13 @@ class Agent2:
                 }
 
         except Exception as e:
-            processing_time = time.time() - start_time
+            elapsed = time.time() - start
             error_msg = f"Command processing failed: {str(e)}"
             logger.error(f"❌ {error_msg}")
             return {
                 "error": error_msg,
                 "session_id": request.session_id,
-                "processing_time": processing_time,
+                "processing_time": elapsed,
             }
 
     # --------- Helpers ---------
@@ -490,8 +527,10 @@ Text:
 
 Respond with: ["topic1","topic2","topic3"]"""
             messages = [SystemMessage(content="Return only a JSON array, no prose."), HumanMessage(content=prompt)]
-            result = await self.llm.agenerate([messages])
-            response_text = result.generations[0][0].text.strip()
+            logger.debug(f"[Agent2][LLM] topics ainvoke text_len={len(text)}")
+            resp = await self.llm.ainvoke(messages)
+            response_text = (resp.content or "").strip()
+            logger.debug(f"[Agent2][LLM] topics out_len={len(response_text)}")
 
             # Try parsing direct array
             try:
@@ -519,8 +558,10 @@ Each segment object: {{"id":1,"content":"...","type":"main_point","timestamp":"0
 Text:
 {text}"""
             messages = [SystemMessage(content="Return only a JSON array, no prose."), HumanMessage(content=prompt)]
-            result = await self.llm.agenerate([messages])
-            response_text = result.generations[0][0].text.strip()
+            logger.debug(f"[Agent2][LLM] segments ainvoke text_len={len(text)}")
+            resp = await self.llm.ainvoke(messages)
+            response_text = (resp.content or "").strip()
+            logger.debug(f"[Agent2][LLM] segments out_len={len(response_text)}")
 
             # Try parsing direct array
             try:
@@ -546,11 +587,12 @@ Text:
             logger.warning(f"⚠️ Segment creation failed: {e}")
             return []
 
+
 # ========== FastAPI App ==========
 app = FastAPI(
     title="📝 Agent2 - Summarizer & Analyst",
     description="Production-grade summarizer and analyst agent for podcast content",
-    version="2.1.3",
+    version="2.1.4",
 )
 
 app.add_middleware(
@@ -568,6 +610,16 @@ try:
 except Exception as e:
     logger.critical(f"❌ Failed to initialize Agent2: {e}")
     raise
+
+
+# ---- Startup diagnostics (non-secret)
+@app.on_event("startup")
+async def startup():
+    required = ["AZURE_OPENAI_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT", "OPENAI_API_VERSION", "ORCHESTRATOR_URL"]
+    presence = {k: ("present" if os.getenv(k) else "MISSING") for k in required}
+    print(f"[Agent2][STARTUP] Env presence: {presence}")
+    print(f"[Agent2][STARTUP] ORCHESTRATOR_BASE={_orch_base()}")
+
 
 # ---- Debug config endpoint (safe, no secrets)
 from typing import List as _List
@@ -597,9 +649,10 @@ def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[st
 attach_debug_config(
     app,
     "agent2",
-    required_vars=["AZURE_OPENAI_KEY","AZURE_OPENAI_ENDPOINT","AZURE_OPENAI_DEPLOYMENT","OPENAI_API_VERSION","ORCHESTRATOR_URL"],
+    required_vars=["AZURE_OPENAI_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT", "OPENAI_API_VERSION", "ORCHESTRATOR_URL"],
     url_vars=["ORCHESTRATOR_URL"]
 )
+
 
 # ========== API Endpoints ==========
 @app.post("/v1/summarize", response_model=SummarizeResponse)
@@ -631,7 +684,7 @@ async def health():
         return {
             "status": "healthy" if all(required) else "degraded",
             "service": "Agent2 - Summarizer & Analyst",
-            "version": "2.1.3",
+            "version": "2.1.4",
             "uptime": time.time() - agent._start_time,
         }
     except Exception as e:
@@ -642,7 +695,7 @@ async def health():
 async def root():
     return {
         "service": "Agent2 - Summarizer & Analyst",
-        "version": "2.1.3",
+        "version": "2.1.4",
         "description": "Production-grade summarizer and analyst agent for podcast content",
         "endpoints": {
             "summarize": "/v1/summarize",
