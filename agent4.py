@@ -1,12 +1,4 @@
-# agent4.py – 📦 Production-Grade Exporter (Scripts, Transcripts, HTML, ZIP) – v2.2.1
-# - Accepts Graph payload and emits structured artifacts
-# - Creates /exports/<safe_title_or_session>_<timestamp>/ with:
-#     * summary.json (the full payload with a small header)
-#     * transcript.txt (speaker-labeled, with optional timestamps & audio links)
-#     * final_script.txt (cleaned “podcast script”)
-#     * index.html (simple, readable HTML export)
-# - Optionally returns a ZIP with all assets
-# - No heavy deps; designed to “just work” out of the box
+# agent4.py – 📦 Production-Grade Exporter (Scripts, Transcripts, HTML, ZIP) – v2.2.2
 
 import os
 import io
@@ -23,6 +15,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
+
+from dotenv import load_dotenv
+load_dotenv()  # ✅ ensure .env is loaded even if CWD differs
 
 # ====== Optional utils (preferred if present) ======
 try:
@@ -47,42 +42,60 @@ try:
 except Exception:
     REPORTLAB_AVAILABLE = False
 
-def _write_pdf_from_text(path: Path, title: str, text: str):
-    if not REPORTLAB_AVAILABLE:
-        raise RuntimeError("ReportLab not available for PDF export")
-    import time as _t
-    attempts = int(getattr(settings, "MAX_RETRIES", 3))
-    base = float(getattr(settings, "RETRY_BASE_DELAY", 0.5))
-    last_err: Optional[Exception] = None
-    for i in range(attempts):
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            c = canvas.Canvas(str(path), pagesize=LETTER)
-            width, height = LETTER
-            margin = 50
-            y = height - margin
-            c.setTitle(title or "Export")
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(margin, y, title or "Export")
-            y -= 24
-            c.setFont("Helvetica", 10)
-            for line in text.splitlines():
-                if y < margin:
-                    c.showPage()
-                    y = height - margin
-                    c.setFont("Helvetica", 10)
-                c.drawString(margin, y, line[:110])
-                y -= 14
-            c.showPage()
-            c.save()
-            return
-        except Exception as e:
-            last_err = e
-            if i < attempts - 1:
-                _t.sleep(min(8.0, base * (2 ** i)))
-            else:
-                raise
+# ========= Settings =========
+class Settings(BaseSettings):
+    EXPORT_DIR: str = "exports"
+    DEFAULT_FORMAT: str = "zip"   # json|txt|html|zip|pdf
+    MAX_TEXT_LENGTH: int = 100000
+    ALLOW_LISTING: bool = True    # enable the lightweight /list endpoint
+    MAX_RETRIES: int = 3
+    RETRY_BASE_DELAY: float = 0.5
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        extra = "ignore"
 
+settings = Settings()
+# Allow AGENT4_* env overrides for retry knobs
+try:
+    settings.MAX_RETRIES = int(os.getenv("AGENT4_MAX_RETRIES", settings.MAX_RETRIES))
+    settings.RETRY_BASE_DELAY = float(os.getenv("AGENT4_RETRY_BASE_DELAY", settings.RETRY_BASE_DELAY))
+except Exception:
+    pass
+
+# ========= Logging =========
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - agent4 - %(levelname)s - %(message)s")
+logger = logging.getLogger("Agent4")
+
+# ========= Allowed formats =========
+ALLOWED_FORMATS = {"json", "txt", "html", "zip", "pdf"}
+
+# ========= Models =========
+class ExportContent(BaseModel):
+    topic: Optional[str] = None
+    conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
+    agent_order: List[str] = Field(default_factory=list)
+    rounds_completed: Optional[int] = None
+
+class ExportRequest(BaseModel):
+    format: str = Field(default=settings.DEFAULT_FORMAT, description="json|txt|html|zip|pdf|stream (stream not implemented)")
+    title: Optional[str] = None
+    session_id: str
+    include_audio_links: bool = True
+    include_timestamps: bool = True
+    content: ExportContent
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class ExportResponse(BaseModel):
+    status: str
+    session_id: str
+    title: str
+    dir: str
+    files: Dict[str, str]  # name -> path
+    zip_path: Optional[str] = None
+    processing_time: float
+
+# ========= Helpers =========
 def _ensure_dir(path: Path):
     import time as _t
     attempts = int(getattr(settings, "MAX_RETRIES", 3))
@@ -148,59 +161,51 @@ def _zip_dir(src_dir: Path, out_zip: Path):
             else:
                 raise
 
-# ========= Settings =========
-class Settings(BaseSettings):
-    EXPORT_DIR: str = "exports"
-    DEFAULT_FORMAT: str = "zip"   # json|txt|html|zip
-    MAX_TEXT_LENGTH: int = 100000
-    ALLOW_LISTING: bool = True    # enable the lightweight /list endpoint
-    MAX_RETRIES: int = 3
-    RETRY_BASE_DELAY: float = 0.5
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
+def _write_pdf_from_text(path: Path, title: str, text: str):
+    if not REPORTLAB_AVAILABLE:
+        raise RuntimeError("ReportLab not available for PDF export")
+    import time as _t
+    attempts = int(getattr(settings, "MAX_RETRIES", 3))
+    base = float(getattr(settings, "RETRY_BASE_DELAY", 0.5))
+    last_err: Optional[Exception] = None
+    for i in range(attempts):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            c = canvas.Canvas(str(path), pagesize=LETTER)
+            width, height = LETTER
+            margin = 50
+            y = height - margin
+            c.setTitle(title or "Export")
+            c.setFont("Helvetica-Bold", 14)
+            c.drawString(margin, y, title or "Export")
+            y -= 24
+            c.setFont("Helvetica", 10)
+            for line in text.splitlines():
+                if y < margin:
+                    c.showPage()
+                    y = height - margin
+                    c.setFont("Helvetica", 10)
+                c.drawString(margin, y, line[:110])
+                y -= 14
+            c.showPage()
+            c.save()
+            return
+        except Exception as e:
+            last_err = e
+            if i < attempts - 1:
+                _t.sleep(min(8.0, base * (2 ** i)))
+            else:
+                raise
 
-settings = Settings()
-# Allow AGENT4_* env overrides for retry knobs
-try:
-    settings.MAX_RETRIES = int(os.getenv("AGENT4_MAX_RETRIES", settings.MAX_RETRIES))
-    settings.RETRY_BASE_DELAY = float(os.getenv("AGENT4_RETRY_BASE_DELAY", settings.RETRY_BASE_DELAY))
-except Exception:
-    pass
+def _fmt_ts(ts_val: Any) -> str:
+    # supports float epoch or already-formatted string
+    try:
+        if isinstance(ts_val, (int, float)):
+            return time.strftime("%H:%M:%S", time.localtime(float(ts_val)))
+        return str(ts_val)
+    except Exception:
+        return str(ts_val)
 
-# ========= Logging =========
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - agent4 - %(levelname)s - %(message)s")
-logger = logging.getLogger("Agent4")
-
-# ========= Allowed formats =========
-ALLOWED_FORMATS = {"json", "txt", "html", "zip", "pdf"}
-
-# ========= Models =========
-class ExportContent(BaseModel):
-    topic: Optional[str] = None
-    conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
-    agent_order: List[str] = Field(default_factory=list)
-    rounds_completed: Optional[int] = None
-
-class ExportRequest(BaseModel):
-    format: str = Field(default=settings.DEFAULT_FORMAT, description="json|txt|html|zip|pdf|stream (stream not implemented)")
-    title: Optional[str] = None
-    session_id: str
-    include_audio_links: bool = True
-    include_timestamps: bool = True
-    content: ExportContent
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-class ExportResponse(BaseModel):
-    status: str
-    session_id: str
-    title: str
-    dir: str
-    files: Dict[str, str]  # name -> path
-    zip_path: Optional[str] = None
-    processing_time: float
-
-# ========= Helpers =========
 def _safe_title(session_id: str, title: Optional[str]) -> str:
     base = sanitize_filename(title or session_id or "session")
     base = base or "session"
@@ -228,15 +233,6 @@ def _mk_transcript_lines(
             lines.append(f"  [audio] {audio}")
     return lines
 
-def _fmt_ts(ts_val: Any) -> str:
-    # supports float epoch or already-formatted string
-    try:
-        if isinstance(ts_val, (int, float)):
-            return time.strftime("%H:%M:%S", time.localtime(float(ts_val)))
-        return str(ts_val)
-    except Exception:
-        return str(ts_val)
-
 def _mk_script(convo: List[Dict[str, Any]]) -> str:
     # A slightly cleaner, podcast-ish script: speaker label + content only
     parts: List[str] = []
@@ -248,18 +244,20 @@ def _mk_script(convo: List[Dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 def _mk_html(topic: Optional[str], convo: List[Dict[str, Any]], include_ts: bool, include_audio: bool) -> str:
+    def _esc(s: str) -> str:
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     rows: List[str] = []
     for turn in convo:
-        sp = str(turn.get("speaker", "agent")).strip()
+        sp = _esc(str(turn.get("speaker", "agent")).strip())
         msg = turn.get("message", {}) or {}
-        text = (msg.get("content") or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        text = _esc(msg.get("content") or "")
         ts = _fmt_ts(msg.get("timestamp"))
         audio = msg.get("audio_path") or ""
         meta = []
         if include_ts and ts:
             meta.append(ts)
         if include_audio and audio:
-            meta.append(f'<a href="{audio}">audio</a>')
+            meta.append(f'<a href="{_esc(audio)}">audio</a>')
         meta_str = (" • ".join(meta)) if meta else ""
         rows.append(f"""
         <div class="turn">
@@ -267,7 +265,7 @@ def _mk_html(topic: Optional[str], convo: List[Dict[str, Any]], include_ts: bool
           <div class="text">{text}</div>
           {'<div class="meta">'+meta_str+'</div>' if meta_str else ''}
         </div>""")
-    topic_html = (topic or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    topic_html = _esc(topic or "")
     html = f"""<!doctype html>
 <html>
 <head>
@@ -295,15 +293,17 @@ def _mk_html(topic: Optional[str], convo: List[Dict[str, Any]], include_ts: bool
 app = FastAPI(
     title="📦 Agent4 - Exporter",
     description="Generates transcript/script/HTML/ZIP from Graph conversation payloads",
-    version="2.2.1"
+    version="2.2.2"
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    allow_origins=[o.strip() for o in os.getenv("UI_ORIGINS", os.getenv("UI_ORIGIN", "*")).split(",") if o.strip()],
+    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
 EXPORT_ROOT = Path(settings.EXPORT_DIR).resolve()
 _ensure_dir(EXPORT_ROOT)
+logger.info(f"[Agent4] ✅ EXPORT_ROOT = {EXPORT_ROOT}")
 
 # ========= Debug config endpoint (safe, no secrets) =========
 from typing import List as _List
@@ -341,6 +341,7 @@ attach_debug_config(
 @app.post("/export", response_model=ExportResponse)
 async def export_now(req: ExportRequest):
     t0 = time.time()
+    logger.info(f"[Agent4] ▶️ export start session={req.session_id} fmt={req.format} title={req.title!r}")
     try:
         # Basic validation
         convo = req.content.conversation_history or []
@@ -355,9 +356,9 @@ async def export_now(req: ExportRequest):
         safe_title = _safe_title(req.session_id, req.title)
         out_dir = EXPORT_ROOT / safe_title
         _ensure_dir(out_dir)
+        logger.info(f"[Agent4] writing export -> {out_dir}")
 
-        # 1) summary.json (payload + small header)
-        # Gather conversation stats for richer header
+        # 1) summary.json (payload + small header) with conversation stats
         speakers: List[str] = []
         voices: List[str] = []
         speeds: List[float] = []
@@ -456,10 +457,9 @@ async def export_now(req: ExportRequest):
                             _ensure_dir(final_wav_path.parent)
                             shutil.copyfile(str(src), str(final_wav_path))
                     except Exception as _e:
-                        logger.warning(f"final_wav copy skipped: {_e}")
+                        logger.warning(f"[Agent4] final_wav copy skipped: {_e}")
         except Exception:
-            # best-effort only; do not fail export
-            pass
+            pass  # best-effort only
 
         # 4c) If final.wav exists, add a link into HTML (best-effort)
         try:
@@ -470,7 +470,7 @@ async def export_now(req: ExportRequest):
                     injected = existing.replace("</body>", f"{link_html}</body>")
                     _write_text(html_path, injected)
                 except Exception as _e:
-                    logger.warning(f"could not inject final.wav link: {_e}")
+                    logger.warning(f"[Agent4] could not inject final.wav link: {_e}")
         except Exception:
             pass
 
@@ -481,7 +481,7 @@ async def export_now(req: ExportRequest):
                 pdf_path = out_dir / "index.pdf"
                 _write_pdf_from_text(pdf_path, req.title or req.session_id, html_text)
             except Exception as _e:
-                logger.warning(f"PDF generation skipped: {_e}")
+                logger.warning(f"[Agent4] PDF generation skipped: {_e}")
 
         files = {
             "summary.json": str(summary_path),
@@ -498,8 +498,10 @@ async def export_now(req: ExportRequest):
         if fmt == "zip":
             zip_path = out_dir.with_suffix(".zip")
             _zip_dir(out_dir, zip_path)
+            logger.info(f"[Agent4] ZIP created -> {zip_path}")
 
         elapsed = round(time.time() - t0, 3)
+        logger.info(f"[Agent4] ✅ export done session={req.session_id} turns={len(convo)} files={list(files.keys())} time={elapsed}s")
         return ExportResponse(
             status="ok",
             session_id=req.session_id,
@@ -512,16 +514,18 @@ async def export_now(req: ExportRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ export failed: {e}")
+        logger.error(f"[Agent4] ❌ export failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # ========= Convenience: download endpoints =========
 @app.get("/download/file")
 async def download_file(path: str):
-    """Serve a single file by absolute path within EXPORT_DIR."""
+    """Serve a single file by absolute path within EXPORT_DIR (safe)."""
     try:
+        base = EXPORT_ROOT
         p = Path(path).resolve()
-        if not str(p).startswith(str(EXPORT_ROOT)):
+        # traversal-safe: allow the exact base or any child file
+        if not (p == base or base in p.parents):
             raise HTTPException(status_code=400, detail="Invalid path")
         if not p.exists() or not p.is_file():
             raise HTTPException(status_code=404, detail="File not found")
@@ -572,7 +576,7 @@ async def health():
         return {
             "status": "healthy",
             "service": "Agent4 - Exporter",
-            "version": "2.2.1",
+            "version": "2.2.2",
             "export_root": str(EXPORT_ROOT),
             "listing_enabled": settings.ALLOW_LISTING
         }
@@ -583,7 +587,7 @@ async def health():
 async def root():
     return {
         "service": "Agent4 - Exporter",
-        "version": "2.2.1",
+        "version": "2.2.2",
         "endpoints": {
             "export": "POST /export",
             "download_file": "GET /download/file?path=...",
