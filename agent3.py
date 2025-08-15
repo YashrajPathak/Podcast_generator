@@ -1,9 +1,4 @@
-# agent3.py – 🎙 Production-Grade TTS Generator Agent (AAD + Streaming + Per-Agent Mute) – v2.2.1
-# - AAD auth (no Speech key required, but works fine if you switch approaches later)
-# - SSML synthesis to WAV, served via /audio/{filename}
-# - WebSocket streaming of PCM chunks
-# - Per-agent mute via Graph (/mute-status?agent=agent3) with safe fallback
-# - Voices cache w/ TTL, periodic cleanup, retries, traversal protection
+# agent3.py – 🔊 Production-Grade TTS Generator (AAD + Streaming + Per-Agent Mute) – v2.2.2
 
 import os
 import json
@@ -13,7 +8,6 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
-import wave as wav
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,23 +15,31 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
+from dotenv import load_dotenv
+load_dotenv()  # ✅ ensure .env is loaded even if CWD differs
+
 import azure.cognitiveservices.speech as speechsdk
 from azure.identity import ClientSecretCredential
 
 import re
+import wave as wave_mod
 
 from httpx import AsyncClient, Timeout
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+# LangChain (non-deprecated)
+from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_openai import AzureChatOpenAI
+
 # ====== Optional utils (preferred if present) ======
 try:
     from utils import (
-        clean_text_for_processing,  # normalization + length cap
-        validate_session_id,        # id guard
+        clean_text_for_processing,      # normalization + length cap
+        validate_session_id,            # id guard
         is_session_muted as utils_is_session_muted,  # graph mute helper
     )
 except Exception:
-    import re
+    import re as _re
     def clean_text_for_processing(text: str, max_length: int) -> str:
         if not isinstance(text, str):
             text = str(text) if text is not None else ""
@@ -46,9 +48,10 @@ except Exception:
             text = text[:max_length] + "..."
         return text
     def validate_session_id(session_id: str) -> bool:
-        return bool(session_id) and re.match(r"^[a-zA-Z0-9_-]+$", session_id) is not None
+        return bool(session_id) and _re.match(r"^[a-zA-Z0-9_-]+$", session_id) is not None
     async def utils_is_session_muted(session_id: str, agent: Optional[str] = None) -> bool:
         return False  # noop fallback if utils isn't available
+
 
 # ========== Settings ==========
 class Settings(BaseSettings):
@@ -66,7 +69,7 @@ class Settings(BaseSettings):
     OPENAI_API_VERSION: str = "2024-05-01-preview"
 
     # Service Integration
-    ORCHESTRATOR_URL: str = "http://localhost:8008"  # Graph, used for local mute fallback
+    ORCHESTRATOR_URL: str = "http://localhost:8008"  # Graph base (no /conversation)
     AGENT_TIMEOUT: float = 30.0
     MAX_RETRIES: int = 3
 
@@ -82,7 +85,9 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        env_file_encoding = "utf-8"
         extra = "ignore"
+
 
 try:
     settings = Settings()
@@ -90,32 +95,38 @@ except Exception as e:
     print(f"❌ Agent3 Configuration Error: {e}")
     raise
 
+
 # ========== Logging ==========
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("Agent3")
 
-# ---- CORS (tightened) ----
-try:
-    app = FastAPI(
-        title="🔊 Agent3 - TTS Generator",
-        description="AAD-auth Azure Speech TTS with streaming, per-agent mute checks, and chat support",
-        version="2.2.1"
-    )
-    origins = [o.strip() for o in os.getenv("UI_ORIGINS", os.getenv("UI_ORIGIN", "http://localhost:8501")).split(",") if o.strip()]
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization"],
-        allow_credentials=False,
-        max_age=86400,
-    )
-except Exception:
-    # be permissive on init failure (non-fatal)
-    pass
+
+# ---------- Orchestrator base normalizer ----------
+def _orch_base() -> str:
+    """Return normalized orchestrator base URL (no trailing slash and no /conversation)."""
+    base = (settings.ORCHESTRATOR_URL or "http://localhost:8008").rstrip("/")
+    if base.endswith("/conversation"):
+        logger.warning("[Agent3] ORCHESTRATOR_URL ended with /conversation; stripping for API calls")
+        base = base[:-len("/conversation")]
+    return base
+
+
+# ---------- FastAPI / CORS ----------
+app = FastAPI(
+    title="🔊 Agent3 - TTS Generator",
+    description="AAD-auth Azure Speech TTS with streaming, per-agent mute checks, and chat support",
+    version="2.2.2"
+)
+origins = [o.strip() for o in os.getenv("UI_ORIGINS", os.getenv("UI_ORIGIN", "http://localhost:8501")).split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    allow_credentials=False,
+    max_age=86400,
+)
+
 
 # ========== Models ==========
 class TTSRequest(BaseModel):
@@ -134,7 +145,6 @@ class TTSResponse(BaseModel):
     status: str = "success"
     processing_time: Optional[float] = None
     agent_info: Optional[Dict[str, Any]] = None
-    # Expose synthesis params at top-level for structured clients
     speed: Optional[float] = None
     pitch: Optional[float] = None
 
@@ -158,6 +168,7 @@ class ChatResponse(BaseModel):
     agent_info: Optional[Dict[str, Any]] = None
     turn_number: Optional[int] = None
 
+
 # ========== Auth Manager (AAD only, with caching) ==========
 class AzureSpeechAuthManager:
     def __init__(self):
@@ -177,6 +188,7 @@ class AzureSpeechAuthManager:
             client_secret=settings.CLIENT_SECRET
         )
         token = credential.get_token("https://cognitiveservices.azure.com/.default")
+        # NOTE: Using aad#RESOURCE_ID#token is a known working pattern in this project
         auth_token = f"aad#{settings.RESOURCE_ID}#{token.token}"
 
         speech_config = speechsdk.SpeechConfig(auth_token=auth_token, region=settings.SPEECH_REGION)
@@ -184,13 +196,14 @@ class AzureSpeechAuthManager:
 
         self._auth_cache[cache_key] = speech_config
         self._last_auth_time[cache_key] = now
-        logger.info(f"✅ Using Azure AD authentication for voice={voice}")
+        logger.info(f"[Agent3][AUTH] ✅ AAD token acquired; voice={voice}")
         return speech_config
 
     def clear_cache(self):
         self._auth_cache.clear()
         self._last_auth_time.clear()
-        logger.info("🗑️ Cleared speech auth cache")
+        logger.info("[Agent3][AUTH] 🗑️ Cleared speech auth cache")
+
 
 # ========== TTS Manager ==========
 class TTSManager:
@@ -201,26 +214,23 @@ class TTSManager:
         try:
             self.audio_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
-            logger.warning(f"⚠️ could not create audio_dir={self.audio_dir}: {e}")
+            logger.warning(f"[Agent3][TTS] ⚠️ could not create audio_dir={self.audio_dir}: {e}")
 
     def _make_ssml(self, text: str, voice: str, speed: float = 1.0, pitch: float = 1.0) -> str:
-        """Generate SSML with natural speech patterns"""
-        # Constrain parameters to natural ranges
+        """Generate SSML with natural speech patterns, with basic injection safety."""
+        # Clamp params to natural ranges
         speed = max(0.8, min(speed, 1.2))  # 0.8x-1.2x speed
-        pitch = max(0.8, min(pitch, 1.2))  # -20% to +20% pitch
+        pitch = max(0.8, min(pitch, 1.2))  # ~-20% to +20%
 
-        # Sanitize: strip any user-supplied tags to prevent SSML injection
-        text = re.sub(r"<[^>]+>", "", text or "")
+        # Sanitize: strip tags to prevent SSML injection
+        safe = re.sub(r"<[^>]+>", "", text or "")
         # Remove any audio src-like patterns defensively
-        text = re.sub(r"\b(src|href)\s*=\s*['\"]?[^'\"\s>]+", "", text, flags=re.IGNORECASE)
+        safe = re.sub(r"\b(src|href)\s*=\s*['\"]?[^'\"\s>]+", "", safe, flags=re.IGNORECASE)
 
-        # Add natural pauses after sentences
-        text = re.sub(r'([.!?])', r'\1<break time="400ms"/>', text)
-        
-        # Add slight pause after commas
-        text = re.sub(r'(,|;)', r'\1<break time="200ms"/>', text)
-        
-        # Convert pitch factor to % change around 1.0
+        # Natural pauses
+        safe = re.sub(r'([.!?])', r'\1<break time="400ms"/>', safe)
+        safe = re.sub(r'(,|;)', r'\1<break time="200ms"/>', safe)
+
         pct = int(round((pitch - 1.0) * 100))
         pitch_attr = f"{pct:+d}%"
         rate_attr = f"{int(round((speed - 1.0) * 100)):+d}%"
@@ -229,7 +239,7 @@ class TTSManager:
         <speak version='1.0' xml:lang='en-US'>
             <voice name='{voice}'>
                 <prosody rate='{rate_attr}' pitch='{pitch_attr}'>
-                    {text}
+                    {safe}
                 </prosody>
             </voice>
         </speak>
@@ -237,13 +247,13 @@ class TTSManager:
         return ssml
 
     async def synthesize_wav(self, text: str, voice: str, speed: float = 1.0, pitch: float = 1.0) -> Optional[str]:
-        """Generate WAV file with natural pacing"""
+        """Generate WAV file with natural pacing."""
         speech_config = self.auth_manager.get_speech_config(voice)
         speech_config.set_speech_synthesis_output_format(
             speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
         )
-        
-        # Generate unique filename with voice prefix for debugging
+
+        # Unique filename with voice prefix for debugging
         voice_prefix = voice.split("-")[-1].lower()[:4]
         filename = f"{voice_prefix}_{uuid.uuid4().hex}.wav"
         out_path = self.audio_dir / filename
@@ -256,58 +266,47 @@ class TTSManager:
             )
 
             ssml = self._make_ssml(text, voice, speed, pitch)
-            
-            # Log SSML for debugging (remove in production)
-            logger.debug(f"Generated SSML:\n{ssml}")
-            
+            logger.debug(f"[Agent3][TTS] SSML:\n{ssml}")
+
             result = await asyncio.to_thread(
                 lambda: synthesizer.speak_ssml_async(ssml).get()
             )
 
             if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-                logger.info(f"✅ Generated {voice} audio: {filename}")
+                logger.info(f"[Agent3][TTS] ✅ Synth complete voice={voice} file={filename}")
                 return str(out_path)
-                
+
             if result.reason == speechsdk.ResultReason.Canceled:
                 details = result.cancellation_details
-                logger.error(f"❌ Synthesis canceled: {details.reason} - {details.error_details}")
+                logger.error(f"[Agent3][TTS] ❌ Canceled: {details.reason} - {details.error_details}")
             else:
-                logger.error(f"❌ Synthesis failed: {result.reason}")
-                
+                logger.error(f"[Agent3][TTS] ❌ Failed: {result.reason}")
+
         except Exception as e:
-            logger.error(f"❌ Synthesis error: {str(e)}", exc_info=True)
-            
+            logger.error(f"[Agent3][TTS] ❌ Synthesis error: {str(e)}", exc_info=True)
+
         return None
 
     async def synthesize(self, req: TTSRequest) -> TTSResponse:
-        """Main synthesis endpoint with enhanced validation"""
+        """Main synthesis endpoint with enhanced validation."""
         start_time = time.time()
         async with self.semaphore:
             try:
-                # Validate input
                 if not validate_session_id(req.session_id):
                     raise ValueError("Invalid session ID format")
-                    
+
                 cleaned_text = clean_text_for_processing(req.text, settings.MAX_TEXT_LENGTH)
                 if not cleaned_text.strip():
                     raise ValueError("Empty or invalid text after cleaning")
 
-                # Generate audio
-                wav_path = await self.synthesize_wav(
-                    cleaned_text,
-                    req.voice,
-                    req.speed,
-                    req.pitch
-                )
-                
+                wav_path = await self.synthesize_wav(cleaned_text, req.voice, req.speed, req.pitch)
                 if not wav_path:
                     raise RuntimeError("Audio synthesis returned no path")
 
-                # Calculate metrics
                 duration = self._estimate_duration(wav_path)
                 char_count = len(cleaned_text)
-                words_per_min = int((char_count/5) / (duration/60)) if duration else 0
-                
+                words_per_min = int((char_count / 5) / (duration / 60)) if duration else 0
+
                 return TTSResponse(
                     audio_path=wav_path,
                     duration=duration,
@@ -326,9 +325,9 @@ class TTSManager:
                     speed=req.speed,
                     pitch=req.pitch,
                 )
-                
+
             except Exception as e:
-                logger.error(f"❌ TTS processing failed: {str(e)}", exc_info=True)
+                logger.error(f"[Agent3][TTS] ❌ processing failed: {str(e)}", exc_info=True)
                 return TTSResponse(
                     audio_path=None,
                     text_length=len(getattr(req, "text", "")),
@@ -338,68 +337,70 @@ class TTSManager:
                     processing_time=round(time.time() - start_time, 3),
                     agent_info={
                         "error": str(e),
-                        "input_sample": req.text[:100] + "..." if req.text else None
+                        "input_sample": (req.text[:100] + "...") if getattr(req, "text", None) else None
                     }
                 )
 
     def _estimate_duration(self, file_path: str) -> Optional[float]:
-        """More accurate duration estimation"""
+        """More accurate duration estimation from WAV header; fallback to size approximation."""
         try:
-            # Get exact duration from file header if possible
-            with wav.open(str(file_path), 'rb') as wav:
-                frames = wav.getnframes()
-                rate = wav.getframerate()
+            with wave_mod.open(str(file_path), 'rb') as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate()
                 return round(frames / float(rate), 2)
-        except:
+        except Exception as e:
+            logger.debug(f"[Agent3][TTS] duration header read failed: {e}")
             try:
-                # Fallback to size-based estimation
                 size = os.path.getsize(file_path)
-                return round(size / 48000.0, 2)  # 24kHz 16-bit mono = 48KB/sec
-            except Exception as e:
-                logger.warning(f"⚠️ Duration estimation failed: {e}")
+                # 24kHz * 16-bit mono ≈ 48KB/sec -> size/48000 ~ seconds (approx)
+                return round(size / 48000.0, 2)
+            except Exception as e2:
+                logger.warning(f"[Agent3][TTS] ⚠️ duration estimation failed: {e2}")
                 return None
 
     async def _periodic_cleanup(self):
-        """Enhanced cleanup with size limits"""
+        """Enhanced cleanup with size limits."""
         while True:
             try:
                 await asyncio.sleep(300)  # Every 5 minutes
                 now = time.time()
                 removed = 0
                 total_size = 0
-                
-                # Get all files sorted by oldest first
+
                 files = sorted(self.audio_dir.glob("*.wav"), key=lambda f: f.stat().st_mtime)
-                
+
                 for fp in files:
                     try:
                         file_age = now - fp.stat().st_mtime
                         file_size = fp.stat().st_size
-                        
+
                         # Remove if older than TTL OR if cache exceeds 100MB
-                        if file_age > settings.AUDIO_CACHE_TTL or total_size > 100*1024*1024:
+                        if file_age > settings.AUDIO_CACHE_TTL or total_size > 100 * 1024 * 1024:
                             fp.unlink(missing_ok=True)
                             removed += 1
                         else:
                             total_size += file_size
                     except Exception as e:
-                        logger.warning(f"⚠️ Failed to process {fp.name}: {e}")
-                        
+                        logger.warning(f"[Agent3][CLEANUP] ⚠️ Failed to process {fp.name}: {e}")
+
                 if removed:
-                    logger.info(f"🗑️ Cleaned {removed} old audio files. Current cache: {total_size/1024/1024:.1f}MB")
-                    
+                    logger.info(f"[Agent3][CLEANUP] 🗑️ Removed {removed} old files. Cache now ~{total_size/1024/1024:.1f}MB")
+
             except Exception as e:
-                logger.error(f"❌ Cleanup cycle failed: {e}")
-                await asyncio.sleep(60)  # Wait longer if error occurs
+                logger.error(f"[Agent3][CLEANUP] ❌ Cleanup cycle failed: {e}")
+                await asyncio.sleep(60)  # wait longer on error
+
+
 # ========== Per-agent mute helper ==========
 @retry(stop=stop_after_attempt(settings.MAX_RETRIES),
        wait=wait_exponential(multiplier=1, min=1, max=8))
 async def _fetch_mute_status_fallback(session_id: str) -> Optional[bool]:
+    url = f"{_orch_base()}/session/{session_id}/mute-status"
+    params = {"agent": "agent3"}
+    logger.debug(f"[Agent3][MUTE→Graph] GET {url} params={params}")
     async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
-        r = await client.get(
-            f"{settings.ORCHESTRATOR_URL}/session/{session_id}/mute-status",
-            params={"agent": "agent3"}
-        )
+        r = await client.get(url, params=params)
+        logger.debug(f"[Agent3][MUTE→Graph] status={r.status_code}")
         if r.status_code >= 500:
             raise RuntimeError(f"transient {r.status_code}")
         if r.status_code != 200:
@@ -412,15 +413,20 @@ async def is_effectively_muted(session_id: Optional[str]) -> bool:
     if not session_id:
         return False
     try:
-        return bool(await utils_is_session_muted(session_id, "agent3"))
-    except Exception:
-        pass
+        muted = bool(await utils_is_session_muted(session_id, "agent3"))
+        logger.debug(f"[Agent3][MUTE] utils -> {muted}")
+        return muted
+    except Exception as e:
+        logger.debug(f"[Agent3][MUTE] utils failed: {e}")
     try:
         res = await _fetch_mute_status_fallback(session_id)
-        return bool(res) if res is not None else False
+        muted2 = bool(res) if res is not None else False
+        logger.debug(f"[Agent3][MUTE] fallback -> {muted2}")
+        return muted2
     except Exception as e:
-        logger.warning(f"mute check failed: {e}")
+        logger.warning(f"[Agent3][MUTE] fallback failed: {e}")
         return False
+
 
 # ========== Voices Cache ==========
 class VoicesCache:
@@ -446,6 +452,7 @@ class VoicesCache:
 
 voices_cache = VoicesCache(ttl_seconds=settings.VOICES_CACHE_TTL)
 
+
 # ========== Agent ==========
 class Agent3:
     def __init__(self):
@@ -453,8 +460,7 @@ class Agent3:
         self.auth = AzureSpeechAuthManager()
         self.tts = TTSManager(self.auth)
 
-        # LLM for /v1/chat
-        from langchain_community.chat_models import AzureChatOpenAI
+        # LLM for /v1/chat (non-deprecated)
         self.llm = AzureChatOpenAI(
             deployment_name=settings.AZURE_OPENAI_DEPLOYMENT,
             api_key=settings.AZURE_OPENAI_KEY,
@@ -463,7 +469,7 @@ class Agent3:
             temperature=0.7,
             timeout=settings.AGENT_TIMEOUT
         )
-        logger.info("✅ Agent3 initialized")
+        logger.info("[Agent3] ✅ initialized (LLM + TTS ready)")
 
     @retry(stop=stop_after_attempt(settings.MAX_RETRIES),
            wait=wait_exponential(multiplier=1, min=1, max=8))
@@ -479,7 +485,7 @@ class Agent3:
                 agent_info={"error": "Invalid session_id"}
             )
         if await is_effectively_muted(req.session_id):
-            logger.info(f"🔇 Session {req.session_id} muted (agent3); skipping synthesis")
+            logger.info(f"[Agent3] 🔇 session={req.session_id} muted; skip synthesis")
             return TTSResponse(
                 audio_path=None,
                 text_length=len(req.text),
@@ -488,6 +494,7 @@ class Agent3:
                 status="muted",
                 processing_time=0.0
             )
+        logger.debug(f"[Agent3][TTS] synth req voice={req.voice} len={len(req.text)}")
         return await self.tts.synthesize(req)
 
     def _build_conversation_system_prompt(self, request: ChatRequest) -> str:
@@ -513,11 +520,12 @@ class Agent3:
             if not validate_session_id(request.session_id):
                 raise ValueError("Invalid session_id")
 
-            from langchain_core.messages import SystemMessage, HumanMessage
             sys_msg = SystemMessage(content=self._build_conversation_system_prompt(request))
             human = HumanMessage(content=request.text)
-            result = await self.llm.agenerate([[sys_msg, human]])
-            text = result.generations[0][0].text.strip()
+            logger.debug(f"[Agent3][LLM] chat ainvoke text_len={len(request.text)}")
+            resp = await self.llm.ainvoke([sys_msg, human])
+            text = (resp.content or "").strip()
+            logger.debug(f"[Agent3][LLM] chat out_len={len(text)}")
             if not text:
                 raise ValueError("LLM returned empty response")
 
@@ -545,7 +553,7 @@ class Agent3:
                 turn_number=request.turn_number
             )
         except Exception as e:
-            logger.error(f"❌ chat failed: {e}")
+            logger.error(f"[Agent3][CHAT] ❌ failed: {e}")
             return ChatResponse(
                 response=f"Error: {e}",
                 session_id=request.session_id,
@@ -580,18 +588,27 @@ class Agent3:
             await websocket.send_bytes(buffer[:n])
         await websocket.send_json({"status": "completed", "voice": voice, "speed": speed, "pitch": pitch})
 
-# ========== FastAPI App ==========
+
+# ========== FastAPI App Lifecycle ==========
+agent = Agent3()
+
 @app.on_event("startup")
 async def _start_cleanup():
+    # Startup diagnostics
+    presence = {k: ("present" if os.getenv(k) else "MISSING") for k in [
+        "CLIENT_ID","CLIENT_SECRET","TENANT_ID","RESOURCE_ID","SPEECH_REGION",
+        "AZURE_OPENAI_KEY","AZURE_OPENAI_ENDPOINT","AZURE_OPENAI_DEPLOYMENT","OPENAI_API_VERSION",
+        "ORCHESTRATOR_URL"
+    ]}
+    print(f"[Agent3][STARTUP] Env presence: {presence}")
+    print(f"[Agent3][STARTUP] ORCHESTRATOR_BASE={_orch_base()}")
     asyncio.create_task(agent.tts._periodic_cleanup())
 
-# Initialize agent
-agent = Agent3()
 
 # ========== API Endpoints ==========
 @app.post("/generate-audio", response_model=TTSResponse)
 async def generate_audio(request: TTSRequest):
-    """JSON endpoint used by graph: synthesize WAV and return path."""
+    """JSON endpoint used by other agents: synthesize WAV and return path."""
     return await agent.generate_audio(request)
 
 @app.post("/v1/chat", response_model=ChatResponse)
@@ -637,7 +654,6 @@ async def get_voices(force_refresh: bool = Query(False, description="Bypass cach
 
         speech_config = speechsdk.SpeechConfig(auth_token=auth_token, region=settings.SPEECH_REGION)
 
-        # SDK calls block; offload to a thread
         voices_result = await asyncio.to_thread(
             lambda: speechsdk.SpeechSynthesizer(speech_config=speech_config).get_voices_async().get()
         )
@@ -663,7 +679,7 @@ async def get_voices(force_refresh: bool = Query(False, description="Bypass cach
             "voices": voices
         }
     except Exception as e:
-        logger.error(f"❌ voices fetch failed: {e}")
+        logger.error(f"[Agent3][VOICES] ❌ fetch failed: {e}")
         raise HTTPException(status_code=500, detail="Unable to fetch voices")
 
 @app.post("/clear-cache")
@@ -678,7 +694,7 @@ async def clear_cache():
         await voices_cache.set([])  # clear voices cache
         return {"status": "success", "message": f"Cache cleared ({count} files)", "voices_cache_cleared": True}
     except Exception as e:
-        logger.error(f"❌ cache clear failed: {e}")
+        logger.error(f"[Agent3][CACHE] ❌ clear failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws/stream-audio")
@@ -700,9 +716,9 @@ async def ws_stream_audio(ws: WebSocket):
 
             await agent.ws_stream_text(text=text, voice=voice, speed=speed, pitch=pitch, websocket=ws)
     except WebSocketDisconnect:
-        logger.info("WS disconnected")
+        logger.info("[Agent3][WS] disconnected")
     except Exception as e:
-        logger.error(f"WS error: {e}")
+        logger.error(f"[Agent3][WS] error: {e}")
         try:
             await ws.send_json({"error": str(e)})
         except Exception:
@@ -713,26 +729,26 @@ async def health():
     """Health check with basic environment status."""
     try:
         cached_voices = await voices_cache.get()
-        _ = list(Path(settings.AUDIO_DIR).glob("*.wav"))
+        cached_count = len(list(Path(settings.AUDIO_DIR).glob("*.wav")))
         return {
             "status": "healthy",
             "service": "Agent3 - TTS Generator",
-            "version": "2.2.1",
+            "version": "2.2.2",
             "uptime_sec": round(time.time() - agent._start_time, 2),
             "audio_cache_dir": str(Path(settings.AUDIO_DIR).resolve()),
-            "cached_files": len(list(Path(settings.AUDIO_DIR).glob("*.wav"))),
+            "cached_files": cached_count,
             "voices_cached": (len(cached_voices) if cached_voices is not None else 0),
             "voices_cache_ttl": settings.VOICES_CACHE_TTL
         }
     except Exception as e:
-        logger.error(f"health failed: {e}")
+        logger.error(f"[Agent3][HEALTH] failed: {e}")
         return {"status": "unhealthy", "error": str(e)}
 
 @app.get("/")
 async def root():
     return {
         "service": "Agent3 - TTS Generator",
-        "version": "2.2.1",
+        "version": "2.2.2",
         "endpoints": {
             "generate_audio": "/generate-audio",
             "chat": "/v1/chat",
@@ -740,11 +756,12 @@ async def root():
             "get_audio": "/audio/{filename}",
             "voices": "/voices",
             "clear_cache": "/clear-cache",
-            "health": "/health"
+            "health": "/health",
+            "debug_config": "/debug/config"
         },
         "features": [
             "Azure AD Speech (no subscription key)",
-            "JSON /generate-audio compatible with graph",
+            "JSON /generate-audio compatible with agents",
             "WAV output + file serving",
             "WebSocket streaming (PCM WAV chunks)",
             "Per-agent mute integration with orchestrator",
@@ -780,12 +797,16 @@ def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[st
             ok[f"{k}_is_url"] = "ok" if _looks_url(k) else "INVALID_URL"
         return {"service": service_name, "vars": ok}
 
-# Attach
+# Attach with correct var names (✅ ORCHESTRATOR_URL instead of old GRAPH_URL)
 attach_debug_config(
     app,
     "agent3",
-    required_vars=["CLIENT_ID","CLIENT_SECRET","TENANT_ID","RESOURCE_ID","SPEECH_REGION","GRAPH_URL"],
-    url_vars=["GRAPH_URL"]
+    required_vars=[
+        "CLIENT_ID","CLIENT_SECRET","TENANT_ID","RESOURCE_ID","SPEECH_REGION",
+        "AZURE_OPENAI_KEY","AZURE_OPENAI_ENDPOINT","AZURE_OPENAI_DEPLOYMENT","OPENAI_API_VERSION",
+        "ORCHESTRATOR_URL"
+    ],
+    url_vars=["ORCHESTRATOR_URL"]
 )
 
 if __name__ == "__main__":
