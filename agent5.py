@@ -1,13 +1,14 @@
-# agent5.py – 📊 Logger & Orchestrator + Graph/Export Glue + Ingest (v2.4.0)
+# agent5.py – 📊 Logger & Orchestrator + Graph/Export Glue + Ingest (v2.4.1)
 
 import os
+import re
 import json
 import asyncio
 import logging
 import time
 import sqlite3
-from typing import Dict, Any, Optional, List, Callable, Tuple
-from fastapi import FastAPI, HTTPException, Query
+from typing import Dict, Any, Optional, List, Callable, Tuple, Union
+from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
@@ -20,6 +21,9 @@ import functools
 import anyio
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
+from dotenv import load_dotenv
+
+load_dotenv()  # DEBUG: ensure .env is loaded even if CWD differs
 
 # ---------- Utilities (optional imports you already have in utils.py) ----------
 try:
@@ -37,6 +41,10 @@ except Exception:
         return x[:n] + ("..." if len(x) > n else "")
     def create_error_response(msg: str) -> Dict[str, Any]:
         return {"status": "error", "message": msg}
+
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+def _valid_session_id(s: Optional[str]) -> bool:
+    return bool(s and SESSION_ID_RE.match(s))
 
 # ========== Settings ==========
 class Settings(BaseSettings):
@@ -92,40 +100,35 @@ except Exception as e:
 
 # Retention worker: periodically purge old rows
 async def _retention_worker():
-    import sqlite3, time, math
+    # DEBUG: periodic retention cleanup
+    import sqlite3, time as _t
     while True:
         try:
-            cutoff = time.time() - float(settings.LOG_RETENTION_DAYS) * 86400.0
+            cutoff = _t.time() - float(settings.LOG_RETENTION_DAYS) * 86400.0
             deleted_total = 0
             try:
                 conn = sqlite3.connect(settings.DATABASE_PATH)
                 cur = conn.cursor()
-                # Best-effort deletes; ignore if table/columns don't exist
                 for sql, param in [
                     ("DELETE FROM events WHERE timestamp < ?", cutoff),
                     ("DELETE FROM sessions WHERE last_activity < ?", cutoff),
                 ]:
                     try:
                         cur.execute(sql, (param,))
-                        deleted_total += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                        deleted_total += cur.rowcount if (cur.rowcount or 0) > 0 else 0
                     except Exception:
                         pass
                 try:
                     conn.commit()
                 except Exception:
                     pass
-                try:
-                    if deleted_total > 0:
-                        logger.info(f"retention_deleted_rows N={deleted_total}")
-                except Exception:
-                    pass
-                # Occasional vacuum to reclaim space
-                try:
-                    if deleted_total > 0:
+                if deleted_total > 0:
+                    logger.info(f"retention_deleted_rows N={deleted_total}")
+                    try:
                         cur.execute("VACUUM")
                         conn.commit()
-                except Exception:
-                    pass
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.warning(f"Retention worker DB error: {e}")
             finally:
@@ -136,7 +139,6 @@ async def _retention_worker():
         except Exception:
             # never crash the worker
             pass
-        # sleep until next interval
         try:
             await asyncio.sleep(float(settings.CLEANUP_INTERVAL))
         except Exception:
@@ -181,7 +183,7 @@ def _extract_session_id(args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Option
     return None
 
 def log_execution(agent5: "Agent5", event_name: Optional[str] = None) -> Callable:
-    """Decorator to auto-log start/complete/error to Agent5."""
+    """Decorator to auto-log start/complete/error to Agent5 (available to wrap your own funcs)."""
     def decorator(func: Callable):
         is_coro = asyncio.iscoroutinefunction(func)
 
@@ -282,11 +284,17 @@ class OrchestrationResponse(BaseModel):
     processing_time: float
     errors: List[str] = Field(default_factory=list)
 
+# Align formats with Agent4 (no csv/xml)
 class ExportProxyRequest(BaseModel):
-    format: str = Field(default="zip", pattern="^(json|csv|txt|html|xml|zip|pdf|stream)$")
+    format: str = Field(default="zip", pattern="^(json|txt|html|zip|pdf|stream)$")
     title: Optional[str] = None
     include_audio_links: bool = True
     include_timestamps: bool = True
+
+# Body model for /sessions (supports JSON body)
+class CreateSessionRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=100)
+    metadata: Optional[Dict[str, Any]] = None
 
 # ========== SQLite Manager ==========
 class SessionDatabase:
@@ -559,6 +567,8 @@ class Agent5:
 
     # ---- Logging primitives ----
     async def create_session(self, session_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        if not _valid_session_id(session_id):
+            raise ValueError("Invalid session_id format")
         await anyio.to_thread.run_sync(self.db.upsert_session, session_id, metadata or {})
 
     async def set_status(self, session_id: str, status: str) -> None:
@@ -566,6 +576,8 @@ class Agent5:
 
     async def log_event(self, event: SessionEvent) -> bool:
         try:
+            if not _valid_session_id(event.session_id):
+                raise ValueError("Invalid session_id format")
             await anyio.to_thread.run_sync(self.db.upsert_session, event.session_id, {})
             await anyio.to_thread.run_sync(self.db.insert_event, event)
             return True
@@ -694,6 +706,7 @@ class Agent5:
            wait=wait_exponential(multiplier=1, min=1, max=8))
     async def proxy_export_to_agent4(self, session_id: str, format_: str, title: Optional[str],
                                      include_audio: bool, include_ts: bool) -> Dict[str, Any]:
+        # DEBUG: Building export payload for Agent4
         state = await self.fetch_graph_state(session_id)
         history = state.get("history", [])
         convo = []
@@ -728,7 +741,7 @@ class Agent5:
         async with _client() as client:
             r = await client.post(f"{settings.AGENT4_URL}/export", json=payload)
             if r.status_code != 200:
-                raise RuntimeError(f"Agent4 export failed ({r.status_code}): {r.text}")
+                raise RuntimeError(f"Agent4 export failed ({r.status_code}): {r.text[:200]}")
             return r.json()
 
     # ---- Graph ingest (mirror history into DB) ----
@@ -747,14 +760,29 @@ class Agent5:
         if not history:
             return 0
 
+        def _to_int(x: Any) -> Optional[int]:
+            try:
+                return int(x)
+            except Exception:
+                return None
+
         last_seen = self._last_seen_turn_id.get(session_id)
+        last_seen_int = _to_int(last_seen)
         new_count = 0
+
         for turn in history:
             tid = turn.get("turn_id")
-            # If we haven't seen anything yet, we can ingest all; else only newer than last_seen.
-            if last_seen is not None and tid is not None and tid <= last_seen:
-                continue
-            # Log turn
+            tid_int = _to_int(tid)
+
+            # DEBUG: defensively skip duplicates; prefer numeric compare if possible
+            if last_seen is not None:
+                if tid_int is not None and last_seen_int is not None:
+                    if tid_int <= last_seen_int:
+                        continue
+                else:
+                    if tid == last_seen:
+                        continue
+
             ev = SessionEvent(
                 session_id=session_id,
                 event_type="graph_turn_ingested",
@@ -770,10 +798,10 @@ class Agent5:
             )
             await self.log_event(ev)
             new_count += 1
-        # Update marker
+
+        # Update marker (prefer numeric if available)
         last_tid = history[-1].get("turn_id")
-        if last_tid is not None:
-            self._last_seen_turn_id[session_id] = last_tid
+        self._last_seen_turn_id[session_id] = _to_int(last_tid) if _to_int(last_tid) is not None else last_tid
         return new_count
 
     async def _ingest_loop(self):
@@ -800,7 +828,7 @@ class Agent5:
 app = FastAPI(
     title="📊 Agent5 - Logger & Orchestrator",
     description="Session logging, polling APIs, summaries, Graph/Export glue, and Graph ingest",
-    version="2.4.0"
+    version="2.4.1"
 )
 
 # Compute allowed origins from env (UI_ORIGINS comma-separated, fallback UI_ORIGIN)
@@ -842,9 +870,18 @@ async def _startup():
 
 # --- Sessions ---
 @app.post("/sessions")
-async def create_session(session_id: str, metadata: Optional[Dict[str, Any]] = None):
-    await agent.create_session(session_id, metadata or {})
-    return {"status": "success", "session_id": session_id}
+async def create_session(
+    session_id: Optional[str] = Query(None, description="Optional if sending JSON body"),
+    payload: Optional[CreateSessionRequest] = Body(None)
+):
+    """Create session; accepts either ?session_id=... or JSON body {"session_id": "...", "metadata": {...}}."""
+    sid = payload.session_id if payload and payload.session_id else session_id
+    if not _valid_session_id(sid):
+        raise HTTPException(status_code=400, detail="Invalid or missing session_id")
+    meta = payload.metadata if payload and payload.metadata is not None else {}
+    logger.info(f"[Agent5] create_session sid={sid}")
+    await agent.create_session(sid, meta)
+    return {"status": "success", "session_id": sid}
 
 @app.get("/sessions")
 async def list_sessions(limit: int = Query(50, ge=1, le=500)):
@@ -955,6 +992,7 @@ async def graph_mute(session_id: str, agent_name: Optional[str] = Query(None, de
 @app.post("/sessions/{session_id}/export")
 async def export_session(session_id: str, body: ExportProxyRequest):
     try:
+        logger.info(f"[Agent5] export proxy → Agent4 session={session_id} fmt={body.format}")
         result = await agent.proxy_export_to_agent4(
             session_id=session_id,
             format_=body.format,
@@ -965,7 +1003,7 @@ async def export_session(session_id: str, body: ExportProxyRequest):
         await agent.log_event(SessionEvent(
             session_id=session_id,
             event_type="export_proxy",
-            content={"format": body.format, "agent4_result": result},
+            content={"format": body.format, "agent4_result": {"status": result.get("status"), "title": result.get("title")}},
             agent="agent5"
         ))
         return result
@@ -1023,7 +1061,6 @@ async def metrics():
                 if row and row[0] is not None:
                     count = int(row[0])
             except Exception:
-                # fallback: total sessions
                 try:
                     cur.execute("SELECT COUNT(1) FROM sessions")
                     row = cur.fetchone()
@@ -1056,6 +1093,7 @@ async def metrics():
         }
 
 # --- Health endpoint ---
+_last_health_log: float = 0.0
 @app.get("/health")
 async def health():
     global _last_health_log
@@ -1070,7 +1108,7 @@ async def health():
         return {
             "status": "healthy" if ok else "degraded",
             "service": "Agent5 - Logger & Orchestrator",
-            "version": "2.4.0",
+            "version": "2.4.1",
             "uptime_sec": round(time.time() - agent._start_time, 2),
             "db_path": settings.DATABASE_PATH,
             "graph_url": settings.GRAPH_URL,
@@ -1086,9 +1124,9 @@ async def health():
 async def root():
     return {
         "service": "Agent5 - Logger & Orchestrator",
-        "version": "2.4.0",
+        "version": "2.4.1",
         "endpoints": {
-            "create_session": "POST /sessions",
+            "create_session": "POST /sessions (query or JSON body)",
             "list_sessions": "GET /sessions",
             "set_status": "POST /sessions/{session_id}/status",
             "get_session": "GET /sessions/{session_id}",
@@ -1118,7 +1156,7 @@ async def root():
             "Decorator: @log_execution(agent5) for auto-logging",
             "WAL-enabled SQLite + non-blocking DB access",
             "Graph state/mute integration",
-            "Agent4 export proxy (JSON/TXT/HTML/ZIP/etc.)",
+            "Agent4 export proxy (JSON/TXT/HTML/ZIP/PDF)",
             "Graph ingest: mirrors conversation history into DB",
             "Session list + resume helpers + manual notes"
         ]
@@ -1152,7 +1190,7 @@ def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[st
 attach_debug_config(
     app,
     "agent5",
-    required_vars=["GRAPH_URL","AGENT4_URL"],
+    required_vars=["GRAPH_URL","AGENT4_URL","DATABASE_PATH"],
     url_vars=["GRAPH_URL","AGENT4_URL"]
 )
 
