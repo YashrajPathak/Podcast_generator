@@ -24,6 +24,10 @@ except Exception:
 
 # Load environment
 load_dotenv()
+
+# ⚠️ Streamlit prefers page config BEFORE any other Streamlit calls
+st.set_page_config(page_title="Podcast Control Room", page_icon="🎙", layout="wide")
+
 GRAPH_BASE = os.getenv("GRAPH_BASE", "http://localhost:8008")
 AGENT1_URL = os.getenv("AGENT1_URL", "http://localhost:8001")
 AGENT4_URL = os.getenv("AGENT4_URL", "http://localhost:8006")
@@ -48,13 +52,10 @@ GRAPH_USER_TURN = f"{GRAPH_BASE}/conversation/user-turn"
 GRAPH_EXPORT = f"{GRAPH_BASE}/session"  # + /{session_id}/export?format=...
 GRAPH_REGISTRY = f"{GRAPH_BASE}/registry"
 
-# WebRTC config
+# WebRTC config (single source of truth)
 RTC_CONFIG = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
-RTC_CFG = RTCConfiguration({
-    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-})
 
 # Initialize session state
 def init_session_state():
@@ -89,7 +90,16 @@ def init_session_state():
             st.session_state[key] = value
 
 init_session_state()
-st.set_page_config(page_title="Podcast Control Room", page_icon="🎙", layout="wide")
+
+# Warm-up registry once on load
+if st.session_state.get("registry") is None:
+    try:
+        # best-effort; function defined later, but we can inline a tiny fetch
+        r = httpx.get(GRAPH_REGISTRY, timeout=5)
+        if r.status_code == 200:
+            st.session_state["registry"] = r.json()
+    except Exception:
+        pass
 
 # --- Helper Functions ---
 def _with_retries(send, should_retry=None, max_retries=None, base_delay=None, verbose_env_var: str = "VERBOSE_RETRY"):
@@ -503,14 +513,13 @@ def render_input_panel():
             result = send_audio_to_agent1(audio_file.getvalue(), audio_file.name)
             if result:
                 st.success(f"Mic interrupt sent. Transcript: {result.get('transcript','(n/a)')}")
-
         st.divider()
         st.caption("Experimental: Live mic via WebRTC → WAV upload")
         ctx = webrtc_streamer(
             key="mic_webrtc",
             mode=WebRtcMode.SENDONLY,
             audio_receiver_size=1024,
-            rtc_configuration=RTC_CFG,
+            rtc_configuration=RTC_CONFIG,
             media_stream_constraints={"audio": True, "video": False},
         )
 
@@ -713,16 +722,18 @@ def render_export():
         else:
             st.session_state.export_busy = True
             try:
-                r = _with_retries(lambda: httpx.get(f"{GRAPH_EXPORT}/{st.session_state.session_id}/export", params={"format": fmt}, timeout=30))
-                r.raise_for_status()
-                data = r.json()
+                # ✅ Use POST helper
+                data = export_session(format=fmt)
+                if not data:
+                    raise RuntimeError("No export payload returned")
+
                 st.session_state.export_done = True
                 sid = st.session_state.session_id
                 st.success(f"Export complete for session {sid} (format: {fmt})")
                 st.json(data)
                 if data.get("download_url"):
                     suggested = f"podcast_{sid}.{fmt}"
-                    st.markdown(f"[⬇️ Download export]({data['download_url']})  ")
+                    st.markdown(f"[⬇️ Download export]({data['download_url']})")
                     st.caption(f"Suggested filename: {suggested}")
                 # Always provide a reliable ZIP link when format is zip, regardless of download_url presence
                 try:
