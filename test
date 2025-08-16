@@ -1,198 +1,966 @@
-(.venv) PS C:\Users\ypathak1\podcast_generator> uvicorn graph:app --reload --port 8008
-INFO:     Will watch for changes in these directories: ['C:\\Users\\ypathak1\\podcast_generator']
-INFO:     Uvicorn running on http://127.0.0.1:8008 (Press CTRL+C to quit)
-INFO:     Started reloader process [15192] using WatchFiles
-2025-08-16 18:43:33,654 - graph - WARNING - Rate limiter initialization failed: 'charmap' codec can't decode byte 0x90 in position 32: character maps to 
-<undefined>
-INFO:     Started server process [10836]
-INFO:     Waiting for application startup.
---- Logging error ---
+INFO:     127.0.0.1:65403 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65404 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
 Traceback (most recent call last):
-  File "C:\Program Files\Python311\Lib\logging\__init__.py", line 1113, in emit
-    stream.write(msg + self.terminator)
-  File "C:\Program Files\Python311\Lib\encodings\cp1252.py", line 19, in encode
-    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-UnicodeEncodeError: 'charmap' codec can't encode character '\U0001f680' in position 41: character maps to <undefined>
-Call stack:
-  File "<string>", line 1, in <module>
-  File "C:\Program Files\Python311\Lib\multiprocessing\spawn.py", line 122, in spawn_main
-    exitcode = _main(fd, parent_sentinel)
-  File "C:\Program Files\Python311\Lib\multiprocessing\spawn.py", line 135, in _main
-    return self._bootstrap(parent_sentinel)
-  File "C:\Program Files\Python311\Lib\multiprocessing\process.py", line 314, in _bootstrap
-    self.run()
-  File "C:\Program Files\Python311\Lib\multiprocessing\process.py", line 108, in run
-    self._target(*self._args, **self._kwargs)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\_subprocess.py", line 80, in subprocess_started
-    target(sockets=sockets)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\server.py", line 67, in run
-    return asyncio.run(self.serve(sockets=sockets))
-  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 190, in run
-    return runner.run(main)
-  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 641, in run_until_complete
-    self.run_forever()
-  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 608, in run_forever
-    self._run_once()
-  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 1936, in _run_once
-    handle._run()
-  File "C:\Program Files\Python311\Lib\asyncio\events.py", line 84, in _run
-    self._context.run(self._callback, *self._args)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\lifespan\on.py", line 86, in main
-    await app(scope, self.receive, self.send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 29, in __call__
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
     return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
     await super().__call__(scope, receive, send)
   File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
     await self.middleware_stack(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 151, in __call__
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
     await self.app(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 77, in __call__
-    await self.app(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 49, in __call__
-    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
   File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
     await self.middleware_stack(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 725, in app
-    await self.lifespan(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 694, in lifespan
-    async with self.lifespan_context(app) as maybe_state:
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 571, in __aenter__
-    await self._router.startup()
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 671, in startup
-    await handler()
-  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1235, in startup
-    logger.info("🚀 Hybrid Podcast Orchestrator starting up")
-Message: '🚀 Hybrid Podcast Orchestrator starting up'
-Arguments: ()
-2025-08-16 18:43:33,681 - graph - INFO - 🚀 Hybrid Podcast Orchestrator starting up
---- Logging error ---
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
+INFO:     127.0.0.1:65405 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65406 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65407 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65408 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65410 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65411 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65412 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65416 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
 Traceback (most recent call last):
-  File "C:\Program Files\Python311\Lib\logging\__init__.py", line 1113, in emit
-    stream.write(msg + self.terminator)
-  File "C:\Program Files\Python311\Lib\encodings\cp1252.py", line 19, in encode
-    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-UnicodeEncodeError: 'charmap' codec can't encode character '\U0001f4c2' in position 41: character maps to <undefined>
-Call stack:
-  File "<string>", line 1, in <module>
-  File "C:\Program Files\Python311\Lib\multiprocessing\spawn.py", line 122, in spawn_main
-    exitcode = _main(fd, parent_sentinel)
-  File "C:\Program Files\Python311\Lib\multiprocessing\spawn.py", line 135, in _main
-    return self._bootstrap(parent_sentinel)
-  File "C:\Program Files\Python311\Lib\multiprocessing\process.py", line 314, in _bootstrap
-    self.run()
-  File "C:\Program Files\Python311\Lib\multiprocessing\process.py", line 108, in run
-    self._target(*self._args, **self._kwargs)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\_subprocess.py", line 80, in subprocess_started
-    target(sockets=sockets)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\server.py", line 67, in run
-    return asyncio.run(self.serve(sockets=sockets))
-  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 190, in run
-    return runner.run(main)
-  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 641, in run_until_complete
-    self.run_forever()
-  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 608, in run_forever
-    self._run_once()
-  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 1936, in _run_once
-    handle._run()
-  File "C:\Program Files\Python311\Lib\asyncio\events.py", line 84, in _run
-    self._context.run(self._callback, *self._args)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\lifespan\on.py", line 86, in main
-    await app(scope, self.receive, self.send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 29, in __call__
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
     return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
     await super().__call__(scope, receive, send)
   File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
     await self.middleware_stack(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 151, in __call__
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
     await self.app(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 77, in __call__
-    await self.app(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 49, in __call__
-    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
   File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
     await self.middleware_stack(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 725, in app
-    await self.lifespan(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 694, in lifespan
-    async with self.lifespan_context(app) as maybe_state:
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 571, in __aenter__
-    await self._router.startup()
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 671, in startup
-    await handler()
-  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1236, in startup
-    logger.info(f"📂 State directory: {STATE_DIR.absolute()}")
-Message: '📂 State directory: C:\\Users\\ypathak1\\podcast_generator\\graph_state'
-Arguments: ()
-2025-08-16 18:43:34,033 - graph - INFO - 📂 State directory: C:\Users\ypathak1\podcast_generator\graph_state
---- Logging error ---
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
+INFO:     127.0.0.1:65417 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65418 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65419 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
 Traceback (most recent call last):
-  File "C:\Program Files\Python311\Lib\logging\__init__.py", line 1113, in emit
-    stream.write(msg + self.terminator)
-  File "C:\Program Files\Python311\Lib\encodings\cp1252.py", line 19, in encode
-    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-UnicodeEncodeError: 'charmap' codec can't encode character '\U0001f4cb' in position 41: character maps to <undefined>
-Call stack:
-  File "<string>", line 1, in <module>
-  File "C:\Program Files\Python311\Lib\multiprocessing\spawn.py", line 122, in spawn_main
-    exitcode = _main(fd, parent_sentinel)
-  File "C:\Program Files\Python311\Lib\multiprocessing\spawn.py", line 135, in _main
-    return self._bootstrap(parent_sentinel)
-  File "C:\Program Files\Python311\Lib\multiprocessing\process.py", line 314, in _bootstrap
-    self.run()
-  File "C:\Program Files\Python311\Lib\multiprocessing\process.py", line 108, in run
-    self._target(*self._args, **self._kwargs)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\_subprocess.py", line 80, in subprocess_started
-    target(sockets=sockets)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\server.py", line 67, in run
-    return asyncio.run(self.serve(sockets=sockets))
-  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 190, in run
-    return runner.run(main)
-  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 641, in run_until_complete
-    self.run_forever()
-  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 608, in run_forever
-    self._run_once()
-  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 1936, in _run_once
-    handle._run()
-  File "C:\Program Files\Python311\Lib\asyncio\events.py", line 84, in _run
-    self._context.run(self._callback, *self._args)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\lifespan\on.py", line 86, in main
-    await app(scope, self.receive, self.send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 29, in __call__
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
     return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
     await super().__call__(scope, receive, send)
   File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
     await self.middleware_stack(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 151, in __call__
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
     await self.app(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 77, in __call__
-    await self.app(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 49, in __call__
-    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
   File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
     await self.middleware_stack(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 725, in app
-    await self.lifespan(scope, receive, send)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 694, in lifespan
-    async with self.lifespan_context(app) as maybe_state:
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 571, in __aenter__
-    await self._router.startup()
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 671, in startup
-    await handler()
-  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1237, in startup
-    logger.info(f"📋 Registered agents: {len(REGISTRY)}")
-Message: '📋 Registered agents: 5'
-Arguments: ()
-2025-08-16 18:43:34,053 - graph - INFO - 📋 Registered agents: 5
-INFO:     Application startup complete.
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
+INFO:     127.0.0.1:65420 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65421 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65422 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65423 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65425 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65426 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65428 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
+INFO:     127.0.0.1:65429 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65430 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65431 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65432 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
+INFO:     127.0.0.1:65433 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65434 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65436 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65437 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65438 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65439 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
+INFO:     127.0.0.1:65440 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65441 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65442 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65443 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65444 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
+INFO:     127.0.0.1:65445 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65446 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65447 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65448 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65449 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
+INFO:     127.0.0.1:65450 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65451 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65453 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65454 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65452 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
+INFO:     127.0.0.1:65455 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65456 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65457 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65458 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65459 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
+INFO:     127.0.0.1:65460 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65461 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65462 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65463 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65464 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
+INFO:     127.0.0.1:65465 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65466 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65467 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65468 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65469 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
+INFO:     127.0.0.1:65470 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65471 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
+INFO:     127.0.0.1:65472 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65473 - "GET /sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65474 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65475 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65476 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65477 - "GET /session/podcast_20250816185500/state HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65478 - "GET /session/podcast_20250816185500/final-audio HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65479 - "GET /debug/config HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 409, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\fastapi\routing.py", line 215, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\starlette\concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2470, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 967, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1199, in debug_config
+    ok[k] = "present" if _present(k) else "MISSING"
+                         ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\graph.py", line 1188, in _present
+    return bool(v and v.trim())
+                      ^^^^^^
+AttributeError: 'str' object has no attribute 'trim'
