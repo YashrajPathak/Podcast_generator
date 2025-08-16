@@ -1,4 +1,4 @@
-# graph.py - Hybrid Podcast Orchestrator (v3.2.1)
+# graph.py - Hybrid Podcast Orchestrator (v3.2-fixed)
 import os
 import time
 import json
@@ -12,7 +12,7 @@ import wave as wav
 from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 
 from fastapi import (
-    FastAPI, HTTPException, Query, Body, WebSocket,
+    FastAPI, HTTPException, Query, Body, WebSocket, 
     WebSocketDisconnect, Request, BackgroundTasks
 )
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,17 +20,32 @@ from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
-_client = httpx.AsyncClient
 
-# Initialize logging first
+# ========= Robust logging (Windows console safe) =========
+# Configure basic logging first
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - graph - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("graph.log"),
+        logging.FileHandler("graph.log", encoding="utf-8"),
         logging.StreamHandler()
     ]
 )
+
+# Make console handler UTF-8 tolerant on Windows and replace unprintable chars
+try:
+    import sys, io
+    for h in logging.getLogger().handlers:
+        if isinstance(h, logging.StreamHandler):
+            # Wrap the stream with UTF-8 encoder and replace policy
+            if hasattr(sys.stdout, "buffer"):
+                try:
+                    h.setStream(io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace"))
+                except Exception:
+                    pass
+except Exception:
+    pass
+
 logger = logging.getLogger("Graph")
 
 # ========= Settings =========
@@ -70,9 +85,9 @@ settings = Settings()
 
 # ========= Initialization =========
 app = FastAPI(
-    title="🧠 Hybrid Podcast Orchestrator",
+    title="Hybrid Podcast Orchestrator",
     description="Combines real-time audio mixing with persistent multi-agent conversations",
-    version="3.2.1"
+    version="3.2"
 )
 
 # Middleware
@@ -98,7 +113,7 @@ try:
     from slowapi import Limiter
     from slowapi.util import get_remote_address
     from slowapi.middleware import SlowAPIMiddleware
-
+    
     limiter = Limiter(key_func=get_remote_address)
     app.state.limiter = limiter
     app.add_middleware(SlowAPIMiddleware)
@@ -107,6 +122,7 @@ except ImportError:
     logger.warning("SlowAPI not installed, rate limiting disabled")
     limiter = DummyLimiter()
 except Exception as e:
+    # Avoid logging emojis to keep Windows console safe
     logger.warning(f"Rate limiter initialization failed: {e}")
     limiter = DummyLimiter()
 
@@ -115,23 +131,23 @@ class AudioMixer:
     def __init__(self):
         self.active_streams: Dict[str, bytes] = {}
         self.mix_buffer = bytearray()
-
+        
     def add_stream(self, agent_id: str, audio_data: bytes):
         self.active_streams[agent_id] = audio_data
         self.remix()
-
+        
     def remove_stream(self, agent_id: str):
         if agent_id in self.active_streams:
             del self.active_streams[agent_id]
             self.remix()
-
+            
     def remix(self):
         self.mix_buffer = bytearray()
         streams = list(self.active_streams.values())
-
+        
         if not streams:
             return
-
+            
         max_len = max(len(s) for s in streams)
         for i in range(0, max_len, 2):
             samples = []
@@ -139,11 +155,11 @@ class AudioMixer:
                 if i < len(stream):
                     sample = int.from_bytes(stream[i:i+2], 'little', signed=True)
                     samples.append(sample)
-
+            
             if samples:
                 mixed = sum(samples) // len(samples)
                 self.mix_buffer.extend(mixed.to_bytes(2, 'little', signed=True))
-
+    
     def get_mixed_audio(self) -> bytes:
         return bytes(self.mix_buffer)
 
@@ -166,7 +182,7 @@ class ConnectionManager:
                 self.active_connections[session_id].remove(websocket)
             except ValueError:
                 pass
-
+            
     async def broadcast_audio(self, session_id: str, audio_data: bytes):
         if session_id in self.active_connections:
             for websocket in list(self.active_connections[session_id]):
@@ -179,9 +195,8 @@ class ConnectionManager:
 class AudioStreamManager:
     def __init__(self):
         self.active_streams = {}
-        self.sample_width = settings.SAMPLE_WIDTH  # bytes per sample, 2 for 16-bit mono
-        # 100ms chunks → samples * sample_width = bytes
-        self.chunk_size = int(settings.SAMPLE_RATE * 0.1) * self.sample_width
+        self.chunk_size = int(settings.SAMPLE_RATE * 0.1)  # 100ms chunks
+        self.sample_width = 2  # 16-bit audio
 
     async def stream_audio(self, session_id: str, audio_data: bytes):
         """Professional podcast streaming with:
@@ -194,19 +209,19 @@ class AudioStreamManager:
 
         # Pre-stream buffer (eliminates initial pop)
         await asyncio.sleep(0.05)
-
+        
         try:
-            # Stream in precise ~100ms chunks (bytes)
+            # Stream in precise 100ms chunks
             for i in range(0, len(audio_data), self.chunk_size):
                 if session_id not in self.active_streams:
                     break
-
+                    
                 chunk = audio_data[i:i+self.chunk_size]
                 await self._send_chunk(session_id, chunk)
-
+                
                 # Maintain exact timing (critical)
                 await asyncio.sleep(0.1)
-
+                
         finally:
             # Post-stream buffer (eliminates ending clip)
             await asyncio.sleep(0.05)
@@ -231,13 +246,12 @@ def _load_registry() -> Dict[str, Dict[str, Any]]:
         try:
             reg = json.loads(path.read_text(encoding="utf-8"))
         except Exception as e:
-            logger.warning(f"⚠️ Failed to parse {settings.REGISTRY_PATH}: {e}")
+            logger.warning(f"Failed to parse {settings.REGISTRY_PATH}: {e}")
     # Ensure legacy agents exist
     reg.setdefault("agent1", {"name": "Host", "url": settings.AGENT1_URL, "role": "host/moderator"})
     reg.setdefault("agent2", {"name": "Analyst", "url": settings.AGENT2_URL, "role": "analyst/researcher"})
     reg.setdefault("agent3", {"name": "Storyteller", "url": settings.AGENT3_URL, "role": "storyteller/entertainer"})
-    # clearer label for agent4
-    reg.setdefault("agent4", {"name": "Export", "url": settings.AGENT4_URL, "role": "exporter"})
+    reg.setdefault("agent4", {"name": "Export", "url": settings.AGENT4_URL, "role": "technical/fact-checker"})
     reg.setdefault("agent5", {"name": "Logger", "url": settings.AGENT5_URL, "role": "philosopher/deep thinker"})
     return reg
 
@@ -318,14 +332,13 @@ def _save_session(state: SessionState) -> None:
     try:
         state_dict = state.dict(exclude={"audio_broadcast_task"})
         for turn in state_dict["history"]:
-            # Ensure JSON-safe value
-            turn["audio_data"] = ""
+            turn["audio_data"] = b""
         _session_path(state.session_id).write_text(
-            json.dumps(state_dict, ensure_ascii=False, indent=2),
+            json.dumps(state_dict, ensure_ascii=False, indent=2), 
             encoding="utf-8"
         )
     except Exception as e:
-        logger.warning(f"⚠️ failed to persist {state.session_id}: {e}")
+        logger.warning(f"failed to persist {state.session_id}: {e}")
 
 def _load_session(sid: str) -> Optional[SessionState]:
     p = _session_path(sid)
@@ -335,7 +348,7 @@ def _load_session(sid: str) -> Optional[SessionState]:
         data = json.loads(p.read_text(encoding="utf-8"))
         return SessionState(**data)
     except Exception as e:
-        logger.warning(f"⚠️ failed to load {sid}: {e}")
+        logger.warning(f"failed to load {sid}: {e}")
         return None
 
 def _list_sessions_meta() -> List[Dict[str, Any]]:
@@ -539,7 +552,7 @@ async def _finalize_audio(state: SessionState) -> Optional[str]:
             pass
         return None
     except Exception as e:
-        logger.warning(f"⚠️ finalize_audio failed for {state.session_id}: {e}")
+        logger.warning(f"finalize_audio failed for {state.session_id}: {e}")
         return None
 
 def _normalize_audio(audio_data: bytes) -> bytes:
@@ -599,22 +612,24 @@ async def audio_broadcaster(session_id: str):
         return
 
 # ========= Agent Communication =========
+_client = httpx.AsyncClient
+
 @retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
 async def _agent_chat(
-    agent_key: str,
-    *,
-    text: str,
-    session_id: str,
+    agent_key: str, 
+    *, 
+    text: str, 
+    session_id: str, 
     voice: str,
-    turn_number: Optional[int],
+    turn_number: Optional[int], 
     max_turns: Optional[int],
-    conversation_context: Optional[str],
+    conversation_context: Optional[str], 
     is_interruption: bool
 ) -> Tuple[str, bytes, Optional[str]]:
     url = _chat_url(agent_key)
     if not url:
         raise RuntimeError(f"No chat URL for {agent_key}")
-
+    
     payload = {
         "text": text,
         "session_id": session_id,
@@ -627,13 +642,13 @@ async def _agent_chat(
         "conversation_context": conversation_context,
         "return_audio": True
     }
-
+    
     async with _client() as client:
-        r = await client.post(url, json=payload)
+        r = await client.post(url, json=payload, timeout=settings.AGENT_TIMEOUT)
         if r.status_code != 200:
             raise RuntimeError(f"{agent_key} chat failed ({r.status_code}): {r.text}")
         data = r.json()
-
+    
     audio_hex = data.get("audio_hex", "") or ""
     audio_data = bytes.fromhex(audio_hex) if audio_hex else b""
     audio_path = data.get("audio_path")
@@ -657,7 +672,6 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
     # Wall-clock deadline check
     try:
         if state.deadline_ts and time.time() >= state.deadline_ts and not state.ended:
-            logger.info(f"deadline_reached session_id={state.session_id} now={int(time.time())} deadline_ts={int(state.deadline_ts)}")
             await _end_session(state, "deadline_reached")
             return
     except Exception:
@@ -678,10 +692,10 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
             break
         if state.mute.get(agent_key, False):
             continue
-
+            
         voice = state.voices.get(agent_key, settings.DEFAULT_VOICES.get(agent_key, "en-US-AriaNeural"))
         prompt = "Continue the panel discussion based on the topic and context above."
-
+        
         try:
             text, audio_data, audio_path = await _agent_chat(
                 agent_key,
@@ -693,14 +707,14 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
                 conversation_context=base_ctx if base_ctx else None,
                 is_interruption=is_interrupt
             )
-
+            
             # Stream audio professionally
             await stream_manager.stream_audio(state.session_id, audio_data)
-
+            
         except Exception as e:
-            logger.warning(f"⚠️ {agent_key} turn failed: {e}")
+            logger.warning(f"{agent_key} turn failed: {e}")
             text, audio_data, audio_path = f"(error: {e})", b"", None
-
+            
         turn = Turn(
             turn_id=(state.history[-1].turn_id + 1) if state.history else 1,
             agent=agent_key,
@@ -758,19 +772,29 @@ def _to_json_safe(obj: _Any) -> _Any:
 # ========= API Endpoints =========
 @app.websocket("/ws/audio/{session_id}")
 async def websocket_audio(websocket: WebSocket, session_id: str):
-    await manager.connect(websocket, session_id)
     try:
-        # Simple keep-alive ping; clients can ignore or respond
+        await manager.connect(websocket, session_id)
         while True:
-            await asyncio.sleep(30)
+            # Keep connection alive; clients may send pings or small messages
             try:
-                await websocket.send_json({"type": "ping", "ts": int(time.time())})
+                await websocket.receive_text()
             except Exception:
-                break
+                await asyncio.sleep(0.5)
     except WebSocketDisconnect:
-        pass
-    finally:
-        manager.disconnect(websocket, session_id)
+        try:
+            manager.disconnect(websocket, session_id)
+        except Exception:
+            pass
+    except Exception:
+        try:
+            manager.disconnect(websocket, session_id)
+        except Exception:
+            pass
+
+class UserTurn(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=100)
+    text: str = Field(..., min_length=1, max_length=10000)
+    is_interruption: bool = False
 
 @app.post("/run")
 async def run_event(ev: RunEvent):
@@ -874,11 +898,6 @@ async def run_event(ev: RunEvent):
 
     raise HTTPException(status_code=400, detail=f"Unknown event: {ev.event}")
 
-class UserTurn(BaseModel):
-    session_id: str = Field(..., min_length=1, max_length=100)
-    text: str = Field(..., min_length=1, max_length=10000)
-    is_interruption: bool = False
-
 @app.post("/conversation/user-turn")
 async def user_turn(body: UserTurn):
     st = await store.ensure(body.session_id)
@@ -939,6 +958,11 @@ async def session_state(session_id: str):
         "current_round": st.current_round,
         "max_turns_per_round": st.max_turns_per_round,
         "history": [t.dict() for t in st.history],
+        "audio_ms": st.audio_ms,
+        "target_ms": st.target_ms,
+        "ended_reason": st.ended_reason,
+        "final_wav": st.final_wav,
+        "turn_audio": st.turn_audio,
     }
     return JSONResponse(content=_to_json_safe(payload))
 
@@ -954,7 +978,7 @@ async def compat_state_proxy(session_id: str):
                 "is_health_check": True
             }
         )
-
+    
     st = await store.get(session_id)
     if not st:
         raise HTTPException(
@@ -1051,7 +1075,7 @@ async def export_session(session_id: str, format: str = Query("html")):
     try:
         final_dir.mkdir(parents=True, exist_ok=True)
     except Exception as e:
-        logger.warning(f"⚠️ could not create FINAL_AUDIO_DIR={final_dir}: {e}")
+        logger.warning(f"could not create FINAL_AUDIO_DIR={final_dir}: {e}")
     try:
         logger.info(
             f"export_begin session_id={session_id} clips={len(clip_paths)} out_dir={final_dir}"
@@ -1129,8 +1153,7 @@ async def metrics():
         },
         "connections": {
             "websocket": sum(len(v) for v in manager.active_connections.values()),
-            # report active session streams, not mixer agent blobs
-            "audio_streams": len(stream_manager.active_streams)
+            "audio_streams": len(mixer.active_streams)
         },
         "system": {
             "registry_agents": len(REGISTRY),
@@ -1179,31 +1202,43 @@ async def get_final_audio_file(session_id: str):
 async def root():
     return RedirectResponse(url="/docs")
 
-# Debug config endpoint
+# --- replace your helpers + debug routes with this ---
+
 from typing import List as _List
-import re as _re
 
 def _present(k: str) -> bool:
-    v = os.getenv(k, "")
-    return bool(v and v.trim())
+    # Windows-safe, never throws
+    try:
+        v = os.getenv(k, "")
+        if not isinstance(v, str):
+            return False
+        return bool(v.strip())
+    except Exception:
+        return False
 
 def _looks_url(k: str) -> bool:
-    v = os.getenv(k, "")
-    return v.startswith("http://") or v.startswith("https://")
+    try:
+        v = os.getenv(k, "")
+        return isinstance(v, str) and (v.startswith("http://") or v.startswith("https://"))
+    except Exception:
+        return False
 
 def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[str], url_vars: _List[str] = []):
     @app.get("/debug/config")
     def debug_config():
-        ok: Dict[str, str] = {}
-        for k in required_vars:
-            ok[k] = "present" if _present(k) else "MISSING"
-        for k in url_vars:
-            if _present(k):
-                ok[k] = ok.get(k, "present")
-            ok[f"{k}_is_url"] = "ok" if _looks_url(k) else "INVALID_URL"
-        return {"service": service_name, "vars": ok}
+        # Hardened: never raise — always return JSON
+        try:
+            ok: Dict[str, str] = {}
+            for k in required_vars:
+                ok[k] = "present" if _present(k) else "MISSING"
+            for k in url_vars:
+                # annotate URL validity separately (doesn't flip 'present' status)
+                ok[f"{k}_is_url"] = "ok" if _looks_url(k) else "INVALID_URL"
+            return {"service": service_name, "vars": ok}
+        except Exception as e:
+            # final safety net
+            return {"service": service_name, "error": f"{type(e).__name__}: {e}"}
 
-    # Also expose effective runtime configuration values and registry entries
     @app.get("/debug/effective")
     def debug_effective():
         try:
@@ -1232,9 +1267,9 @@ def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[st
 @app.on_event("startup")
 async def startup():
     app.start_time = time.time()
-    logger.info("🚀 Hybrid Podcast Orchestrator starting up")
-    logger.info(f"📂 State directory: {STATE_DIR.absolute()}")
-    logger.info(f"📋 Registered agents: {len(REGISTRY)}")
+    logger.info("Hybrid Podcast Orchestrator starting up")
+    logger.info(f"State directory: {STATE_DIR.absolute()}")
+    logger.info(f"Registered agents: {len(REGISTRY)}")
 
 # Attach debug config endpoint
 attach_debug_config(
@@ -1246,4 +1281,11 @@ attach_debug_config(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("graph:app", host=settings.HOST, port=settings.PORT, log_level="info")
+    # If you run this module directly, use quieter server logs by default.
+    uvicorn.run(
+        "graph:app",
+        host=settings.HOST,
+        port=settings.PORT,
+        log_level="warning",   # reduces noise
+        access_log=False       # hides per-request access logs
+    )
