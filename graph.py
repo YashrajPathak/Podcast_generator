@@ -1,4 +1,4 @@
-# graph.py - Hybrid Podcast Orchestrator (v3.2)
+# graph.py - Hybrid Podcast Orchestrator (v3.2.1)
 import os
 import time
 import json
@@ -12,7 +12,7 @@ import wave as wav
 from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 
 from fastapi import (
-    FastAPI, HTTPException, Query, Body, WebSocket, 
+    FastAPI, HTTPException, Query, Body, WebSocket,
     WebSocketDisconnect, Request, BackgroundTasks
 )
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +21,7 @@ from pydantic_settings import BaseSettings
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 _client = httpx.AsyncClient
+
 # Initialize logging first
 logging.basicConfig(
     level=logging.INFO,
@@ -71,7 +72,7 @@ settings = Settings()
 app = FastAPI(
     title="🧠 Hybrid Podcast Orchestrator",
     description="Combines real-time audio mixing with persistent multi-agent conversations",
-    version="3.2"
+    version="3.2.1"
 )
 
 # Middleware
@@ -97,7 +98,7 @@ try:
     from slowapi import Limiter
     from slowapi.util import get_remote_address
     from slowapi.middleware import SlowAPIMiddleware
-    
+
     limiter = Limiter(key_func=get_remote_address)
     app.state.limiter = limiter
     app.add_middleware(SlowAPIMiddleware)
@@ -114,23 +115,23 @@ class AudioMixer:
     def __init__(self):
         self.active_streams: Dict[str, bytes] = {}
         self.mix_buffer = bytearray()
-        
+
     def add_stream(self, agent_id: str, audio_data: bytes):
         self.active_streams[agent_id] = audio_data
         self.remix()
-        
+
     def remove_stream(self, agent_id: str):
         if agent_id in self.active_streams:
             del self.active_streams[agent_id]
             self.remix()
-            
+
     def remix(self):
         self.mix_buffer = bytearray()
         streams = list(self.active_streams.values())
-        
+
         if not streams:
             return
-            
+
         max_len = max(len(s) for s in streams)
         for i in range(0, max_len, 2):
             samples = []
@@ -138,11 +139,11 @@ class AudioMixer:
                 if i < len(stream):
                     sample = int.from_bytes(stream[i:i+2], 'little', signed=True)
                     samples.append(sample)
-            
+
             if samples:
                 mixed = sum(samples) // len(samples)
                 self.mix_buffer.extend(mixed.to_bytes(2, 'little', signed=True))
-    
+
     def get_mixed_audio(self) -> bytes:
         return bytes(self.mix_buffer)
 
@@ -161,22 +162,26 @@ class ConnectionManager:
 
     def disconnect(self, websocket: WebSocket, session_id: str):
         if session_id in self.active_connections:
-            self.active_connections[session_id].remove(websocket)
-            
+            try:
+                self.active_connections[session_id].remove(websocket)
+            except ValueError:
+                pass
+
     async def broadcast_audio(self, session_id: str, audio_data: bytes):
         if session_id in self.active_connections:
-            for websocket in self.active_connections[session_id]:
+            for websocket in list(self.active_connections[session_id]):
                 try:
                     await websocket.send_bytes(audio_data)
-                except:
+                except Exception:
                     self.disconnect(websocket, session_id)
 
 # ========= AudioStreamManager =========
 class AudioStreamManager:
     def __init__(self):
         self.active_streams = {}
-        self.chunk_size = int(settings.SAMPLE_RATE * 0.1)  # 100ms chunks
-        self.sample_width = 2  # 16-bit audio
+        self.sample_width = settings.SAMPLE_WIDTH  # bytes per sample, 2 for 16-bit mono
+        # 100ms chunks → samples * sample_width = bytes
+        self.chunk_size = int(settings.SAMPLE_RATE * 0.1) * self.sample_width
 
     async def stream_audio(self, session_id: str, audio_data: bytes):
         """Professional podcast streaming with:
@@ -189,19 +194,19 @@ class AudioStreamManager:
 
         # Pre-stream buffer (eliminates initial pop)
         await asyncio.sleep(0.05)
-        
+
         try:
-            # Stream in precise 100ms chunks
+            # Stream in precise ~100ms chunks (bytes)
             for i in range(0, len(audio_data), self.chunk_size):
                 if session_id not in self.active_streams:
                     break
-                    
+
                 chunk = audio_data[i:i+self.chunk_size]
                 await self._send_chunk(session_id, chunk)
-                
+
                 # Maintain exact timing (critical)
                 await asyncio.sleep(0.1)
-                
+
         finally:
             # Post-stream buffer (eliminates ending clip)
             await asyncio.sleep(0.05)
@@ -231,7 +236,8 @@ def _load_registry() -> Dict[str, Dict[str, Any]]:
     reg.setdefault("agent1", {"name": "Host", "url": settings.AGENT1_URL, "role": "host/moderator"})
     reg.setdefault("agent2", {"name": "Analyst", "url": settings.AGENT2_URL, "role": "analyst/researcher"})
     reg.setdefault("agent3", {"name": "Storyteller", "url": settings.AGENT3_URL, "role": "storyteller/entertainer"})
-    reg.setdefault("agent4", {"name": "Export", "url": settings.AGENT4_URL, "role": "technical/fact-checker"})
+    # clearer label for agent4
+    reg.setdefault("agent4", {"name": "Export", "url": settings.AGENT4_URL, "role": "exporter"})
     reg.setdefault("agent5", {"name": "Logger", "url": settings.AGENT5_URL, "role": "philosopher/deep thinker"})
     return reg
 
@@ -312,9 +318,10 @@ def _save_session(state: SessionState) -> None:
     try:
         state_dict = state.dict(exclude={"audio_broadcast_task"})
         for turn in state_dict["history"]:
-            turn["audio_data"] = b""
+            # Ensure JSON-safe value
+            turn["audio_data"] = ""
         _session_path(state.session_id).write_text(
-            json.dumps(state_dict, ensure_ascii=False, indent=2), 
+            json.dumps(state_dict, ensure_ascii=False, indent=2),
             encoding="utf-8"
         )
     except Exception as e:
@@ -594,20 +601,20 @@ async def audio_broadcaster(session_id: str):
 # ========= Agent Communication =========
 @retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
 async def _agent_chat(
-    agent_key: str, 
-    *, 
-    text: str, 
-    session_id: str, 
+    agent_key: str,
+    *,
+    text: str,
+    session_id: str,
     voice: str,
-    turn_number: Optional[int], 
+    turn_number: Optional[int],
     max_turns: Optional[int],
-    conversation_context: Optional[str], 
+    conversation_context: Optional[str],
     is_interruption: bool
 ) -> Tuple[str, bytes, Optional[str]]:
     url = _chat_url(agent_key)
     if not url:
         raise RuntimeError(f"No chat URL for {agent_key}")
-    
+
     payload = {
         "text": text,
         "session_id": session_id,
@@ -620,13 +627,13 @@ async def _agent_chat(
         "conversation_context": conversation_context,
         "return_audio": True
     }
-    
+
     async with _client() as client:
         r = await client.post(url, json=payload)
         if r.status_code != 200:
             raise RuntimeError(f"{agent_key} chat failed ({r.status_code}): {r.text}")
         data = r.json()
-    
+
     audio_hex = data.get("audio_hex", "") or ""
     audio_data = bytes.fromhex(audio_hex) if audio_hex else b""
     audio_path = data.get("audio_path")
@@ -650,6 +657,7 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
     # Wall-clock deadline check
     try:
         if state.deadline_ts and time.time() >= state.deadline_ts and not state.ended:
+            logger.info(f"deadline_reached session_id={state.session_id} now={int(time.time())} deadline_ts={int(state.deadline_ts)}")
             await _end_session(state, "deadline_reached")
             return
     except Exception:
@@ -670,10 +678,10 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
             break
         if state.mute.get(agent_key, False):
             continue
-            
+
         voice = state.voices.get(agent_key, settings.DEFAULT_VOICES.get(agent_key, "en-US-AriaNeural"))
         prompt = "Continue the panel discussion based on the topic and context above."
-        
+
         try:
             text, audio_data, audio_path = await _agent_chat(
                 agent_key,
@@ -685,14 +693,14 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
                 conversation_context=base_ctx if base_ctx else None,
                 is_interruption=is_interrupt
             )
-            
+
             # Stream audio professionally
             await stream_manager.stream_audio(state.session_id, audio_data)
-            
+
         except Exception as e:
             logger.warning(f"⚠️ {agent_key} turn failed: {e}")
             text, audio_data, audio_path = f"(error: {e})", b"", None
-            
+
         turn = Turn(
             turn_id=(state.history[-1].turn_id + 1) if state.history else 1,
             agent=agent_key,
@@ -750,24 +758,19 @@ def _to_json_safe(obj: _Any) -> _Any:
 # ========= API Endpoints =========
 @app.websocket("/ws/audio/{session_id}")
 async def websocket_audio(websocket: WebSocket, session_id: str):
+    await manager.connect(websocket, session_id)
     try:
-        await manager.connect(websocket, session_id)
+        # Simple keep-alive ping; clients can ignore or respond
         while True:
-            # Keep connection alive; clients may send pings or small messages
+            await asyncio.sleep(30)
             try:
-                await websocket.receive_text()
+                await websocket.send_json({"type": "ping", "ts": int(time.time())})
             except Exception:
-                await asyncio.sleep(0.5)
+                break
     except WebSocketDisconnect:
-        try:
-            manager.disconnect(websocket, session_id)
-        except Exception:
-            pass
-    except Exception:
-        try:
-            manager.disconnect(websocket, session_id)
-        except Exception:
-            pass
+        pass
+    finally:
+        manager.disconnect(websocket, session_id)
 
 @app.post("/run")
 async def run_event(ev: RunEvent):
@@ -951,7 +954,7 @@ async def compat_state_proxy(session_id: str):
                 "is_health_check": True
             }
         )
-    
+
     st = await store.get(session_id)
     if not st:
         raise HTTPException(
@@ -1126,7 +1129,8 @@ async def metrics():
         },
         "connections": {
             "websocket": sum(len(v) for v in manager.active_connections.values()),
-            "audio_streams": len(mixer.active_streams)
+            # report active session streams, not mixer agent blobs
+            "audio_streams": len(stream_manager.active_streams)
         },
         "system": {
             "registry_agents": len(REGISTRY),
@@ -1181,7 +1185,7 @@ import re as _re
 
 def _present(k: str) -> bool:
     v = os.getenv(k, "")
-    return bool(v and v.strip())
+    return bool(v and v.trim())
 
 def _looks_url(k: str) -> bool:
     v = os.getenv(k, "")
