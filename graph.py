@@ -1,4 +1,4 @@
-# graph.py - Hybrid Podcast Orchestrator (v3.2-fixed)
+# graph.py - Hybrid Podcast Orchestrator (v3.3)
 import os
 import time
 import json
@@ -9,10 +9,11 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 import wave as wav
+from io import BytesIO
 from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 
 from fastapi import (
-    FastAPI, HTTPException, Query, Body, WebSocket, 
+    FastAPI, HTTPException, Query, Body, WebSocket,
     WebSocketDisconnect, Request, BackgroundTasks
 )
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,7 +23,6 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # ========= Robust logging (Windows console safe) =========
-# Configure basic logging first
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - graph - %(levelname)s - %(message)s",
@@ -32,17 +32,15 @@ logging.basicConfig(
     ]
 )
 
-# Make console handler UTF-8 tolerant on Windows and replace unprintable chars
+# Make console handler UTF-8 tolerant on Windows
 try:
     import sys, io
     for h in logging.getLogger().handlers:
-        if isinstance(h, logging.StreamHandler):
-            # Wrap the stream with UTF-8 encoder and replace policy
-            if hasattr(sys.stdout, "buffer"):
-                try:
-                    h.setStream(io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace"))
-                except Exception:
-                    pass
+        if isinstance(h, logging.StreamHandler) and hasattr(sys.stdout, "buffer"):
+            try:
+                h.setStream(io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace"))
+            except Exception:
+                pass
 except Exception:
     pass
 
@@ -70,9 +68,9 @@ class Settings(BaseSettings):
         "agent5": "en-US-JennyNeural",
     }
     STATE_DIR: str = "graph_state"
-    AUDIO_CHUNK_SIZE: int = 4096
+    AUDIO_CHUNK_MS: int = 100       # precise chunk duration
     SAMPLE_RATE: int = 24000
-    SAMPLE_WIDTH: int = 2  # 16-bit audio
+    SAMPLE_WIDTH: int = 2           # 16-bit audio
     HEALTH_CHECK_RATE_LIMIT: str = "10/minute"
     FINAL_AUDIO_DIR: str = "audio_cache"
 
@@ -87,11 +85,10 @@ settings = Settings()
 app = FastAPI(
     title="Hybrid Podcast Orchestrator",
     description="Combines real-time audio mixing with persistent multi-agent conversations",
-    version="3.2"
+    version="3.3"
 )
 
-# Middleware
-# Compute allowed origins from env (UI_ORIGINS comma-separated, fallback UI_ORIGIN)
+# Middleware (CORS)
 origins = [o.strip() for o in os.getenv("UI_ORIGINS", os.getenv("UI_ORIGIN", "http://localhost:8501")).split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
@@ -113,7 +110,7 @@ try:
     from slowapi import Limiter
     from slowapi.util import get_remote_address
     from slowapi.middleware import SlowAPIMiddleware
-    
+
     limiter = Limiter(key_func=get_remote_address)
     app.state.limiter = limiter
     app.add_middleware(SlowAPIMiddleware)
@@ -122,44 +119,40 @@ except ImportError:
     logger.warning("SlowAPI not installed, rate limiting disabled")
     limiter = DummyLimiter()
 except Exception as e:
-    # Avoid logging emojis to keep Windows console safe
     logger.warning(f"Rate limiter initialization failed: {e}")
     limiter = DummyLimiter()
 
-# ========= Audio Mixer =========
+# ========= Audio Mixer (kept; not used for live stream, used for finalization fallback) =========
 class AudioMixer:
     def __init__(self):
         self.active_streams: Dict[str, bytes] = {}
         self.mix_buffer = bytearray()
-        
+
     def add_stream(self, agent_id: str, audio_data: bytes):
         self.active_streams[agent_id] = audio_data
         self.remix()
-        
+
     def remove_stream(self, agent_id: str):
         if agent_id in self.active_streams:
             del self.active_streams[agent_id]
             self.remix()
-            
+
     def remix(self):
         self.mix_buffer = bytearray()
         streams = list(self.active_streams.values())
-        
         if not streams:
             return
-            
         max_len = max(len(s) for s in streams)
-        for i in range(0, max_len, 2):
+        for i in range(0, max_len, settings.SAMPLE_WIDTH):
             samples = []
             for stream in streams:
                 if i < len(stream):
-                    sample = int.from_bytes(stream[i:i+2], 'little', signed=True)
+                    sample = int.from_bytes(stream[i:i+settings.SAMPLE_WIDTH], 'little', signed=True)
                     samples.append(sample)
-            
             if samples:
                 mixed = sum(samples) // len(samples)
-                self.mix_buffer.extend(mixed.to_bytes(2, 'little', signed=True))
-    
+                self.mix_buffer.extend(mixed.to_bytes(settings.SAMPLE_WIDTH, 'little', signed=True))
+
     def get_mixed_audio(self) -> bytes:
         return bytes(self.mix_buffer)
 
@@ -172,70 +165,90 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket, session_id: str):
         await websocket.accept()
-        if session_id not in self.active_connections:
-            self.active_connections[session_id] = []
-        self.active_connections[session_id].append(websocket)
+        self.active_connections.setdefault(session_id, []).append(websocket)
 
     def disconnect(self, websocket: WebSocket, session_id: str):
-        if session_id in self.active_connections:
-            try:
-                self.active_connections[session_id].remove(websocket)
-            except ValueError:
-                pass
-            
-    async def broadcast_audio(self, session_id: str, audio_data: bytes):
-        if session_id in self.active_connections:
-            for websocket in list(self.active_connections[session_id]):
-                try:
-                    await websocket.send_bytes(audio_data)
-                except Exception:
-                    self.disconnect(websocket, session_id)
+        conns = self.active_connections.get(session_id)
+        if not conns:
+            return
+        try:
+            conns.remove(websocket)
+        except ValueError:
+            pass
 
-# ========= AudioStreamManager =========
+    async def broadcast_audio(self, session_id: str, audio_data: bytes):
+        conns = self.active_connections.get(session_id, [])
+        for ws in list(conns):
+            try:
+                await ws.send_bytes(audio_data)
+            except Exception:
+                self.disconnect(ws, session_id)
+
+manager = ConnectionManager()
+
+# ========= AudioStreamManager (FIXED: PCM chunking & WAV decode) =========
 class AudioStreamManager:
     def __init__(self):
-        self.active_streams = {}
-        self.chunk_size = int(settings.SAMPLE_RATE * 0.1)  # 100ms chunks
-        self.sample_width = 2  # 16-bit audio
+        self.active_streams: Dict[str, bool] = {}
+        # bytes per 100ms = sr * width * 0.1
+        self.chunk_bytes = int(settings.SAMPLE_RATE * settings.SAMPLE_WIDTH * (settings.AUDIO_CHUNK_MS / 1000.0))
+
+    def _wav_to_pcm(self, wav_bytes: bytes) -> Tuple[bytes, int, int]:
+        """Decode WAV -> PCM bytes; return (pcm, rate, width). If not WAV, return as-is with defaults."""
+        if not wav_bytes or len(wav_bytes) < 12:
+            return b"", settings.SAMPLE_RATE, settings.SAMPLE_WIDTH
+        # Check RIFF header
+        if wav_bytes[:4] != b"RIFF" or wav_bytes[8:12] != b"WAVE":
+            # Assume already PCM; stream as-is
+            return wav_bytes, settings.SAMPLE_RATE, settings.SAMPLE_WIDTH
+        try:
+            with wav.open(BytesIO(wav_bytes), 'rb') as wf:
+                rate = wf.getframerate()
+                width = wf.getsampwidth()
+                # mono/any ok; clients mix themselves
+                frames = wf.readframes(wf.getnframes())
+                return frames, rate, width
+        except Exception:
+            # If decode fails, stream raw
+            return wav_bytes, settings.SAMPLE_RATE, settings.SAMPLE_WIDTH
 
     async def stream_audio(self, session_id: str, audio_data: bytes):
-        """Professional podcast streaming with:
-        - Perfect chunk timing
-        - Anti-clip buffers
-        - Jitter compensation
-        """
+        """Stream PCM audio in precise chunks. Accepts WAV bytes and converts to PCM."""
         if not audio_data:
             return
 
-        # Pre-stream buffer (eliminates initial pop)
+        # Ensure stream is flagged active for this session
+        if session_id not in self.active_streams:
+            self.active_streams[session_id] = True
+
+        # Decode WAV to PCM if needed
+        pcm, rate, width = self._wav_to_pcm(audio_data)
+
+        # If source params differ from configured, we still chunk by bytes; most browsers handle it.
+        chunk_bytes = int(rate * width * (settings.AUDIO_CHUNK_MS / 1000.0))
+        chunk_bytes = max(chunk_bytes, 1)
+
+        # Pre-stream cushion
         await asyncio.sleep(0.05)
-        
         try:
-            # Stream in precise 100ms chunks
-            for i in range(0, len(audio_data), self.chunk_size):
-                if session_id not in self.active_streams:
+            for i in range(0, len(pcm), chunk_bytes):
+                if not self.active_streams.get(session_id):
                     break
-                    
-                chunk = audio_data[i:i+self.chunk_size]
-                await self._send_chunk(session_id, chunk)
-                
-                # Maintain exact timing (critical)
-                await asyncio.sleep(0.1)
-                
+                chunk = pcm[i:i + chunk_bytes]
+                await manager.broadcast_audio(session_id, chunk)
+                await asyncio.sleep(settings.AUDIO_CHUNK_MS / 1000.0)
         finally:
-            # Post-stream buffer (eliminates ending clip)
+            # Post cushion
             await asyncio.sleep(0.05)
 
-    async def _send_chunk(self, session_id: str, chunk: bytes):
-        """Send chunk with error correction"""
-        try:
-            await manager.broadcast_audio(session_id, chunk)
-        except Exception as e:
-            logger.error(f"Stream error: {e}")
-            raise
+    def activate(self, session_id: str):
+        self.active_streams[session_id] = True
 
-# Initialize managers
-manager = ConnectionManager()
+    def deactivate(self, session_id: str):
+        if session_id in self.active_streams:
+            self.active_streams[session_id] = False
+            del self.active_streams[session_id]
+
 stream_manager = AudioStreamManager()
 
 # ========= Registry =========
@@ -247,7 +260,6 @@ def _load_registry() -> Dict[str, Dict[str, Any]]:
             reg = json.loads(path.read_text(encoding="utf-8"))
         except Exception as e:
             logger.warning(f"Failed to parse {settings.REGISTRY_PATH}: {e}")
-    # Ensure legacy agents exist
     reg.setdefault("agent1", {"name": "Host", "url": settings.AGENT1_URL, "role": "host/moderator"})
     reg.setdefault("agent2", {"name": "Analyst", "url": settings.AGENT2_URL, "role": "analyst/researcher"})
     reg.setdefault("agent3", {"name": "Storyteller", "url": settings.AGENT3_URL, "role": "storyteller/entertainer"})
@@ -275,7 +287,6 @@ class RunEvent(BaseModel):
     agents: Optional[List[str]] = None
     voices: Optional[Dict[str,str]] = None
     max_turns: Optional[int] = None
-    # Allow 0 or None to mean "no duration target" (legacy behavior)
     target_minutes: Optional[int] = Field(default=None, ge=0, le=10)
 
 class Turn(BaseModel):
@@ -306,7 +317,6 @@ class SessionState(BaseModel):
     ended_reason: Optional[str] = None
     turn_audio: Dict[int, Dict[str, Any]] = {}
     final_wav: Optional[str] = None
-    # Wall-clock deadline timestamp (epoch seconds); None means disabled
     deadline_ts: Optional[float] = None
 
     class Config:
@@ -319,11 +329,8 @@ class SessionState(BaseModel):
         return v
 
 # ========= Persistence =========
-STATE_DIR = Path(settings.STATE_DIR)
-STATE_DIR.mkdir(parents=True, exist_ok=True)
-# Ensure final audio cache directory exists
-FINAL_DIR = Path(settings.FINAL_AUDIO_DIR)
-FINAL_DIR.mkdir(parents=True, exist_ok=True)
+STATE_DIR = Path(settings.STATE_DIR); STATE_DIR.mkdir(parents=True, exist_ok=True)
+FINAL_DIR = Path(settings.FINAL_AUDIO_DIR); FINAL_DIR.mkdir(parents=True, exist_ok=True)
 
 def _session_path(sid: str) -> Path:
     return STATE_DIR / f"{sid}.json"
@@ -334,7 +341,7 @@ def _save_session(state: SessionState) -> None:
         for turn in state_dict["history"]:
             turn["audio_data"] = b""
         _session_path(state.session_id).write_text(
-            json.dumps(state_dict, ensure_ascii=False, indent=2), 
+            json.dumps(state_dict, ensure_ascii=False, indent=2),
             encoding="utf-8"
         )
     except Exception as e:
@@ -342,8 +349,7 @@ def _save_session(state: SessionState) -> None:
 
 def _load_session(sid: str) -> Optional[SessionState]:
     p = _session_path(sid)
-    if not p.exists():
-        return None
+    if not p.exists(): return None
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
         return SessionState(**data)
@@ -371,7 +377,7 @@ def _list_sessions_meta() -> List[Dict[str, Any]]:
     out.sort(key=lambda x: x.get("updated_at") or 0, reverse=True)
     return out
 
-# ========= Store with Persistence =========
+# ========= Store =========
 class MemoryStore:
     def __init__(self):
         self.sessions: Dict[str, SessionState] = {}
@@ -379,11 +385,9 @@ class MemoryStore:
 
     async def get(self, sid: str) -> Optional[SessionState]:
         st = self.sessions.get(sid)
-        if st:
-            return st
+        if st: return st
         disk = _load_session(sid)
-        if disk:
-            self.sessions[sid] = disk
+        if disk: self.sessions[sid] = disk
         return disk
 
     async def upsert(self, state: SessionState):
@@ -393,8 +397,7 @@ class MemoryStore:
 
     async def ensure(self, sid: str) -> SessionState:
         st = await self.get(sid)
-        if st:
-            return st
+        if st: return st
         st = SessionState(
             session_id=sid,
             created_at=time.time(),
@@ -411,100 +414,19 @@ class MemoryStore:
 
 store = MemoryStore()
 
-# Centralized session end helper to ensure single transition and unified logging
-async def _end_session(state: SessionState, reason: str):
-    try:
-        if state.ended and state.ended_reason:
-            return
-    except Exception:
-        pass
-    # Cancel broadcaster if running
-    try:
-        if state.audio_broadcast_task and not state.audio_broadcast_task.done():
-            state.audio_broadcast_task.cancel()
-    except Exception:
-        pass
-    state.ended = True
-    state.ended_reason = reason
-    state.updated_at = time.time()
-    # Cleanup stream activation if set
-    try:
-        if state.session_id in stream_manager.active_streams:
-            del stream_manager.active_streams[state.session_id]
-    except Exception:
-        pass
-    # Finalize audio and best-effort trigger export
-    try:
-        await _finalize_audio(state)
-    except Exception:
-        pass
-    await store.upsert(state)
-    try:
-        logger.info(
-            f"session_end session_id={state.session_id} topic={state.topic} reason={state.ended_reason} "
-            f"turns={len(state.history)} audio_ms={state.audio_ms} target_ms={state.target_ms} final_wav={state.final_wav}"
-        )
-    except Exception:
-        pass
-    # Fire-and-forget Agent4 export (best-effort)
-    try:
-        agent4 = REGISTRY.get("agent4", {})
-        base = str(agent4.get("url", "")).rstrip("/")
-        if base:
-            content = {
-                "conversation_history": [
-                    {
-                        "turn_id": t.turn_id,
-                        "speaker": t.agent,
-                        "message": {
-                            "content": t.response,
-                            "timestamp": datetime.utcfromtimestamp(t.timestamp).isoformat() + "Z",
-                            "audio_path": t.audio_path,
-                        },
-                    }
-                    for t in state.history
-                ]
-            }
-            payload = {
-                "format": "zip",
-                "title": f"Podcast_{state.session_id}",
-                "content": content,
-                "metadata": {
-                    "topic": state.topic,
-                    "agents": state.agent_order,
-                    "target_ms": state.target_ms,
-                    "audio_ms": state.audio_ms,
-                    "ended_reason": state.ended_reason,
-                    "final_wav": state.final_wav,
-                },
-                "include_audio_links": True,
-                "include_timestamps": True,
-                "session_id": state.session_id,
-            }
-            # Run in background without blocking
-            asyncio.create_task(_post_agent4_export(base, payload))
-    except Exception as e:
-        try:
-            logger.warning(f"agent4_export_skip session_id={state.session_id} err={e}")
-        except Exception:
-            pass
-
-# ========= Audio Helpers =========
+# ========= Finalize / Audio helpers =========
 import base64
 from dotenv import load_dotenv
-# Ensure .env variables are also present in process environment so debug/config reflects them
 load_dotenv(override=False)
 
-# Write the current mixed audio buffer to a WAV file and return its path
 async def _finalize_audio(state: SessionState) -> Optional[str]:
     try:
-        # If already finalized, return existing path
         if state.final_wav and Path(state.final_wav).exists():
             return state.final_wav
 
         out_path = FINAL_DIR / f"{state.session_id}.wav"
 
-        # 1) Try mixed audio buffer first
+        # 1) Try mixed audio buffer
         mixed = mixer.get_mixed_audio()
         if mixed:
             with wav.open(str(out_path), 'wb') as wf:
@@ -522,12 +444,9 @@ async def _finalize_audio(state: SessionState) -> Optional[str]:
                 pass
             return str(out_path)
 
-        # 2) Fallback: stitch per-turn WAV clips in chronological order
-        try:
-            ordered = [state.turn_audio[k] for k in sorted(state.turn_audio.keys()) if isinstance(state.turn_audio.get(k), dict)]
-            clip_paths = [d.get("path") for d in ordered if d.get("path")]
-        except Exception:
-            ordered, clip_paths = [], []
+        # 2) Stitch per-turn clips
+        ordered = [state.turn_audio[k] for k in sorted(state.turn_audio.keys()) if isinstance(state.turn_audio.get(k), dict)]
+        clip_paths = [d.get("path") for d in ordered if d.get("path")]
         if clip_paths:
             stitched = _stitch_wavs(clip_paths, str(out_path))
             if stitched:
@@ -536,20 +455,12 @@ async def _finalize_audio(state: SessionState) -> Optional[str]:
                 await store.upsert(state)
                 try:
                     size = Path(stitched).stat().st_size if Path(stitched).exists() else 0
-                    logger.info(
-                        f"finalize_audio session_id={state.session_id} file={stitched} bytes={size} source=stitch clips={len(clip_paths)}"
-                    )
+                    logger.info(f"finalize_audio session_id={state.session_id} file={stitched} bytes={size} source=stitch clips={len(clip_paths)}")
                 except Exception:
                     pass
                 return stitched
 
-        # No audio available
-        try:
-            logger.info(
-                f"finalize_audio_no_data session_id={state.session_id} history={len(state.history)} clips={len(clip_paths) if 'clip_paths' in locals() else 0}"
-            )
-        except Exception:
-            pass
+        logger.info(f"finalize_audio_no_data session_id={state.session_id}")
         return None
     except Exception as e:
         logger.warning(f"finalize_audio failed for {state.session_id}: {e}")
@@ -570,10 +481,8 @@ def _wav_ms(file_path: Optional[str]) -> int:
         return 0
 
 def _stitch_wavs(paths: List[str], out_path: str) -> Optional[str]:
-    if not paths:
-        return None
+    if not paths: return None
     try:
-        # Use params from first file
         with wav.open(paths[0], 'rb') as src0:
             n_channels = src0.getnchannels()
             sampwidth = src0.getsampwidth()
@@ -585,8 +494,9 @@ def _stitch_wavs(paths: List[str], out_path: str) -> Optional[str]:
             for p in paths:
                 try:
                     with wav.open(p, 'rb') as s:
-                        if s.getnchannels() != n_channels or s.getsampwidth() != sampwidth or s.getframerate() != framerate:
-                            # skip incompatible clip
+                        if (s.getnchannels() != n_channels or
+                            s.getsampwidth() != sampwidth or
+                            s.getframerate() != framerate):
                             continue
                         out.writeframes(s.readframes(s.getnframes()))
                 except Exception:
@@ -595,7 +505,7 @@ def _stitch_wavs(paths: List[str], out_path: str) -> Optional[str]:
     except Exception:
         return None
 
-# Background broadcaster: periodically push mixed audio over WebSocket
+# Background broadcaster (kept for future mixer streaming)
 async def audio_broadcaster(session_id: str):
     try:
         while stream_manager.active_streams.get(session_id, False):
@@ -616,20 +526,20 @@ _client = httpx.AsyncClient
 
 @retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
 async def _agent_chat(
-    agent_key: str, 
+    agent_key: str,
     *, 
-    text: str, 
-    session_id: str, 
+    text: str,
+    session_id: str,
     voice: str,
-    turn_number: Optional[int], 
+    turn_number: Optional[int],
     max_turns: Optional[int],
-    conversation_context: Optional[str], 
+    conversation_context: Optional[str],
     is_interruption: bool
 ) -> Tuple[str, bytes, Optional[str]]:
     url = _chat_url(agent_key)
     if not url:
         raise RuntimeError(f"No chat URL for {agent_key}")
-    
+
     payload = {
         "text": text,
         "session_id": session_id,
@@ -642,17 +552,16 @@ async def _agent_chat(
         "conversation_context": conversation_context,
         "return_audio": True
     }
-    
+
     async with _client() as client:
         r = await client.post(url, json=payload, timeout=settings.AGENT_TIMEOUT)
         if r.status_code != 200:
             raise RuntimeError(f"{agent_key} chat failed ({r.status_code}): {r.text}")
         data = r.json()
-    
+
     audio_hex = data.get("audio_hex", "") or ""
     audio_data = bytes.fromhex(audio_hex) if audio_hex else b""
     audio_path = data.get("audio_path")
-    # If hex not provided but we have a file path, read bytes for streaming
     if not audio_data and audio_path:
         try:
             audio_data = Path(audio_path).read_bytes()
@@ -669,13 +578,13 @@ async def _agent_chat(
 async def _round_robin_once(state: SessionState, user_context: Optional[str] = None, is_interrupt: bool = False):
     if state.ended or state.paused:
         return
-    # Wall-clock deadline check
     try:
         if state.deadline_ts and time.time() >= state.deadline_ts and not state.ended:
             await _end_session(state, "deadline_reached")
             return
     except Exception:
         pass
+
     tail = state.history[-3:] if len(state.history) > 0 else []
     tail_text = "\n".join([f"{t.agent}: {t.response}" for t in tail])
     base_ctx = ""
@@ -692,10 +601,10 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
             break
         if state.mute.get(agent_key, False):
             continue
-            
+
         voice = state.voices.get(agent_key, settings.DEFAULT_VOICES.get(agent_key, "en-US-AriaNeural"))
         prompt = "Continue the panel discussion based on the topic and context above."
-        
+
         try:
             text, audio_data, audio_path = await _agent_chat(
                 agent_key,
@@ -707,14 +616,14 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
                 conversation_context=base_ctx if base_ctx else None,
                 is_interruption=is_interrupt
             )
-            
-            # Stream audio professionally
+
+            # Stream out this agent's audio (PCM-chunked)
             await stream_manager.stream_audio(state.session_id, audio_data)
-            
+
         except Exception as e:
             logger.warning(f"{agent_key} turn failed: {e}")
             text, audio_data, audio_path = f"(error: {e})", b"", None
-            
+
         turn = Turn(
             turn_id=(state.history[-1].turn_id + 1) if state.history else 1,
             agent=agent_key,
@@ -728,7 +637,6 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
         state.updated_at = time.time()
         await store.upsert(state)
 
-        # Track audio duration and check target
         try:
             if turn.audio_path:
                 ms = _wav_ms(turn.audio_path)
@@ -740,20 +648,42 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
                 )
         except Exception:
             pass
+
         if state.target_ms and state.audio_ms >= state.target_ms and not state.ended:
             await _end_session(state, "target_duration_reached")
             break
 
     state.current_round += 1
+# ========= Session Ending Helper =========
+async def _end_session(state: SessionState, reason: str = "unspecified"):
+    """Mark a session as ended, deactivate streaming, and persist."""
+    try:
+        if state.ended:
+            return
+        state.ended = True
+        state.ended_reason = reason
+        state.updated_at = time.time()
 
+        # deactivate live stream
+        stream_manager.deactivate(state.session_id)
+
+        # cancel broadcaster task if still running
+        if state.audio_broadcast_task and not state.audio_broadcast_task.done():
+            state.audio_broadcast_task.cancel()
+
+        # finalize audio if possible
+        try:
+            await _finalize_audio(state)
+        except Exception as e:
+            logger.warning(f"end_session finalize_audio failed: {e}")
+
+        await store.upsert(state)
+        logger.info(f"end_session_ok session_id={state.session_id} reason={reason}")
+    except Exception as e:
+        logger.error(f"end_session_error session_id={getattr(state,'session_id','?')} err={e}")
 # ========= JSON Safety Helper =========
 from typing import Any as _Any
-
 def _to_json_safe(obj: _Any) -> _Any:
-    """Recursively convert bytes/buffer-like types to JSON-safe structures.
-    - bytes/bytearray/memoryview -> {"__type__":"bytes","b64": base64}
-    - collections -> recurse
-    """
     try:
         if isinstance(obj, (bytes, bytearray, memoryview)):
             try:
@@ -766,7 +696,6 @@ def _to_json_safe(obj: _Any) -> _Any:
             return [_to_json_safe(v) for v in obj]
         return obj
     except Exception:
-        # In worst case, return string repr to avoid encoder crashes
         return str(obj)
 
 # ========= API Endpoints =========
@@ -781,15 +710,9 @@ async def websocket_audio(websocket: WebSocket, session_id: str):
             except Exception:
                 await asyncio.sleep(0.5)
     except WebSocketDisconnect:
-        try:
-            manager.disconnect(websocket, session_id)
-        except Exception:
-            pass
+        manager.disconnect(websocket, session_id)
     except Exception:
-        try:
-            manager.disconnect(websocket, session_id)
-        except Exception:
-            pass
+        manager.disconnect(websocket, session_id)
 
 class UserTurn(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=100)
@@ -806,29 +729,24 @@ async def run_event(ev: RunEvent):
         state.agent_order = ev.agents or state.agent_order
         if ev.voices:
             state.voices.update(ev.voices)
-        # duration target from UI; if 0 or None -> disable target (legacy behavior)
         if ev.target_minutes is None or ev.target_minutes == 0:
             state.target_ms = 0
             state.deadline_ts = None
         else:
             state.target_ms = int(ev.target_minutes * 60_000)
-            # Wall-clock deadline enforcement
             state.deadline_ts = time.time() + (state.target_ms / 1000.0)
         state.audio_ms = 0
         state.ended_reason = None
         state.turn_audio = {}
         state.final_wav = None
-        # Activate streaming for this session
-        try:
-            stream_manager.active_streams[ev.session_id] = True
-        except Exception:
-            pass
-        # Start broadcaster task if not running
-        try:
-            if not state.audio_broadcast_task or state.audio_broadcast_task.done():
-                state.audio_broadcast_task = asyncio.create_task(audio_broadcaster(ev.session_id))
-        except Exception:
-            pass
+
+        # ✅ Activate live streaming for this session
+        stream_manager.activate(ev.session_id)
+
+        # Background broadcaster (mixer-based, optional)
+        if not state.audio_broadcast_task or state.audio_broadcast_task.done():
+            state.audio_broadcast_task = asyncio.create_task(audio_broadcaster(ev.session_id))
+
         state.updated_at = time.time()
         await store.upsert(state)
         return {"status": "started", "session_id": ev.session_id, "target_ms": state.target_ms}
@@ -841,12 +759,15 @@ async def run_event(ev: RunEvent):
         state.paused = True
         state.updated_at = time.time()
         await store.upsert(state)
+        # Pausing live stream
+        stream_manager.deactivate(ev.session_id)
         return {"status": "paused", "session_id": ev.session_id}
 
     if ev.event == "resume":
         state.paused = False
         state.updated_at = time.time()
         await store.upsert(state)
+        stream_manager.activate(ev.session_id)
         return {"status": "resumed", "session_id": ev.session_id}
 
     if state.ended:
@@ -884,7 +805,6 @@ async def run_event(ev: RunEvent):
         if ev.event == "interrupt":
             await _end_session(state, "interrupted_stop")
             return {"status": "ok", "session_id": ev.session_id}
-        # message path continues orchestration
         try:
             await _round_robin_once(state, user_context=ev.input.strip(), is_interrupt=False)
         except Exception:
@@ -928,9 +848,6 @@ async def reload_registry():
 
 @app.get("/registry")
 async def get_registry():
-    """Return the current agent registry and its source path.
-    This allows UIs and other services to consume a single source of truth.
-    """
     try:
         return {
             "path": str(Path(settings.REGISTRY_PATH).resolve()),
@@ -971,14 +888,8 @@ async def compat_state_proxy(session_id: str):
     if session_id.startswith("health_check_"):
         return JSONResponse(
             status_code=200,
-            content={
-                "status": "health_check",
-                "session_id": session_id,
-                "exists": False,
-                "is_health_check": True
-            }
+            content={"status": "health_check", "session_id": session_id, "exists": False, "is_health_check": True}
         )
-    
     st = await store.get(session_id)
     if not st:
         raise HTTPException(
@@ -997,7 +908,6 @@ HEALTH_DEBOUNCE_SECONDS = int(os.getenv("GRAPH_HEALTH_DEBOUNCE_SECONDS", "30"))
 async def health(request: Request, background_tasks: BackgroundTasks):
     global _last_health_snapshot, _last_health_log_ts
     try:
-        # snapshot: number of active sessions + current ts
         sessions = list(store.sessions.keys())
         snap = {"sessions": len(sessions)}
         now = time.time()
@@ -1068,18 +978,13 @@ async def export_session(session_id: str, format: str = Query("html")):
     if not st:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Prepare stitched WAV from per-turn audio
     ordered = [st.turn_audio[k] for k in sorted(st.turn_audio.keys()) if isinstance(st.turn_audio.get(k), dict)]
     clip_paths = [d.get("path") for d in ordered if d.get("path")]
     final_dir = Path(settings.FINAL_AUDIO_DIR)
+    try: final_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e: logger.warning(f"could not create FINAL_AUDIO_DIR={final_dir}: {e}")
     try:
-        final_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        logger.warning(f"could not create FINAL_AUDIO_DIR={final_dir}: {e}")
-    try:
-        logger.info(
-            f"export_begin session_id={session_id} clips={len(clip_paths)} out_dir={final_dir}"
-        )
+        logger.info(f"export_begin session_id={session_id} clips={len(clip_paths)} out_dir={final_dir}")
     except Exception:
         pass
     out_file = str(final_dir / f"final_{session_id}.wav")
@@ -1090,9 +995,7 @@ async def export_session(session_id: str, format: str = Query("html")):
         await store.upsert(st)
         try:
             size = Path(stitched).stat().st_size if Path(stitched).exists() else 0
-            logger.info(
-                f"export_done session_id={session_id} file={stitched} bytes={size} clips={len(clip_paths)}"
-            )
+            logger.info(f"export_done session_id={session_id} file={stitched} bytes={size} clips={len(clip_paths)}")
         except Exception:
             pass
     else:
@@ -1136,10 +1039,8 @@ async def _post_agent4_export(base_url: str, payload: Dict[str, Any]) -> Dict[st
     async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
         r = await c.post(f"{base_url}/export", json=payload)
         if r.status_code >= 500:
-            # trigger retry on transient errors
             raise RuntimeError(f"agent4 5xx: {r.status_code}")
         if r.status_code != 200:
-            # no retry for client errors
             raise HTTPException(status_code=500, detail=f"Agent4 export failed: {r.text}")
         return r.json()
 
@@ -1153,7 +1054,7 @@ async def metrics():
         },
         "connections": {
             "websocket": sum(len(v) for v in manager.active_connections.values()),
-            "audio_streams": len(mixer.active_streams)
+            "audio_streams": len(stream_manager.active_streams)
         },
         "system": {
             "registry_agents": len(REGISTRY),
@@ -1162,7 +1063,6 @@ async def metrics():
     }
 
 async def _cleanup_health_sessions():
-    """Clean up any remaining health check sessions"""
     try:
         for sid in list(store.sessions.keys()):
             if sid.startswith("health_check_"):
@@ -1179,7 +1079,6 @@ async def get_final_audio(session_id: str):
     if not st:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # If not finalized yet, but session has ended, attempt best-effort finalize now
     if (not st.final_wav or not Path(st.final_wav).exists()):
         if st.ended:
             try:
@@ -1202,17 +1101,13 @@ async def get_final_audio_file(session_id: str):
 async def root():
     return RedirectResponse(url="/docs")
 
-# --- replace your helpers + debug routes with this ---
-
+# ---- Debug helpers ----
 from typing import List as _List
 
 def _present(k: str) -> bool:
-    # Windows-safe, never throws
     try:
         v = os.getenv(k, "")
-        if not isinstance(v, str):
-            return False
-        return bool(v.strip())
+        return bool(isinstance(v, str) and v.strip())
     except Exception:
         return False
 
@@ -1226,17 +1121,14 @@ def _looks_url(k: str) -> bool:
 def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[str], url_vars: _List[str] = []):
     @app.get("/debug/config")
     def debug_config():
-        # Hardened: never raise — always return JSON
         try:
             ok: Dict[str, str] = {}
             for k in required_vars:
                 ok[k] = "present" if _present(k) else "MISSING"
             for k in url_vars:
-                # annotate URL validity separately (doesn't flip 'present' status)
                 ok[f"{k}_is_url"] = "ok" if _looks_url(k) else "INVALID_URL"
             return {"service": service_name, "vars": ok}
         except Exception as e:
-            # final safety net
             return {"service": service_name, "error": f"{type(e).__name__}: {e}"}
 
     @app.get("/debug/effective")
@@ -1263,7 +1155,7 @@ def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[st
             }
         }
 
-# Startup event
+# Startup
 @app.on_event("startup")
 async def startup():
     app.start_time = time.time()
@@ -1281,11 +1173,10 @@ attach_debug_config(
 
 if __name__ == "__main__":
     import uvicorn
-    # If you run this module directly, use quieter server logs by default.
     uvicorn.run(
         "graph:app",
         host=settings.HOST,
         port=settings.PORT,
-        log_level="warning",   # reduces noise
-        access_log=False       # hides per-request access logs
+        log_level="warning",
+        access_log=False
     )
