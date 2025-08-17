@@ -1,4 +1,4 @@
-# agent2.py – 📝 Production-Grade Summarizer & Analyst Agent (v2.1.4)
+# agent2.py – 📝 Production-Grade Summarizer & Analyst Agent (v2.2.0)
 
 import os
 import json
@@ -6,7 +6,8 @@ import asyncio
 import logging
 import time
 import re
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,16 +49,21 @@ except Exception:
 
 # ========== Settings ==========
 class Settings(BaseSettings):
+    # LLM
     AZURE_OPENAI_KEY: str
     AZURE_OPENAI_ENDPOINT: str
     AZURE_OPENAI_DEPLOYMENT: str = "gpt-4o"
     OPENAI_API_VERSION: str = "2024-05-01-preview"
 
+    # Orchestrator + TTS
+    ORCHESTRATOR_URL: str = "http://localhost:8008"  # Graph base (no /conversation)
+    AGENT3_URL: str = "http://localhost:8004"        # Agent3 TTS base
+
+    # Behavior
     AGENT_TIMEOUT: float = 30.0
     MAX_TEXT_LENGTH: int = 15000
     MAX_RETRIES: int = 3
     MAX_SEGMENTS: int = 10  # hard ceiling
-    ORCHESTRATOR_URL: str = "http://localhost:8008"  # Graph base (no /conversation)
 
     class Config:
         env_file = ".env"
@@ -125,6 +131,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     audio_path: Optional[str] = None
+    audio_hex: Optional[str] = None   # ✅ provide inline bytes for Graph
     session_id: str
     status: str = "success"
     processing_time: Optional[float] = None
@@ -272,6 +279,40 @@ class Agent2:
             logger.critical(f"❌ LLM initialization failed: {e}")
             raise
 
+    # ---------- TTS helper (Agent3) ----------
+    @staticmethod
+    def _tts_base() -> str:
+        return (settings.AGENT3_URL or "http://localhost:8004").rstrip("/")
+
+    @retry(stop=stop_after_attempt(settings.MAX_RETRIES),
+           wait=wait_exponential(multiplier=1, min=1, max=8))
+    async def tts_via_agent3(self, *, text: str, voice: str, session_id: str) -> Tuple[Optional[str], bytes]:
+        """Call Agent3 /generate-audio, return (audio_path, audio_bytes)."""
+        if not text.strip():
+            return None, b""
+        url = f"{self._tts_base()}/generate-audio"
+        payload = {
+            "text": text,
+            "voice": voice,
+            "speed": 1.0,
+            "pitch": 1.0,
+            "session_id": session_id
+        }
+        async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
+            r = await client.post(url, json=payload)
+            if r.status_code != 200:
+                raise RuntimeError(f"Agent3 TTS failed ({r.status_code}): {r.text}")
+            data = r.json()
+
+        audio_path = data.get("audio_path")
+        audio_bytes = b""
+        if audio_path:
+            try:
+                audio_bytes = Path(audio_path).read_bytes()
+            except Exception as e:
+                logger.warning(f"[Agent2][TTS] Could not read WAV at {audio_path}: {e}")
+        return audio_path, audio_bytes
+
     # --------- Summarize ---------
     @retry(stop=stop_after_attempt(settings.MAX_RETRIES),
            wait=wait_exponential(multiplier=1, min=1, max=8))
@@ -373,6 +414,7 @@ class Agent2:
                 return ChatResponse(
                     response="",
                     audio_path=None,
+                    audio_hex=None,
                     session_id=request.session_id,
                     status="muted",
                     processing_time=0.0,
@@ -397,10 +439,25 @@ class Agent2:
             if not response_text:
                 raise ValueError("LLM returned empty response")
 
+            # ---- NEW: TTS via Agent3 ----
+            audio_path: Optional[str] = None
+            audio_hex: Optional[str] = None
+            try:
+                audio_path, audio_bytes = await self.tts_via_agent3(
+                    text=response_text,
+                    voice=request.voice,
+                    session_id=request.session_id
+                )
+                if audio_bytes:
+                    audio_hex = audio_bytes.hex()
+            except Exception as e:
+                logger.warning(f"[Agent2] TTS step failed: {e}")
+
             elapsed = time.time() - start
             return ChatResponse(
                 response=response_text,
-                audio_path=None,
+                audio_path=audio_path,
+                audio_hex=audio_hex,
                 session_id=request.session_id,
                 status="success",
                 processing_time=elapsed,
@@ -409,6 +466,7 @@ class Agent2:
                     "conversation_mode": request.conversation_mode,
                     "is_interruption": request.is_interruption,
                     "voice": request.voice,
+                    "audio_generated": bool(audio_hex or audio_path),
                 },
                 turn_number=request.turn_number,
             )
@@ -418,6 +476,8 @@ class Agent2:
             logger.error(f"❌ {error_msg}")
             return ChatResponse(
                 response=f"Error: {error_msg}",
+                audio_path=None,
+                audio_hex=None,
                 session_id=request.session_id,
                 status="error",
                 processing_time=elapsed,
@@ -470,7 +530,8 @@ class Agent2:
             error_msg = f"Command processing failed: {str(e)}"
             logger.error(f"❌ {error_msg}")
             return {
-                "error": error_msg,
+                "error": "line-of-command failed",
+                "detail": str(e),
                 "session_id": request.session_id,
                 "processing_time": elapsed,
             }
@@ -592,7 +653,7 @@ Text:
 app = FastAPI(
     title="📝 Agent2 - Summarizer & Analyst",
     description="Production-grade summarizer and analyst agent for podcast content",
-    version="2.1.4",
+    version="2.2.0",
 )
 
 app.add_middleware(
@@ -615,11 +676,15 @@ except Exception as e:
 # ---- Startup diagnostics (non-secret)
 @app.on_event("startup")
 async def startup():
-    required = ["AZURE_OPENAI_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT", "OPENAI_API_VERSION", "ORCHESTRATOR_URL"]
+    required = [
+        "AZURE_OPENAI_KEY", "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_DEPLOYMENT", "OPENAI_API_VERSION",
+        "ORCHESTRATOR_URL", "AGENT3_URL"
+    ]
     presence = {k: ("present" if os.getenv(k) else "MISSING") for k in required}
     print(f"[Agent2][STARTUP] Env presence: {presence}")
     print(f"[Agent2][STARTUP] ORCHESTRATOR_BASE={_orch_base()}")
-
+    print(f"[Agent2][STARTUP] Agent3 base={(settings.AGENT3_URL or '').rstrip('/')}")
 
 # ---- Debug config endpoint (safe, no secrets)
 from typing import List as _List
@@ -649,8 +714,12 @@ def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[st
 attach_debug_config(
     app,
     "agent2",
-    required_vars=["AZURE_OPENAI_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT", "OPENAI_API_VERSION", "ORCHESTRATOR_URL"],
-    url_vars=["ORCHESTRATOR_URL"]
+    required_vars=[
+        "AZURE_OPENAI_KEY", "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_DEPLOYMENT", "OPENAI_API_VERSION",
+        "ORCHESTRATOR_URL", "AGENT3_URL"
+    ],
+    url_vars=["ORCHESTRATOR_URL", "AGENT3_URL"]
 )
 
 
@@ -684,7 +753,7 @@ async def health():
         return {
             "status": "healthy" if all(required) else "degraded",
             "service": "Agent2 - Summarizer & Analyst",
-            "version": "2.1.4",
+            "version": "2.2.0",
             "uptime": time.time() - agent._start_time,
         }
     except Exception as e:
@@ -695,7 +764,7 @@ async def health():
 async def root():
     return {
         "service": "Agent2 - Summarizer & Analyst",
-        "version": "2.1.4",
+        "version": "2.2.0",
         "description": "Production-grade summarizer and analyst agent for podcast content",
         "endpoints": {
             "summarize": "/v1/summarize",
@@ -711,6 +780,7 @@ async def root():
             "Explicit system prompts for consistency",
             "Retry logic & lightweight health",
             "Session ID validation",
+            "🔊 Integrated TTS via Agent3 (audio_path + audio_hex)"
         ],
     }
 
