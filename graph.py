@@ -501,41 +501,59 @@ def _stitch_wavs(paths: List[str], out_path: str) -> Optional[str]:
 
 # ---- NEW: TTS fallback via Agent3 (returns bytes) ----
 async def _tts_fallback_bytes(text: str, voice: str, session_id: str) -> bytes:
-    """If an agent returns text without audio, synthesize it using Agent3."""
+    """If an agent returns text without audio, synthesize it using Agent3 and return WAV bytes."""
     if not text:
         return b""
     try:
         a3_base = (REGISTRY.get("agent3", {}) or {}).get("url") or settings.AGENT3_URL
         a3_base = str(a3_base).rstrip("/")
         url = f"{a3_base}/generate-audio"
-        payload = {
-            "text": text,
-            "voice": voice,
-            "session_id": session_id,
-            "speed": 1.0,
-            "pitch": 1.0
-        }
+        payload = {"text": text, "voice": voice, "session_id": session_id, "speed": 1.0, "pitch": 1.0}
+
         async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
             r = await c.post(url, json=payload)
-            if r.status_code != 200:
-                logger.warning(f"tts_fallback agent3 non-200: {r.status_code}")
-                return b""
-            data = r.json()
-        hex_data = (data or {}).get("audio_hex") or ""
-        if hex_data:
-            return bytes.fromhex(hex_data)
-        # Fallback: try fetching the served file if path returned
-        ap = (data or {}).get("audio_path")
-        if isinstance(ap, str) and ap.startswith("/"):
+        if r.status_code != 200:
+            logger.warning(f"tts_fallback agent3 non-200: {r.status_code}")
+            return b""
+
+        data = r.json() or {}
+
+        # 1) Prefer inline hex
+        hex_data = (data.get("audio_hex") or "")
+        if isinstance(hex_data, str) and hex_data:
             try:
-                async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
-                    r2 = await c.get(f"{a3_base}{ap}")
-                    if r2.status_code == 200:
+                return bytes.fromhex(hex_data)
+            except Exception as e:
+                logger.warning(f"tts_fallback hex decode failed: {e}")
+
+        # 2) Fetch by path/URL
+        ap = data.get("audio_path")
+        if isinstance(ap, str) and ap:
+            try:
+                # normalize for Windows-style paths
+                ap_norm = ap.replace("\\", "/")
+
+                # Absolute URL
+                if ap_norm.startswith(("http://", "https://")):
+                    async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
+                        r2 = await c.get(ap_norm)
+                    if r2.status_code == 200 and r2.content:
                         return r2.content
-            except Exception:
-                pass
+
+                # Relative path (serve-from-agent)
+                fetch_url = f"{a3_base}/{ap_norm.lstrip('/')}"
+                async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
+                    r3 = await c.get(fetch_url)
+                if r3.status_code == 200 and r3.content:
+                    return r3.content
+                else:
+                    logger.warning(f"tts_fallback fetch failed {fetch_url} -> {r3.status_code}")
+            except Exception as e:
+                logger.warning(f"tts_fallback fetch exception for {ap}: {e}")
+
     except Exception as e:
         logger.warning(f"tts_fallback error: {e}")
+
     return b""
 
 def _write_local_wav(audio_bytes: bytes, agent_key: str) -> Optional[str]:
