@@ -1,78 +1,15 @@
-(.venv) PS C:\Users\ypathak1\podcast_generator> python test.py
-start: {'status': 'started', 'session_id': 's1', 'target_ms': 0}
-graph debug: {'service': 'graph', 'vars': {'AGENT1_URL': 'MISSING', 'AGENT2_URL': 'MISSING', 'AGENT3_URL': 'MISSING', 'AGENT4_URL': 'MISSING', 'AGENT5_URL': 'MISSING', 'AGENT1_URL_is_url': 'INVALID_URL', 'AGENT2_URL_is_url': 'INVALID_URL', 'AGENT3_URL_is_url': 'INVALID_URL', 'AGENT4_URL_is_url': 'INVALID_URL', 'AGENT5_URL_is_url': 'INVALID_URL'}}
-Traceback (most recent call last):
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_transports\default.py", line 101, in map_httpcore_exceptions
-    yield
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_transports\default.py", line 394, in handle_async_request
-    resp = await self._pool.handle_async_request(req)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_async\connection_pool.py", line 256, in handle_async_request
-    raise exc from None
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_async\connection_pool.py", line 236, in handle_async_request
-    response = await connection.handle_async_request(
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_async\connection.py", line 103, in handle_async_request     
-    return await self._connection.handle_async_request(request)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_async\http11.py", line 136, in handle_async_request
-    raise exc
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_async\http11.py", line 106, in handle_async_request
-    ) = await self._receive_response_headers(**kwargs)
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_async\http11.py", line 177, in _receive_response_headers
-    event = await self._receive_event(timeout=timeout)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_async\http11.py", line 217, in _receive_event
-    data = await self._network_stream.read(
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_backends\anyio.py", line 32, in read
-    with map_exceptions(exc_map):
-  File "C:\Program Files\Python311\Lib\contextlib.py", line 158, in __exit__
-    self.gen.throw(typ, value, traceback)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpcore\_exceptions.py", line 14, in map_exceptions
-    raise to_exc(exc) from exc
-httpcore.ReadTimeout
-
-The above exception was the direct cause of the following exception:
-
-Traceback (most recent call last):
-  File "C:\Users\ypathak1\podcast_generator\test.py", line 49, in <module>
-    asyncio.run(main())
-  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 190, in run
-    return runner.run(main)
-           ^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 654, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\test.py", line 25, in main
-    r = await g.post("/run", json={"session_id": s, "event": "topic_input", "input": "AI and podcasts"})
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_client.py", line 1859, in post
-    return await self.request(
-           ^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_client.py", line 1540, in request
-    return await self.send(request, auth=auth, follow_redirects=follow_redirects)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_client.py", line 1629, in send
-    response = await self._send_handling_auth(
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_client.py", line 1657, in _send_handling_auth
-    response = await self._send_handling_redirects(
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_client.py", line 1694, in _send_handling_redirects
-    response = await self._send_single_request(request)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_client.py", line 1730, in _send_single_request
-    response = await transport.handle_async_request(request)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_transports\default.py", line 393, in handle_async_request
-    with map_httpcore_exceptions():
-  File "C:\Program Files\Python311\Lib\contextlib.py", line 158, in __exit__
-    self.gen.throw(typ, value, traceback)
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\httpx\_transports\default.py", line 118, in map_httpcore_exceptions
-    raise mapped_exc(message) from exc
-httpx.ReadTimeout
+[1] agent1: (2025-08-18T07:11:28.300721Z) Welcome back to our podcast, folks! We're diving into some fascinating year-over-year data trends today, and there's a lot to unpack. Just looking at 2025, we're seeing an early-year total of 2,811.1, which is quite intriguing when you consider the average for the year is 351.4 so far. But here's the kicker—compared to February last year, we're seeing a significant drop of 42.6% month-over-month. What do you think is driving this change, and how do you expect these trends to evolve as we move further into 2025?
+  [audio] audio_cache\agent1_155739e5401a444db0e11db32b16e39b.wav
+[2] agent1: (2025-08-18T07:11:31.892988Z) Absolutely, it's quite a shift we're seeing! With a 42.6% drop month-over-month, it seems like we're experiencing some significant fluctuations early in 2025. This could be attributed to various factors like seasonal changes or market dynamics shifting. Panel, what are your thoughts on these potential influences? And how do you think these trends compare to the earlier years, especially with 2024 showing a high of 842.0 and a much steadier average?
+  [audio] audio_cache\agent1_a4a7d5c535c9492f88d4c2e38b6080cd.wav
+[3] agent2: (2025-08-18T07:11:34.296340Z) Looking at the data, February 2025 saw a significant drop of 42.6% compared to the previous month, with values decreasing by 158.8 units. This decline is noteworthy, especially when considering the broader 12-month range where values fluctuated between 155.2 and 531.3, indicating potential volatility or seasonal factors at play.
+[4] agent2: (2025-08-18T07:11:37.571724Z) Looking at the data, February 2025 showed a notable decrease with a month-over-month drop of 42.6%, bringing the value down to 214.0 from 372.8. This is quite significant considering the 12-month average is 375.4, suggesting February's figures were well below typical performance. It raises questions about potential seasonal factors or external influences impacting these numbers.
+[5] agent1: (2025-08-18T07:11:42.310080Z) Welcome back to our panel discussion, folks! Diving deeper into these numbers, it's fascinating to see how 2025 is shaping up compared to previous years. With 2024 hitting a high of 842.0 and an average of 415.5, the early 2025 dip is quite the contrast. Panel, what are your predictions for the rest of 2025? Do you think we'll see a rebound, or is this the beginning of a new trend?
+  [audio] audio_cache\agent1_1ee0ec4a0ab94714908231baccbb594b.wav
+[6] agent2: (2025-08-18T07:11:47.630721Z) Looking at the recent data, February 2025 showed a significant month-over-month decline of 42.6%, dropping from 372.8 to 214.0. This sharp decrease might indicate seasonal fluctuations or external factors impacting the weekly metrics, especially since the year-to-date average for 2025 is already lower than the previous year's average.
+[7] agent3: (2025-08-18T07:12:23.255127Z) So, it seems like February took a bit of a dive with a 42.6% decrease—like it slipped on a banana peel in a cartoon! But let's not panic. It's like comparing your New Year's gym enthusiasm to your Valentine's Day candy stash; sometimes, things fluctuate! Despite the drop, the year-to-date numbers still show a robust average, and with 52 datapoints, it's clear we've been busy collecting info like squirrels hoarding nuts for winter.
+  [audio] audio_cache\agent3_f58825859ef34770a99c0b3743c84ae3.wav
+[8] agent3: (2025-08-18T07:12:23.793206Z) So, looking at these numbers, it seems like February was a bit like that friend who's always late to the party and still manages to steal the show—dropping by a whopping 42.6% and leaving us scratching our heads like, "Did we miss something?" But hey, at least it's consistent with its unpredictability! With weekly fluctuations that could rival a rollercoaster, it's no surprise our data points have had quite the adventure this year. Let's just hope March brings a more stable narrative.
+  [audio] audio_cache\agent3_892a6ffe84dc404aa14c8baf3c3a6269.wav
+[9] agent3: (2025-08-18T07:12:31.547764Z) Well, it looks like February was on a bit of a diet, shedding 42.6% compared to the previous month. It's like the month decided to skip its cheat days! With numbers dropping faster than a lead balloon, one can't help but wonder if February is trying to set a new trend, or maybe it just got a bit too comfortable after the holidays. Perhaps March will come in with a little more gusto, like a lion waking up after a winter nap!
+  [audio] audio_cache\agent3_db633a329cc0484494cb82621425e4d9.wav
