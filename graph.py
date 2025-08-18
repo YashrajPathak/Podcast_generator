@@ -1,4 +1,4 @@
-# graph.py - Hybrid Podcast Orchestrator (v3.3)
+# graph.py - Hybrid Podcast Orchestrator (v3.4 with TTS fallback)
 import os
 import time
 import json
@@ -85,7 +85,7 @@ settings = Settings()
 app = FastAPI(
     title="Hybrid Podcast Orchestrator",
     description="Combines real-time audio mixing with persistent multi-agent conversations",
-    version="3.3"
+    version="3.4"
 )
 
 # Middleware (CORS)
@@ -205,7 +205,6 @@ class AudioStreamManager:
             with wav.open(BytesIO(wav_bytes), 'rb') as wf:
                 rate = wf.getframerate()
                 width = wf.getsampwidth()
-                # mono/any ok; clients mix themselves
                 frames = wf.readframes(wf.getnframes())
                 return frames, rate, width
         except Exception:
@@ -217,18 +216,14 @@ class AudioStreamManager:
         if not audio_data:
             return
 
-        # Ensure stream is flagged active for this session
         if session_id not in self.active_streams:
             self.active_streams[session_id] = True
 
-        # Decode WAV to PCM if needed
         pcm, rate, width = self._wav_to_pcm(audio_data)
 
-        # If source params differ from configured, we still chunk by bytes; most browsers handle it.
         chunk_bytes = int(rate * width * (settings.AUDIO_CHUNK_MS / 1000.0))
         chunk_bytes = max(chunk_bytes, 1)
 
-        # Pre-stream cushion
         await asyncio.sleep(0.05)
         try:
             for i in range(0, len(pcm), chunk_bytes):
@@ -238,7 +233,6 @@ class AudioStreamManager:
                 await manager.broadcast_audio(session_id, chunk)
                 await asyncio.sleep(settings.AUDIO_CHUNK_MS / 1000.0)
         finally:
-            # Post cushion
             await asyncio.sleep(0.05)
 
     def activate(self, session_id: str):
@@ -505,6 +499,62 @@ def _stitch_wavs(paths: List[str], out_path: str) -> Optional[str]:
     except Exception:
         return None
 
+# ---- NEW: TTS fallback via Agent3 (returns bytes) ----
+async def _tts_fallback_bytes(text: str, voice: str, session_id: str) -> bytes:
+    """If an agent returns text without audio, synthesize it using Agent3."""
+    if not text:
+        return b""
+    try:
+        a3_base = (REGISTRY.get("agent3", {}) or {}).get("url") or settings.AGENT3_URL
+        a3_base = str(a3_base).rstrip("/")
+        url = f"{a3_base}/generate-audio"
+        payload = {
+            "text": text,
+            "voice": voice,
+            "session_id": session_id,
+            "speed": 1.0,
+            "pitch": 1.0
+        }
+        async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
+            r = await c.post(url, json=payload)
+            if r.status_code != 200:
+                logger.warning(f"tts_fallback agent3 non-200: {r.status_code}")
+                return b""
+            data = r.json()
+        hex_data = (data or {}).get("audio_hex") or ""
+        if hex_data:
+            return bytes.fromhex(hex_data)
+        # Fallback: try fetching the served file if path returned
+        ap = (data or {}).get("audio_path")
+        if isinstance(ap, str) and ap.startswith("/"):
+            try:
+                async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
+                    r2 = await c.get(f"{a3_base}{ap}")
+                    if r2.status_code == 200:
+                        return r2.content
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"tts_fallback error: {e}")
+    return b""
+
+def _write_local_wav(audio_bytes: bytes, agent_key: str) -> Optional[str]:
+    """Persist bytes to a local WAV under audio_cache and return the path."""
+    if not audio_bytes:
+        return None
+    try:
+        FINAL_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    fname = f"{agent_key}_{uuid.uuid4().hex}.wav"
+    out_path = FINAL_DIR / fname
+    try:
+        out_path.write_bytes(audio_bytes)
+        return str(out_path)
+    except Exception as e:
+        logger.warning(f"write_local_wav failed: {e}")
+        return None
+
 # Background broadcaster (kept for future mixer streaming)
 async def audio_broadcaster(session_id: str):
     try:
@@ -564,7 +614,9 @@ async def _agent_chat(
     audio_path = data.get("audio_path")
     if not audio_data and audio_path:
         try:
-            audio_data = Path(audio_path).read_bytes()
+            # attempt local read only if it's a filesystem path; skip if it's a URL path
+            if Path(str(audio_path)).exists():
+                audio_data = Path(audio_path).read_bytes()
         except Exception:
             audio_data = b""
     logger.info(f"agent_turn_ok session_id={session_id} agent={agent_key} text_len={len(text)} audio_bytes={len(audio_data)}")
@@ -605,8 +657,11 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
         voice = state.voices.get(agent_key, settings.DEFAULT_VOICES.get(agent_key, "en-US-AriaNeural"))
         prompt = "Continue the panel discussion based on the topic and context above."
 
+        local_audio_bytes = b""
+        local_audio_path: Optional[str] = None
+
         try:
-            text, audio_data, audio_path = await _agent_chat(
+            text, audio_data, _remote_path = await _agent_chat(
                 agent_key,
                 text=prompt,
                 session_id=state.session_id,
@@ -617,43 +672,68 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
                 is_interruption=is_interrupt
             )
 
-            # Stream out this agent's audio (PCM-chunked)
-            await stream_manager.stream_audio(state.session_id, audio_data)
+            # If the agent returned text but no audio, synthesize via Agent3
+            if (not audio_data) and text:
+                audio_data = await _tts_fallback_bytes(text, voice, state.session_id)
+
+            # Ensure we have a local wav file for this turn
+            if audio_data:
+                local_audio_bytes = audio_data
+                local_audio_path = _write_local_wav(audio_data, agent_key)
+
+            # Stream out this agent's audio (PCM-chunked) using the bytes we will persist
+            await stream_manager.stream_audio(state.session_id, local_audio_bytes or audio_data)
 
         except Exception as e:
             logger.warning(f"{agent_key} turn failed: {e}")
-            text, audio_data, audio_path = f"(error: {e})", b"", None
+            text, local_audio_bytes, local_audio_path = f"(error: {e})", b"", None
 
         turn = Turn(
             turn_id=(state.history[-1].turn_id + 1) if state.history else 1,
             agent=agent_key,
             role=_agent_role(agent_key),
             response=text,
-            audio_path=audio_path,
-            audio_data=audio_data,
+            audio_path=local_audio_path,           # <-- always local path or None
+            audio_data=local_audio_bytes,          # kept empty on disk by _save_session
             timestamp=time.time()
         )
         state.history.append(turn)
-        state.updated_at = time.time()
-        await store.upsert(state)
 
+        # Track clip metadata for auto-play queue (even if missing -> skipped)
         try:
-            if turn.audio_path:
+            if turn.audio_path and Path(turn.audio_path).exists():
                 ms = _wav_ms(turn.audio_path)
-                state.turn_audio[turn.turn_id] = {"path": turn.audio_path, "ms": ms, "speaker": turn.agent}
+                state.turn_audio[turn.turn_id] = {
+                    "path": turn.audio_path,
+                    "ms": ms,
+                    "speaker": turn.agent,
+                    "played": False,   # ensure auto-play queue sees it as unplayed
+                }
                 state.audio_ms += ms
                 logger.info(
                     f"turn_done session_id={state.session_id} turn_id={turn.turn_id} agent={turn.agent} ms={ms} "
                     f"audio_ms={state.audio_ms} target_ms={state.target_ms} final_wav={state.final_wav}"
                 )
+            else:
+                # still append entry to preserve ordering (marked played to skip)
+                state.turn_audio[turn.turn_id] = {
+                    "path": None,
+                    "ms": 0,
+                    "speaker": turn.agent,
+                    "played": True
+                }
         except Exception:
             pass
+
+        state.updated_at = time.time()
+        await store.upsert(state)
 
         if state.target_ms and state.audio_ms >= state.target_ms and not state.ended:
             await _end_session(state, "target_duration_reached")
             break
 
     state.current_round += 1
+
 # ========= Session Ending Helper =========
 async def _end_session(state: SessionState, reason: str = "unspecified"):
     """Mark a session as ended, deactivate streaming, and persist."""
@@ -681,6 +761,7 @@ async def _end_session(state: SessionState, reason: str = "unspecified"):
         logger.info(f"end_session_ok session_id={state.session_id} reason={reason}")
     except Exception as e:
         logger.error(f"end_session_error session_id={getattr(state,'session_id','?')} err={e}")
+
 # ========= JSON Safety Helper =========
 from typing import Any as _Any
 def _to_json_safe(obj: _Any) -> _Any:
@@ -704,7 +785,6 @@ async def websocket_audio(websocket: WebSocket, session_id: str):
     try:
         await manager.connect(websocket, session_id)
         while True:
-            # Keep connection alive; clients may send pings or small messages
             try:
                 await websocket.receive_text()
             except Exception:
@@ -835,6 +915,67 @@ async def user_turn(body: UserTurn):
     st.history.append(turn)
     await _round_robin_once(st, user_context=body.text.strip(), is_interrupt=body.is_interruption)
     return {"status": "ok", "session_id": body.session_id, "round": st.current_round}
+
+# ========= Auto-play helpers for frontends =========
+def _safe_read_file_bytes(p: str) -> bytes:
+    try:
+        return Path(p).read_bytes()
+    except Exception:
+        return b""
+
+@app.post("/session/{session_id}/next-audio")
+async def get_next_unplayed_audio(session_id: str):
+    """
+    Returns the next unplayed turn's audio as base64 (WAV), and marks it as played.
+    Response:
+      - { "status": "ok", "turn_id": int, "agent": str, "audio_b64": str, "mime": "audio/wav" }
+      - { "status": "none" }  if nothing to play yet
+    """
+    st = await store.get(session_id)
+    if not st:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    for tid in sorted(st.turn_audio.keys()):
+        meta = st.turn_audio.get(tid) or {}
+        if not isinstance(meta, dict):
+            continue
+        if meta.get("played"):
+            continue
+        p = meta.get("path")
+        if not p or not Path(p).exists():
+            # mark as played to skip broken entry
+            meta["played"] = True
+            continue
+
+        audio_bytes = _safe_read_file_bytes(p)
+        meta["played"] = True
+        st.updated_at = time.time()
+        await store.upsert(st)
+
+        return {
+            "status": "ok",
+            "turn_id": tid,
+            "agent": meta.get("speaker"),
+            "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+            "mime": "audio/wav",
+        }
+
+    return {"status": "none"}
+
+@app.post("/session/{session_id}/reset-playback")
+async def reset_playback(session_id: str):
+    """
+    Marks all turn audios as unplayed. Useful to replay from the beginning.
+    """
+    st = await store.get(session_id)
+    if not st:
+        raise HTTPException(status_code=404, detail="Session not found")
+    for _, meta in (st.turn_audio or {}).items():
+        if isinstance(meta, dict):
+            meta["played"] = False
+    st.updated_at = time.time()
+    await store.upsert(st)
+    return {"status": "ok", "reset": True}
 
 @app.get("/sessions")
 async def list_sessions():
