@@ -1,15 +1,62 @@
-[1] agent1: (2025-08-17T18:01:38.253728Z) Welcome back, listeners, to another exciting episode where we dive deep into the dynamic world of Bihar's politics! Today, we've got a stellar panel lined up to unpack the complexities and nuances of Bihar's political landscape. To kick things off, let's discuss the recent electoral shifts and their impact. What do you think is driving the change in political allegiances in Bihar right now?
-  [audio] audio_cache\aria_63f22174973844ba873b09b656dd6164.wav
-[2] agent2: (2025-08-17T18:01:40.903227Z) Certainly! If we look at the political landscape in Bihar, it's fascinating to note that the state's voter demographics are heavily influenced by caste dynamics. The 2020 Bihar Legislative Assembly election, for instance, highlighted how alliances with key caste groups can make or break electoral success. The JD(U) and BJP coalition managed to secure a majority by effectively mobilizing support among the upper castes and non-Yadav OBCs, reflecting the nuanced interplay of caste in Bihar's politics.
-[3] agent1: (2025-08-17T18:01:46.902169Z) Welcome back to our deep dive into Bihar's political scene! Joining us today, we have experts who'll shed light on the intriguing shifts in voter loyalty we've been seeing. Let's start with the role of regional parties versus national parties in shaping current political dynamics. How are local issues influencing voter behavior more than national narratives in Bihar?
-  [audio] audio_cache\aria_999aaf7cb02244cf87ae7eb6c7f2a769.wav
-[4] agent2: (2025-08-17T18:01:49.188345Z) In the context of Bihar's political landscape, it's interesting to note that the state has seen a significant shift in voter demographics, with younger voters now making up a substantial portion of the electorate. This change is influencing political strategies, as parties are increasingly focusing on issues like employment and education to resonate with this demographic.
-[5] agent1: (2025-08-17T18:02:01.403884Z) Fantastic! To kick things off, let's explore how regional parties are capitalizing on local issues to garner support. We have seen that issues like caste dynamics, agriculture, and infrastructure development play a crucial role in Bihar. What do you think, panelists? Are these local concerns overshadowing broader national narratives in voter decision-making?
-  [audio] audio_cache\aria_54e896400bef491385ec68842569ff58.wav
-[6] agent2: (2025-08-17T18:02:04.382336Z) Certainly! When we look at Bihar's political landscape, it's fascinating to note that the state's voter turnout has been consistently above the national average, with the 2020 assembly elections seeing a turnout of around 57.05%. This indicates a highly engaged electorate, which plays a crucial role in shaping the state's political dynamics, often leading to a competitive multi-party environment.
-[7] agent3: (2025-08-17T18:02:20.564990Z) Ah, Bihar politics, where alliances are as unpredictable as the weather in April. One day, you’re best friends sharing samosas, and the next, you’re arch-nemeses vying for the last jalebi at the electoral buffet. Imagine a soap opera with more plot twists than a bowl of Maggi noodles – that’s Bihar for you!
-  [audio] audio_cache\prab_1086007b48dd4eca85791aab62502306.wav
-[8] agent3: (2025-08-17T18:02:21.303770Z) Ah, Bihar politics, where the drama is as rich as the local cuisine! It's a place where alliances change faster than you can say "Litti Chokha." Imagine if political parties were a family gathering—everyone starts off cordial, but by the end of the night, someone's been disowned, someone else has been adopted, and there's always that one uncle who’s asleep in a corner dreaming of being the next Chief Minister.
-  [audio] audio_cache\prab_c27052c005a14a0ba738fc70d9e06acf.wav
-[9] agent3: (2025-08-17T18:02:55.576303Z) Ah, Bihar politics—a tapestry so intricate, it makes a spider's web look like a toddler's crayon doodle. Imagine an election where every candidate could moonlight as a stand-up comedian, slipping jokes into their manifestos like, "Vote for me, and I'll ensure potholes are so big, they'll be rebranded as Bihar's newest tourist attraction!" It's a scene where alliances change faster than you can say "Lalu Prasad Yadav," and party switches are as common as chai stalls on Patna's streets, making it a political rollercoaster with more twists and turns than a Bollywood thriller!
-  [audio] audio_cache\prab_fd14a4a38cef425bbc90a945aab36dd1.wav
+# ========= Auto-play helpers for frontends =========
+def _safe_read_file_bytes(p: str) -> bytes:
+    try:
+        return Path(p).read_bytes()
+    except Exception:
+        return b""
+
+@app.post("/session/{session_id}/next-audio")
+async def get_next_unplayed_audio(session_id: str):
+    """
+    Returns the next unplayed turn's audio as base64 (WAV), and marks it as played.
+    Response:
+      - { "status": "ok", "turn_id": int, "agent": str, "audio_b64": str, "mime": "audio/wav" }
+      - { "status": "none" }  if nothing to play yet
+    """
+    st = await store.get(session_id)
+    if not st:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # find next unplayed turn with audio
+    for tid in sorted(st.turn_audio.keys()):
+        meta = st.turn_audio.get(tid) or {}
+        if not isinstance(meta, dict):
+            continue
+        if meta.get("played"):
+            continue
+        p = meta.get("path")
+        if not p or not Path(p).exists():
+            # mark as played to skip broken entry
+            meta["played"] = True
+            continue
+
+        # read and mark played
+        audio_bytes = _safe_read_file_bytes(p)
+        meta["played"] = True
+        st.updated_at = time.time()
+        await store.upsert(st)
+
+        return {
+            "status": "ok",
+            "turn_id": tid,
+            "agent": meta.get("speaker"),
+            "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+            "mime": "audio/wav",
+        }
+
+    return {"status": "none"}
+
+@app.post("/session/{session_id}/reset-playback")
+async def reset_playback(session_id: str):
+    """
+    Marks all turn audios as unplayed. Useful to replay from the beginning.
+    """
+    st = await store.get(session_id)
+    if not st:
+        raise HTTPException(status_code=404, detail="Session not found")
+    for _, meta in (st.turn_audio or {}).items():
+        if isinstance(meta, dict):
+            meta["played"] = False
+    st.updated_at = time.time()
+    await store.upsert(st)
+    return {"status": "ok", "reset": True}
