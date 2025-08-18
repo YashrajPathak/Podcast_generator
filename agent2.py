@@ -1,4 +1,4 @@
-# agent2.py – 📝 Production-Grade Summarizer & Analyst Agent (v2.2.1)
+# agent2.py – 📝 Production-Grade Summarizer & Analyst Agent (v2.2.2)
 
 import os
 import json
@@ -81,6 +81,52 @@ def _orch_base() -> str:
 def _agent3_base() -> str:
     return (settings.AGENT3_URL or "http://localhost:8004").rstrip("/")
 
+# ---------- Audio extraction helper (prefer inline hex, then local, then HTTP) ----------
+async def _extract_audio_from_agent3_response(
+    data: Dict[str, Any],
+    agent3_base: str,
+    timeout: float
+) -> Tuple[Optional[str], bytes]:
+    """Return (audio_path, audio_bytes)."""
+    if not isinstance(data, dict):
+        return None, b""
+
+    hex_data = data.get("audio_hex")
+    audio_path = data.get("audio_path")
+
+    # 1) Prefer inline bytes (most reliable)
+    if isinstance(hex_data, str) and hex_data:
+        try:
+            return audio_path, bytes.fromhex(hex_data)
+        except Exception as e:
+            logger.warning(f"[Agent2][TTS] hex decode failed: {e}")
+
+    # 2) Try local path on shared volume (if any)
+    if isinstance(audio_path, str) and audio_path:
+        try:
+            p = Path(audio_path)
+            if p.exists():
+                return audio_path, p.read_bytes()
+        except Exception as e:
+            logger.debug(f"[Agent2][TTS] local read miss ({audio_path}): {e}")
+
+        # 3) Fallback to HTTP fetch (absolute or relative to Agent3)
+        try:
+            if audio_path.startswith(("http://", "https://")):
+                fetch_url = audio_path
+            else:
+                # if Agent3 returned "audio_cache/xyz.wav" or "/audio/xyz.wav"
+                fetch_url = f"{agent3_base}/{audio_path.lstrip('/')}"
+            async with AsyncClient(timeout=Timeout(timeout)) as client:
+                r2 = await client.get(fetch_url)
+            if r2.status_code == 200 and r2.content:
+                return audio_path, r2.content
+            logger.warning(f"[Agent2][TTS] HTTP fetch failed {fetch_url} -> {r2.status_code}")
+        except Exception as e:
+            logger.warning(f"[Agent2][TTS] HTTP fetch exception: {e}")
+
+    return None, b""
+
 # ========== Models ==========
 class SummarizeRequest(BaseModel):
     raw_script: str = Field(..., min_length=1, max_length=50000)
@@ -112,7 +158,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
-    audio_path: Optional[str] = None     # set to Agent3 URL for debugging
+    audio_path: Optional[str] = None     # set to Agent3 URL or path for reference
     audio_hex: Optional[str] = None      # inline bytes for Graph playback
     session_id: str
     status: str = "success"
@@ -224,40 +270,28 @@ class Agent2:
         self.json_parser = RobustJSONParser()
         logger.info("✅ Agent2 initialized (LLM ready)")
 
-    # ---------- TTS via Agent3 (returns URL + bytes) ----------
+    # ---------- TTS via Agent3 (returns URL/path + bytes, preferring audio_hex) ----------
     @retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
     async def tts_via_agent3(self, *, text: str, voice: str, session_id: str) -> Tuple[Optional[str], bytes]:
         if not text.strip():
             return None, b""
         gen_url = f"{_agent3_base()}/generate-audio"
         payload = {"text": text, "voice": voice, "speed": 1.0, "pitch": 1.0, "session_id": session_id}
+
         async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
             r = await client.post(gen_url, json=payload)
-            if r.status_code != 200:
-                raise RuntimeError(f"Agent3 TTS failed ({r.status_code}): {r.text}")
-            data = r.json()
+        if r.status_code != 200:
+            raise RuntimeError(f"Agent3 TTS failed ({r.status_code}): {r.text}")
 
-        audio_path = data.get("audio_path")
-        if not audio_path:
-            return None, b""
-
-        # Build a fetchable URL on Agent3
-        if isinstance(audio_path, str) and audio_path.startswith("http"):
-            audio_url = audio_path
-        else:
-            filename = Path(str(audio_path)).name
-            audio_url = f"{_agent3_base()}/audio/{filename}"
-
-        # Download bytes from Agent3 so Graph can play them via audio_hex
-        async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
-            resp: Response = await client.get(audio_url)
-            if resp.status_code != 200:
-                logger.warning(f"[Agent2][TTS] Could not fetch WAV via URL: {audio_url} ({resp.status_code})")
-                audio_bytes = b""
-            else:
-                audio_bytes = resp.content
-
-        return audio_url, audio_bytes
+        data = r.json()
+        audio_path, audio_bytes = await _extract_audio_from_agent3_response(
+            data=data,
+            agent3_base=_agent3_base(),
+            timeout=settings.AGENT_TIMEOUT
+        )
+        if not audio_bytes:
+            logger.warning("[Agent2][TTS] No audio bytes returned after extraction (will return text-only).")
+        return (data.get("audio_path") or audio_path), audio_bytes
 
     # --------- Summarize ---------
     @retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
@@ -338,7 +372,11 @@ class Agent2:
             audio_url: Optional[str] = None
             audio_hex: Optional[str] = None
             try:
-                audio_url, audio_bytes = await self.tts_via_agent3(text=response_text, voice=request.voice, session_id=request.session_id)
+                audio_url, audio_bytes = await self.tts_via_agent3(
+                    text=response_text,
+                    voice=request.voice,
+                    session_id=request.session_id
+                )
                 if audio_bytes:
                     audio_hex = audio_bytes.hex()
             except Exception as e:
@@ -347,7 +385,7 @@ class Agent2:
             elapsed = time.time() - start
             return ChatResponse(
                 response=response_text,
-                audio_path=audio_url,  # URL for reference; Graph will use audio_hex for live playback
+                audio_path=audio_url,  # Graph prefers audio_hex; path kept for reference/debug
                 audio_hex=audio_hex,
                 session_id=request.session_id,
                 status="success",
@@ -501,7 +539,7 @@ Text:
 app = FastAPI(
     title="📝 Agent2 - Summarizer & Analyst",
     description="Production-grade summarizer and analyst agent for podcast content",
-    version="2.2.1",
+    version="2.2.2",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -542,7 +580,7 @@ async def health():
     try:
         req = [bool(settings.AZURE_OPENAI_KEY), bool(settings.AZURE_OPENAI_ENDPOINT), bool(settings.AZURE_OPENAI_DEPLOYMENT)]
         return {"status": "healthy" if all(req) else "degraded", "service": "Agent2 - Summarizer & Analyst",
-                "version": "2.2.1", "uptime": time.time() - agent._start_time}
+                "version": "2.2.2", "uptime": time.time() - agent._start_time}
     except Exception as e:
         logger.error(f"[Agent2][HEALTH] {e}")
         return {"status": "unhealthy", "error": str(e)}
@@ -551,13 +589,13 @@ async def health():
 async def root():
     return {
         "service": "Agent2 - Summarizer & Analyst",
-        "version": "2.2.1",
+        "version": "2.2.2",
         "endpoints": {"summarize": "/v1/summarize", "chat": "/v1/chat", "command": "/v1/command", "health": "/health", "debug/config": "/debug/config"},
         "features": [
             "JSON summarization with fallback",
             "Concise analytical replies",
             "Per-session mute integration",
-            "🔊 TTS via Agent3 with audio_hex for Graph",
+            "🔊 TTS via Agent3 with audio_hex passthrough + robust fallback",
         ],
     }
 
