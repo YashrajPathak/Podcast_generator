@@ -1,40 +1,14 @@
-# --- agent2.py (add near other helpers) ---
-from pathlib import Path
-import httpx
+# agent2.py (inside your chat route after calling Agent3)
+agent3_base = _agent3_base()  # you already have this helper
+audio_path, audio_bytes = await _extract_audio_from_agent3_response(
+    data, agent3_base, settings.AGENT_TIMEOUT
+)
 
-async def _extract_audio_from_agent3_response(data: dict, agent3_base: str, timeout: float):
-    """Return (audio_path, audio_bytes). Prefer inline hex, else try local path, else HTTP fetch."""
-    if not isinstance(data, dict):
-        return None, b""
-
-    hex_data = data.get("audio_hex")
-    audio_path = data.get("audio_path")
-
-    # 1) Prefer inline bytes
-    if isinstance(hex_data, str) and hex_data:
-        try:
-            return audio_path, bytes.fromhex(hex_data)
-        except Exception:
-            pass
-
-    # 2) Local file (shared volume) if present
-    if isinstance(audio_path, str) and audio_path:
-        try:
-            p = Path(audio_path)
-            if p.exists():
-                return audio_path, p.read_bytes()
-        except Exception:
-            pass
-
-        # 3) HTTP fetch as last resort
-        try:
-            url = audio_path if audio_path.startswith(("http://","https://")) \
-                  else f"{agent3_base.rstrip('/')}/{audio_path.lstrip('/')}"
-            async with httpx.AsyncClient(timeout=timeout) as c:
-                r = await c.get(url)
-            if r.status_code == 200 and r.content:
-                return audio_path, r.content
-        except Exception:
-            pass
-
-    return None, b""
+resp = {
+    "response": text_out,               # whatever Agent 2 generated
+    "session_id": session_id,
+    "status": "success",
+    "audio_path": audio_path,
+    "audio_hex": audio_bytes.hex() if audio_bytes else None,
+    # ...
+}
