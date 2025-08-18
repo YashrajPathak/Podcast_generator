@@ -1,4 +1,4 @@
-# graph.py - Hybrid Podcast Orchestrator (v3.3)
+# graph.py - Hybrid Podcast Orchestrator (v3.4 with TTS fallback)
 import os
 import time
 import json
@@ -85,7 +85,7 @@ settings = Settings()
 app = FastAPI(
     title="Hybrid Podcast Orchestrator",
     description="Combines real-time audio mixing with persistent multi-agent conversations",
-    version="3.3"
+    version="3.4"
 )
 
 # Middleware (CORS)
@@ -205,7 +205,6 @@ class AudioStreamManager:
             with wav.open(BytesIO(wav_bytes), 'rb') as wf:
                 rate = wf.getframerate()
                 width = wf.getsampwidth()
-                # mono/any ok; clients mix themselves
                 frames = wf.readframes(wf.getnframes())
                 return frames, rate, width
         except Exception:
@@ -217,18 +216,14 @@ class AudioStreamManager:
         if not audio_data:
             return
 
-        # Ensure stream is flagged active for this session
         if session_id not in self.active_streams:
             self.active_streams[session_id] = True
 
-        # Decode WAV to PCM if needed
         pcm, rate, width = self._wav_to_pcm(audio_data)
 
-        # If source params differ from configured, we still chunk by bytes; most browsers handle it.
         chunk_bytes = int(rate * width * (settings.AUDIO_CHUNK_MS / 1000.0))
         chunk_bytes = max(chunk_bytes, 1)
 
-        # Pre-stream cushion
         await asyncio.sleep(0.05)
         try:
             for i in range(0, len(pcm), chunk_bytes):
@@ -238,7 +233,6 @@ class AudioStreamManager:
                 await manager.broadcast_audio(session_id, chunk)
                 await asyncio.sleep(settings.AUDIO_CHUNK_MS / 1000.0)
         finally:
-            # Post cushion
             await asyncio.sleep(0.05)
 
     def activate(self, session_id: str):
@@ -505,6 +499,62 @@ def _stitch_wavs(paths: List[str], out_path: str) -> Optional[str]:
     except Exception:
         return None
 
+# ---- NEW: TTS fallback via Agent3 (returns bytes) ----
+async def _tts_fallback_bytes(text: str, voice: str, session_id: str) -> bytes:
+    """If an agent returns text without audio, synthesize it using Agent3."""
+    if not text:
+        return b""
+    try:
+        a3_base = (REGISTRY.get("agent3", {}) or {}).get("url") or settings.AGENT3_URL
+        a3_base = str(a3_base).rstrip("/")
+        url = f"{a3_base}/generate-audio"
+        payload = {
+            "text": text,
+            "voice": voice,
+            "session_id": session_id,
+            "speed": 1.0,
+            "pitch": 1.0
+        }
+        async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
+            r = await c.post(url, json=payload)
+            if r.status_code != 200:
+                logger.warning(f"tts_fallback agent3 non-200: {r.status_code}")
+                return b""
+            data = r.json()
+        hex_data = (data or {}).get("audio_hex") or ""
+        if hex_data:
+            return bytes.fromhex(hex_data)
+        # Fallback: try fetching the served file if path returned
+        ap = (data or {}).get("audio_path")
+        if isinstance(ap, str) and ap.startswith("/"):
+            try:
+                async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
+                    r2 = await c.get(f"{a3_base}{ap}")
+                    if r2.status_code == 200:
+                        return r2.content
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"tts_fallback error: {e}")
+    return b""
+
+def _write_local_wav(audio_bytes: bytes, agent_key: str) -> Optional[str]:
+    """Persist bytes to a local WAV under audio_cache and return the path."""
+    if not audio_bytes:
+        return None
+    try:
+        FINAL_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    fname = f"{agent_key}_{uuid.uuid4().hex}.wav"
+    out_path = FINAL_DIR / fname
+    try:
+        out_path.write_bytes(audio_bytes)
+        return str(out_path)
+    except Exception as e:
+        logger.warning(f"write_local_wav failed: {e}")
+        return None
+
 # Background broadcaster (kept for future mixer streaming)
 async def audio_broadcaster(session_id: str):
     try:
@@ -564,7 +614,9 @@ async def _agent_chat(
     audio_path = data.get("audio_path")
     if not audio_data and audio_path:
         try:
-            audio_data = Path(audio_path).read_bytes()
+            # attempt local read only if it's a filesystem path; skip if it's a URL path
+            if Path(str(audio_path)).exists():
+                audio_data = Path(audio_path).read_bytes()
         except Exception:
             audio_data = b""
     logger.info(f"agent_turn_ok session_id={session_id} agent={agent_key} text_len={len(text)} audio_bytes={len(audio_data)}")
@@ -605,8 +657,11 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
         voice = state.voices.get(agent_key, settings.DEFAULT_VOICES.get(agent_key, "en-US-AriaNeural"))
         prompt = "Continue the panel discussion based on the topic and context above."
 
+        local_audio_bytes = b""
+        local_audio_path: Optional[str] = None
+
         try:
-            text, audio_data, audio_path = await _agent_chat(
+            text, audio_data, _remote_path = await _agent_chat(
                 agent_key,
                 text=prompt,
                 session_id=state.session_id,
@@ -617,43 +672,68 @@ async def _round_robin_once(state: SessionState, user_context: Optional[str] = N
                 is_interruption=is_interrupt
             )
 
-            # Stream out this agent's audio (PCM-chunked)
-            await stream_manager.stream_audio(state.session_id, audio_data)
+            # If the agent returned text but no audio, synthesize via Agent3
+            if (not audio_data) and text:
+                audio_data = await _tts_fallback_bytes(text, voice, state.session_id)
+
+            # Ensure we have a local wav file for this turn
+            if audio_data:
+                local_audio_bytes = audio_data
+                local_audio_path = _write_local_wav(audio_data, agent_key)
+
+            # Stream out this agent's audio (PCM-chunked) using the bytes we will persist
+            await stream_manager.stream_audio(state.session_id, local_audio_bytes or audio_data)
 
         except Exception as e:
             logger.warning(f"{agent_key} turn failed: {e}")
-            text, audio_data, audio_path = f"(error: {e})", b"", None
+            text, local_audio_bytes, local_audio_path = f"(error: {e})", b"", None
 
         turn = Turn(
             turn_id=(state.history[-1].turn_id + 1) if state.history else 1,
             agent=agent_key,
             role=_agent_role(agent_key),
             response=text,
-            audio_path=audio_path,
-            audio_data=audio_data,
+            audio_path=local_audio_path,           # <-- always local path or None
+            audio_data=local_audio_bytes,          # kept empty on disk by _save_session
             timestamp=time.time()
         )
         state.history.append(turn)
-        state.updated_at = time.time()
-        await store.upsert(state)
 
+        # Track clip metadata for auto-play queue (even if missing -> skipped)
         try:
-            if turn.audio_path:
+            if turn.audio_path and Path(turn.audio_path).exists():
                 ms = _wav_ms(turn.audio_path)
-                state.turn_audio[turn.turn_id] = {"path": turn.audio_path, "ms": ms, "speaker": turn.agent, "played": False}
+                state.turn_audio[turn.turn_id] = {
+                    "path": turn.audio_path,
+                    "ms": ms,
+                    "speaker": turn.agent,
+                    "played": False,   # ensure auto-play queue sees it as unplayed
+                }
                 state.audio_ms += ms
                 logger.info(
                     f"turn_done session_id={state.session_id} turn_id={turn.turn_id} agent={turn.agent} ms={ms} "
                     f"audio_ms={state.audio_ms} target_ms={state.target_ms} final_wav={state.final_wav}"
                 )
+            else:
+                # still append entry to preserve ordering (marked played to skip)
+                state.turn_audio[turn.turn_id] = {
+                    "path": None,
+                    "ms": 0,
+                    "speaker": turn.agent,
+                    "played": True
+                }
         except Exception:
             pass
+
+        state.updated_at = time.time()
+        await store.upsert(state)
 
         if state.target_ms and state.audio_ms >= state.target_ms and not state.ended:
             await _end_session(state, "target_duration_reached")
             break
 
     state.current_round += 1
+
 # ========= Session Ending Helper =========
 async def _end_session(state: SessionState, reason: str = "unspecified"):
     """Mark a session as ended, deactivate streaming, and persist."""
@@ -681,6 +761,7 @@ async def _end_session(state: SessionState, reason: str = "unspecified"):
         logger.info(f"end_session_ok session_id={state.session_id} reason={reason}")
     except Exception as e:
         logger.error(f"end_session_error session_id={getattr(state,'session_id','?')} err={e}")
+
 # ========= JSON Safety Helper =========
 from typing import Any as _Any
 def _to_json_safe(obj: _Any) -> _Any:
@@ -704,7 +785,6 @@ async def websocket_audio(websocket: WebSocket, session_id: str):
     try:
         await manager.connect(websocket, session_id)
         while True:
-            # Keep connection alive; clients may send pings or small messages
             try:
                 await websocket.receive_text()
             except Exception:
@@ -835,6 +915,7 @@ async def user_turn(body: UserTurn):
     st.history.append(turn)
     await _round_robin_once(st, user_context=body.text.strip(), is_interrupt=body.is_interruption)
     return {"status": "ok", "session_id": body.session_id, "round": st.current_round}
+
 # ========= Auto-play helpers for frontends =========
 def _safe_read_file_bytes(p: str) -> bytes:
     try:
@@ -854,7 +935,6 @@ async def get_next_unplayed_audio(session_id: str):
     if not st:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # find next unplayed turn with audio
     for tid in sorted(st.turn_audio.keys()):
         meta = st.turn_audio.get(tid) or {}
         if not isinstance(meta, dict):
@@ -867,7 +947,6 @@ async def get_next_unplayed_audio(session_id: str):
             meta["played"] = True
             continue
 
-        # read and mark played
         audio_bytes = _safe_read_file_bytes(p)
         meta["played"] = True
         st.updated_at = time.time()
@@ -897,6 +976,7 @@ async def reset_playback(session_id: str):
     st.updated_at = time.time()
     await store.upsert(st)
     return {"status": "ok", "reset": True}
+
 @app.get("/sessions")
 async def list_sessions():
     return {"sessions": _list_sessions_meta(), "registry_keys": list(REGISTRY.keys())}
@@ -1241,1806 +1321,3 @@ if __name__ == "__main__":
         log_level="warning",
         access_log=False
     )
-__________________________________________________________________________________________________________________________________________________________
-# podcast_control_room.py - Unified Podcast Studio
-import os
-import time
-import json
-import asyncio
-import httpx
-import streamlit as st
-from datetime import datetime
-from dotenv import load_dotenv
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-import queue
-from pathlib import Path
-import io
-import csv
-import numpy as np
-import wave
-import requests
-import threading
-import streamlit.components.v1 as components
-from io import BytesIO
-try:
-    import websocket  # websocket-client
-except Exception:
-    websocket = None
-
-# Load environment
-load_dotenv()
-
-# ⚠️ Streamlit prefers page config BEFORE any other Streamlit calls
-st.set_page_config(page_title="Podcast Control Room", page_icon="🎙", layout="wide")
-
-GRAPH_BASE = os.getenv("GRAPH_BASE", "http://localhost:8008")
-AGENT1_URL = os.getenv("AGENT1_URL", "http://localhost:8001")
-AGENT4_URL = os.getenv("AGENT4_URL", "http://localhost:8006")
-AGENT5_URL = os.getenv("AGENT5_URL", "http://localhost:8007")
-GRAPH_BASE_URL = os.getenv("GRAPH_BASE_URL", "http://localhost:8008").rstrip("/")
-POLL_FINAL_AUDIO_SEC = int(os.getenv("UI_POLL_FINAL_AUDIO_SEC", "7"))
-UI_AUTO_REFRESH_SEC = int(os.getenv("UI_AUTO_REFRESH_SEC", "7"))
-UI_LIVE_PLAYBACK = os.getenv("UI_LIVE_PLAYBACK", "false").lower() in {"1","true","yes"}
-
-# Mic thresholds (env-overridable)
-MIC_MIN_SECONDS = float(os.getenv("MIC_MIN_SECONDS", "0.4"))
-MIC_MIN_LEVEL = int(os.getenv("MIC_MIN_LEVEL", "200"))  # avg |int16| level to treat as not-silent
-
-# API Endpoints
-GRAPH_SESSIONS = f"{GRAPH_BASE}/sessions"
-GRAPH_RUN = f"{GRAPH_BASE}/run"
-GRAPH_STATE = f"{GRAPH_BASE}/session"  # + /{session_id}/state
-GRAPH_MUTE = f"{GRAPH_BASE}/session"   # + /{session_id}/mute?agent=...
-GRAPH_VOICES = f"{GRAPH_BASE}/session" # + /{session_id}/voices?agent=..&voice=..
-GRAPH_SET_AGENTS = f"{GRAPH_BASE}/session"  # + /{session_id}/agents
-GRAPH_USER_TURN = f"{GRAPH_BASE}/conversation/user-turn"
-GRAPH_EXPORT = f"{GRAPH_BASE}/session"  # + /{session_id}/export?format=...
-GRAPH_REGISTRY = f"{GRAPH_BASE}/registry"
-
-# WebRTC config (single source of truth)
-RTC_CONFIG = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-)
-
-# Initialize session state
-def init_session_state():
-    defaults = {
-        "session_id": f"podcast_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-        "auto_refresh": True,
-        "last_state": None,
-        "registry_keys": ["agent1", "agent2", "agent3", "agent4", "agent5"],
-        "picked_agents": ["agent1", "agent2", "agent3"],
-        "voices": {
-            "agent1": "en-US-AriaNeural",
-            "agent2": "en-GB-RyanNeural",
-            "agent3": "en-IN-PrabhatNeural",
-            "agent4": "en-US-GuyNeural",
-            "agent5": "en-US-JennyNeural"
-        },
-        "audio_ctx": None,
-        "audio_queue": queue.Queue(),
-        "last_metrics": None,
-        "active_tab": "Control Room",
-        "is_running": False,
-        "export_done": False,
-        "target_minutes": 0,
-        # UI debounce locks
-        "run_busy": False,
-        "export_busy": False,
-        "registry": None,
-    }
-    
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-
-init_session_state()
-
-# Warm-up registry once on load
-if st.session_state.get("registry") is None:
-    try:
-        # best-effort; function defined later, but we can inline a tiny fetch
-        r = httpx.get(GRAPH_REGISTRY, timeout=5)
-        if r.status_code == 200:
-            st.session_state["registry"] = r.json()
-    except Exception:
-        pass
-
-# --- Helper Functions ---
-def _with_retries(send, should_retry=None, max_retries=None, base_delay=None, verbose_env_var: str = "VERBOSE_RETRY"):
-    """Generic retry wrapper for httpx calls.
-
-    Args:
-        send: zero-arg callable that returns an httpx.Response
-        should_retry: optional callable(response) -> bool to signal retry despite 2xx-4xx
-        max_retries: optional int; falls back to env MAX_RETRIES or 3
-        base_delay: optional float seconds; falls back to env RETRY_BASE_DELAY or 0.5
-        verbose_env_var: env var name; when truthy, emits st.info about attempts
-    Returns:
-        httpx.Response
-    Raises:
-        Last exception if all retries exhausted, or RuntimeError signaled by should_retry
-    """
-    import os, time, random
-    mr = int(max_retries if max_retries is not None else os.getenv("MAX_RETRIES", 3))
-    bd = float(base_delay if base_delay is not None else os.getenv("RETRY_BASE_DELAY", 0.5))
-    verbose = os.getenv(verbose_env_var, "").lower() in {"1", "true", "yes", "on"}
-    last_err = None
-    for attempt in range(mr):
-        try:
-            resp = send()
-            # default transient retry: 5xx
-            transient = getattr(resp, "status_code", 500) >= 500
-            if should_retry is not None:
-                transient = bool(should_retry(resp)) or transient
-            if transient:
-                raise RuntimeError(f"Transient HTTP {resp.status_code}")
-            return resp
-        except Exception as e:
-            last_err = e
-            if attempt >= mr - 1:
-                break
-            # jittered exponential backoff
-            delay = min(8.0, bd * (2 ** attempt)) * (0.8 + 0.4 * random.random())
-            if verbose:
-                try:
-                    st.info(f"Retrying ({attempt+1}/{mr-1}) in {delay:.2f}s: {e}")
-                except Exception:
-                    pass
-            time.sleep(delay)
-    raise last_err
-
-def get_sessions():
-    try:
-        r = _with_retries(lambda: httpx.get(GRAPH_SESSIONS, timeout=5))
-        r.raise_for_status()
-        data = r.json()
-        st.session_state.registry_keys = data.get("registry_keys", st.session_state.registry_keys)
-        return data.get("sessions", [])
-    except Exception as e:
-        st.error(f"Failed to get sessions: {e}")
-        return []
-
-def get_state(session_id: str):
-    try:
-        url = f"{GRAPH_STATE}/{session_id}/state"
-        # Do not retry 404 (treated as missing session)
-        r = _with_retries(lambda: httpx.get(url, timeout=5), should_retry=lambda resp: resp.status_code >= 500)
-        if r.status_code == 404:
-            return None
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.error(f"Failed to get state: {e}")
-        return None
-
-def post_run(event: str, input_text: str = None, agents=None, voices=None, max_turns=None, target_minutes: int = None):
-    payload = {
-        "session_id": st.session_state.session_id,
-        "event": event
-    }
-    if input_text: 
-        payload["input"] = input_text
-    if agents: 
-        payload["agents"] = agents
-    if voices: 
-        payload["voices"] = voices
-    if max_turns is not None: 
-        payload["max_turns"] = max_turns
-    if target_minutes is not None:
-        payload["target_minutes"] = int(target_minutes)
-        
-    # Debounce: lock while request in-flight
-    if st.session_state.run_busy:
-        st.warning("Action already in progress…")
-        return None
-    st.session_state.run_busy = True
-    try:
-        r = _with_retries(lambda: httpx.post(GRAPH_RUN, json=payload, timeout=10))
-        r.raise_for_status()
-        st.success(f"Action completed: {event}")
-        if event == "start":
-            st.session_state.is_running = True
-            st.session_state.export_done = False
-            if target_minutes is not None:
-                st.session_state.target_minutes = int(target_minutes)
-        if event == "end":
-            st.session_state.is_running = False
-        return r.json()
-    except Exception as e:
-        st.error(f"Failed to execute {event}: {e}")
-        return None
-    finally:
-        st.session_state.run_busy = False
-
-def toggle_mute(agent: str, mute: bool):
-    try:
-        action = "mute" if mute else "unmute"
-        url = f"{GRAPH_MUTE}/{st.session_state.session_id}/{action}?agent={agent}"
-        r = _with_retries(lambda: httpx.post(url, timeout=5))
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.error(f"Failed to toggle mute: {e}")
-        return None
-
-def set_voice(agent: str, voice: str):
-    try:
-        url = f"{GRAPH_VOICES}/{st.session_state.session_id}/voices?agent={agent}&voice={voice}"
-        r = _with_retries(lambda: httpx.post(url, timeout=5))
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.error(f"Failed to set voice: {e}")
-        return None
-
-def set_agents(agents: list):
-    try:
-        url = f"{GRAPH_SET_AGENTS}/{st.session_state.session_id}/agents"
-        r = _with_retries(lambda: httpx.post(url, json=agents, timeout=5))
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.error(f"Failed to set agents: {e}")
-        return None
-
-def send_user_turn(text: str, is_interruption=False):
-    try:
-        payload = {
-            "session_id": st.session_state.session_id,
-            "text": text,
-            "is_interruption": is_interruption
-        }
-        r = _with_retries(lambda: httpx.post(GRAPH_USER_TURN, json=payload, timeout=10))
-        r.raise_for_status()
-        st.success("User turn sent to panel!")
-        return r.json()
-    except Exception as e:
-        st.error(f"Failed to send user turn: {e}")
-        return None
-
-def export_session(format: str = "html"):
-    try:
-        url = f"{GRAPH_EXPORT}/{st.session_state.session_id}/export?format={format}"
-        r = _with_retries(lambda: httpx.post(url, timeout=30))
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.error(f"Export failed: {e}")
-        return None
-
-def get_metrics():
-    try:
-        url = f"{AGENT5_URL}/metrics"
-        r = _with_retries(lambda: httpx.get(url, timeout=5))
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.error(f"Failed to get metrics: {e}")
-        return None
-
-def get_registry():
-    """Fetch centralized registry from Graph."""
-    try:
-        r = _with_retries(lambda: httpx.get(GRAPH_REGISTRY, timeout=10))
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.warning(f"Failed to fetch registry: {e}")
-        return None
-
-def send_audio_to_agent1(bytes_wav: bytes, filename: str):
-    files = {"file": (filename, bytes_wav, "audio/wav")}
-    data = {"session_id": st.session_state.session_id}
-    
-    try:
-        url = f"{AGENT1_URL}/conversation/user-audio"
-        r = _with_retries(lambda: httpx.post(url, files=files, data=data, timeout=30))
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.error(f"Audio processing failed: {e}")
-        return None
-
-def _ws_url_from_http(base_http: str, session_id: str) -> str:
-    # Convert http(s)://host:port -> ws(s)://host:port
-    if base_http.startswith("https://"):
-        ws_base = "wss://" + base_http[len("https://"):]
-    elif base_http.startswith("http://"):
-        ws_base = "ws://" + base_http[len("http://"):]
-    else:
-        ws_base = "ws://" + base_http
-    return f"{ws_base}/ws/audio/{session_id}"
-
-def _start_live_ws(session_id: str):
-    if not websocket:
-        return
-    if st.session_state.get("_live_ws_running"):
-        return
-    st.session_state.setdefault("_live_audio_buffer", bytearray())
-    st.session_state["_live_ws_running"] = True
-
-    def on_message(wsapp, message: bytes):
-        try:
-            # Append incoming PCM/WAV bytes
-            st.session_state["_live_audio_buffer"] += message
-        except Exception:
-            pass
-
-    def on_error(wsapp, error):
-        st.session_state["_live_ws_running"] = False
-
-    def on_close(wsapp, status_code, msg):
-        st.session_state["_live_ws_running"] = False
-
-    def run():
-        url = _ws_url_from_http(GRAPH_BASE_URL, session_id)
-        wsapp = websocket.WebSocketApp(url, on_message=on_message, on_error=on_error, on_close=on_close)
-        try:
-            wsapp.run_forever()
-        except Exception:
-            pass
-
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-
-def _render_live_audio_if_any():
-    buf = st.session_state.get("_live_audio_buffer")
-    if not buf or len(buf) < 4096:
-        return
-    try:
-        # Wrap as WAV header if needed: Graph sends WAV frames via FileResponse or mixed stream
-        # Here, we assume chunks are already WAV-framed by stream manager; if raw PCM, this will not play.
-        b = bytes(buf)
-        st.audio(BytesIO(b), format="audio/wav")
-    except Exception:
-        pass
-
-def _poll_and_render_final_audio(session_id: str):
-    try:
-        url = f"{GRAPH_BASE_URL}/session/{session_id}/final-audio"
-        r = requests.get(url, timeout=5)
-        if r.status_code != 200:
-            return
-        data = r.json()
-        if data.get("status") == "ready" and data.get("audio_path"):
-            audio_file_url = f"{GRAPH_BASE_URL}/session/{session_id}/final-audio/file"
-            st.audio(audio_file_url, format="audio/wav")
-    except Exception:
-        pass
-
-def _render_graph_debug_config_sidebar():
-    try:
-        url = f"{GRAPH_BASE_URL}/debug/config"
-        r = requests.get(url, timeout=3)
-        if r.status_code == 200 and r.headers.get("content-type", "").startswith("application/json"):
-            data = r.json()
-            with st.sidebar.expander("Graph debug/config", expanded=False):
-                st.text(f"service: {data.get('service','graph')}")
-                vars_map = data.get("vars", {})
-                rows = [{"var": k, "status": v} for k, v in vars_map.items()]
-                st.dataframe(rows, hide_index=True, use_container_width=True)
-        else:
-            with st.sidebar.expander("Graph debug/config", expanded=False):
-                st.warning("Graph /debug/config not JSON or not 200")
-    except Exception:
-        with st.sidebar.expander("Graph debug/config", expanded=False):
-            st.error("Failed to load Graph /debug/config")
-
-# --- UI Components ---
-def render_sidebar():
-    st.sidebar.title("🎛 Control Panel")
-    
-    # Session Management
-    with st.sidebar.expander("📂 Sessions", expanded=True):
-        sessions = get_sessions()
-        existing_ids = [s["session_id"] for s in sessions] if sessions else []
-        pick = st.selectbox("Load session", ["(new)"] + existing_ids)
-        if pick != "(new)":
-            st.session_state.session_id = pick
-        
-        st.session_state.session_id = st.text_input(
-            "Session ID", 
-            value=st.session_state.session_id
-        )
-        
-        target = st.select_slider("Target duration (min)", options=[0,1,2,3,4,5,6,7,8,9,10], value=st.session_state.get("target_minutes", 3), help="0 = legacy (no duration cap)")
-        
-        col1, col2 = st.columns(2)
-        if col1.button("▶️ Start", use_container_width=True, disabled=st.session_state.is_running or st.session_state.run_busy):
-            post_run("start", agents=st.session_state.picked_agents, target_minutes=target)
-        if col2.button("⏹ End", use_container_width=True, disabled=not st.session_state.is_running or st.session_state.run_busy):
-            post_run("end")
-    
-        # Stop & Export convenience
-        if st.sidebar.button("⏹➡️ Stop & Export", use_container_width=True, disabled=not st.session_state.is_running or st.session_state.run_busy or st.session_state.export_busy):
-            post_run("end")
-            # export is handled in Export tab guarded by export_done
-    
-    # Agent Configuration
-    with st.sidebar.expander("🧑‍🤝‍🧑 Agents", expanded=True):
-        st.session_state.picked_agents = st.multiselect(
-            "Active Agents",
-            options=st.session_state.registry_keys,
-            default=st.session_state.picked_agents
-        )
-        
-        if st.button("Update Panel", use_container_width=True):
-            set_agents(st.session_state.picked_agents)
-        
-        st.divider()
-        
-        for agent in st.session_state.picked_agents:
-            col1, col2 = st.columns([3, 1])
-            new_voice = col1.text_input(
-                f"{agent} voice", 
-                value=st.session_state.voices.get(agent, ""),
-                key=f"voice_{agent}"
-            )
-            if col2.button("Set", key=f"set_{agent}"):
-                set_voice(agent, new_voice)
-                st.session_state.voices[agent] = new_voice
-            
-            col3, col4 = st.columns(2)
-            if col3.button(f"🔇 Mute", key=f"mute_{agent}"):
-                toggle_mute(agent, True)
-            if col4.button(f"🔊 Unmute", key=f"unmute_{agent}"):
-                toggle_mute(agent, False)
-    
-    # System Controls
-    with st.sidebar.expander("⚙️ System", expanded=True):
-        st.session_state.auto_refresh = st.checkbox(
-            "🔄 Auto-refresh", 
-            value=st.session_state.auto_refresh
-        )
-        
-        if st.button("🔄 Reload Registry", use_container_width=True):
-            try:
-                r = _with_retries(lambda: httpx.post(f"{GRAPH_BASE}/registry/reload", timeout=5))
-                r.raise_for_status()
-                st.success("Registry reloaded!")
-            except Exception as e:
-                st.error(f"Reload failed: {e}")
-
-    # Registry quick-view
-    if st.session_state.get("registry") is None:
-        st.session_state.registry = get_registry()
-    if st.sidebar.button("Load Registry"):
-        st.session_state.registry = get_registry()
-    if st.session_state.get("registry"):
-        reg = st.session_state.registry
-        st.sidebar.caption(f"Registry: {reg.get('count', 0)} agents")
-        try:
-            st.sidebar.json(reg.get("agents", {}), expanded=False)
-        except Exception:
-            pass
-
-def render_audio_player():
-    st.subheader("🔊 Live Audio Stream")
-    audio_ctx = webrtc_streamer(
-        key="podcast-audio",
-        mode=WebRtcMode.RECVONLY,
-        rtc_configuration=RTC_CONFIG,
-        media_stream_constraints={"audio": True},
-        audio_receiver_size=1024,
-    )
-    st.session_state.audio_ctx = audio_ctx
-def render_autoplay_queue():
-    st.subheader("🎧 Auto-play (text → audio → next)")
-    st.caption("Click **Start Player** once (browser autoplay policy). It will keep pulling the next clip automatically.")
-    sid = st.session_state.session_id
-    base = GRAPH_BASE_URL.rstrip("/")
-    html = f"""
-    <div id="player-root" style="padding:8px; border:1px solid #444; border-radius:12px;">
-      <div style="display:flex; gap:8px; align-items:center;">
-        <button id="startBtn">▶ Start Player</button>
-        <button id="stopBtn" disabled>⏹ Stop</button>
-        <span id="status" style="margin-left:8px; color:#0a0;">idle</span>
-      </div>
-      <div style="margin-top:6px; font-family: ui-monospace, monospace; font-size:12px;">
-        Session: <b>{sid}</b> • Server: <b>{base}</b>
-      </div>
-    </div>
-    <script>
-    (function() {{
-      const GRAPH = "{base}";
-      const SID = "{sid}";
-      let running = false;
-      let currentAudio = null;
-      const statusEl = document.getElementById("status");
-      const startBtn = document.getElementById("startBtn");
-      const stopBtn  = document.getElementById("stopBtn");
-
-      function setStatus(t, color="#0a0") {{
-        statusEl.textContent = t;
-        statusEl.style.color = color;
-      }}
-
-      async function playNext() {{
-        if (!running) return;
-        try {{
-          const res = await fetch(`${{GRAPH}}/session/${{SID}}/next-audio`, {{
-            method: "POST",
-            headers: {{ "Content-Type": "application/json" }},
-          }});
-          if (!running) return;
-          if (!res.ok) {{
-            setStatus("server error " + res.status, "#d00");
-            setTimeout(playNext, 1200);
-            return;
-          }}
-          const data = await res.json();
-          if (data.status === "none") {{
-            setStatus("waiting for next clip…", "#888");
-            setTimeout(playNext, 1000);
-            return;
-          }}
-          const b64 = data.audio_b64;
-          if (!b64) {{
-            setStatus("no audio in payload", "#d00");
-            setTimeout(playNext, 1000);
-            return;
-          }}
-          const src = "data:audio/wav;base64," + b64;
-          const audio = new Audio(src);
-          audio.autoplay = true;
-          currentAudio = audio;
-          setStatus("playing turn " + data.turn_id + " (" + (data.agent||"agent") + ")", "#0a0");
-
-          audio.onended = () => {{
-            if (!running) return;
-            setTimeout(playNext, 200);
-          }};
-          audio.onerror = () => {{
-            setStatus("audio error; retrying…", "#d00");
-            if (!running) return;
-            setTimeout(playNext, 500);
-          }};
-          try {{
-            await audio.play();
-          }} catch (e) {{
-            setStatus("autoplay blocked — click Start Player", "#d00");
-            running = false;
-            startBtn.disabled = false;
-            stopBtn.disabled = true;
-          }}
-        }} catch (e) {{
-          setStatus("network error; retrying…", "#d00");
-          if (!running) return;
-          setTimeout(playNext, 1200);
-        }}
-      }}
-
-      startBtn.onclick = () => {{
-        running = true;
-        startBtn.disabled = true;
-        stopBtn.disabled = false;
-        setStatus("starting…", "#0a0");
-        playNext();
-      }};
-      stopBtn.onclick = () => {{
-        running = false;
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
-        setStatus("stopped", "#888");
-        try {{ if (currentAudio) currentAudio.pause(); }} catch (_e) {{}}
-      }};
-    }})();
-    </script>
-    """
-    components.html(html, height=150, scrolling=False)
-
-    # Convenience button to reset playback flags server-side
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        if st.button("🔄 Reset auto-play queue"):
-            try:
-                requests.post(f"{GRAPH_BASE_URL}/session/{sid}/reset-playback", timeout=5)
-                st.success("Playback flags reset.")
-            except Exception as e:
-                st.error(f"Reset failed: {e}")
-def render_input_panel():
-    st.subheader("💬 Drive Conversation")
-    tab1, tab2, tab3, tab4 = st.tabs(["Topic", "Message", "Interrupt", "Audio"])
-    
-    with tab1:
-        topic = st.text_area("Discussion Topic", height=100)
-        if st.button("Set Topic", key="set_topic"):
-            if topic.strip():
-                post_run("topic_input", input_text=topic.strip())
-    
-    with tab2:
-        message = st.text_area("Your Message", height=100)
-        c1, c2 = st.columns([1,1])
-        if c1.button("Send Message", key="send_message"):
-            if message.strip():
-                send_user_turn(message.strip())
-        if c2.button("Stop Session", key="stop_session"):
-            post_run("end")
-    
-    with tab3:
-        interrupt = st.text_area("Interruption", height=100)
-        if st.button("Interrupt Panel", key="send_interrupt"):
-            if interrupt.strip():
-                send_user_turn(interrupt.strip(), is_interruption=True)
-    
-    with tab4:
-        st.caption("Upload a short WAV/MP3 mic clip to interrupt the panel.")
-        audio_file = st.file_uploader("Upload audio", type=["wav", "mp3"])
-        if audio_file and st.button("Process Audio"):
-            result = send_audio_to_agent1(audio_file.getvalue(), audio_file.name)
-            if result:
-                st.success(f"Mic interrupt sent. Transcript: {result.get('transcript','(n/a)')}")
-        st.divider()
-        st.caption("Experimental: Live mic via WebRTC → WAV upload")
-        ctx = webrtc_streamer(
-            key="mic_webrtc",
-            mode=WebRtcMode.SENDONLY,
-            audio_receiver_size=1024,
-            rtc_configuration=RTC_CONFIG,
-            media_stream_constraints={"audio": True, "video": False},
-        )
-
-        # Permission/availability guidance
-        if not ctx:
-            st.warning("Mic capture not initialized. Check browser support and refresh.")
-        elif not ctx.state.playing:
-            st.info("Click 'Allow' when prompted to enable microphone access.")
-
-        colw1, colw2 = st.columns(2)
-        if colw1.button("Clear Mic Buffer", key="clear_webrtc") and ctx and ctx.state.playing:
-            try:
-                if ctx.audio_receiver:
-                    while True:
-                        ctx.audio_receiver.get_frame(timeout=0.01)
-            except queue.Empty:
-                pass
-
-        if colw2.button("Send WebRTC Audio", key="send_webrtc") and ctx and ctx.state.playing:
-            pcm_chunks = []
-            sample_rate = 24000
-            got_any = False
-            try:
-                if not ctx.audio_receiver:
-                    st.error("No audio receiver active")
-                else:
-                    while True:
-                        try:
-                            frame = ctx.audio_receiver.get_frame(timeout=0.01)
-                        except queue.Empty:
-                            break
-                        if frame is None:
-                            break
-                        # Convert to mono int16, preserve frame sample_rate
-                        try:
-                            arr = frame.to_ndarray(format="s16", layout="mono")  # shape: (samples,)
-                            pcm_chunks.append(arr.tobytes())
-                            sample_rate = frame.sample_rate or sample_rate
-                            got_any = True
-                        except Exception:
-                            pass
-            except Exception as e:
-                st.error(f"Capture failed: {e}")
-
-            if got_any:
-                # Debounce by duration and simple energy check
-                try:
-                    total_samples = sum(len(c) for c in pcm_chunks) // 2  # int16
-                    duration = total_samples / float(sample_rate or 24000)
-                    if duration < MIC_MIN_SECONDS:
-                        st.warning(f"Captured clip too short ({duration:.2f}s < {MIC_MIN_SECONDS:.2f}s). Try again.")
-                        return
-                    import numpy as _np
-                    joined = b"".join(pcm_chunks)
-                    levels = _np.frombuffer(joined, dtype=_np.int16)
-                    mean_level = float(_np.mean(_np.abs(levels))) if levels.size else 0.0
-                    if mean_level < MIC_MIN_LEVEL:
-                        st.warning("Detected near-silence. Speak louder/closer and try again.")
-                        return
-                except Exception:
-                    # Non-fatal analysis failure; continue
-                    pass
-                # Wrap to WAV in-memory
-                bio = io.BytesIO()
-                try:
-                    with wave.open(bio, "wb") as wf:
-                        wf.setnchannels(1)
-                        wf.setsampwidth(2)
-                        wf.setframerate(int(sample_rate))
-                        wf.writeframes(b"".join(pcm_chunks))
-                    wav_bytes = bio.getvalue()
-                    res = send_audio_to_agent1(wav_bytes, filename=f"webrtc_{int(time.time())}.wav")
-                    if res:
-                        st.success(f"WebRTC mic sent. Transcript: {res.get('transcript','(n/a)')}")
-                except Exception as e:
-                    st.error(f"WAV encode failed: {e}")
-
-def render_agent_status():
-    st.subheader("👥 Agent Status")
-    state = get_state(st.session_state.session_id)
-    
-    if not state:
-        st.info("No active session")
-        return
-        
-    # Progress
-    t_ms = int(state.get("target_ms") or 0)
-    a_ms = int(state.get("audio_ms") or 0)
-    if t_ms > 0:
-        pct = max(0.0, min(1.0, a_ms / t_ms))
-        st.progress(pct, text=f"Audio {a_ms/1000:.1f}s / {t_ms/1000:.1f}s")
-        if state.get("ended"):
-            st.success(f"Session ended: {state.get('ended_reason')}")
-            st.session_state.is_running = False
-            
-            # Offer direct final WAV download if present and readable
-            fw = state.get("final_wav")
-            if fw and Path(fw).exists():
-                try:
-                    data = Path(fw).read_bytes()
-                    st.download_button(
-                        label="⬇️ Download Final WAV",
-                        data=data,
-                        file_name=Path(fw).name,
-                        mime="audio/wav"
-                    )
-                except Exception:
-                    pass
-            
-            # Build and offer transcript downloads (JSON and CSV)
-            try:
-                turn_audio = state.get("turn_audio", {}) or {}
-                history = state.get("history", []) or []
-                transcript = []
-                for item in history:
-                    turn_id = item.get("turn_id")
-                    agent = item.get("agent") or item.get("speaker")
-                    text = (item.get("text") or item.get("response") or "").strip()
-                    ms = 0
-                    if turn_id is not None and str(turn_id) in {str(k) for k in turn_audio.keys()}:
-                        # turn_audio keys may be int or str; normalize lookup
-                        info = turn_audio.get(turn_id) or turn_audio.get(str(turn_id)) or {}
-                        ms = int(info.get("ms") or 0)
-                    transcript.append({
-                        "turn_id": turn_id,
-                        "speaker": agent,
-                        "ms": ms,
-                        "text": text,
-                    })
-
-                # JSON
-                json_bytes = json.dumps({
-                    "session_id": state.get("session_id"),
-                    "target_ms": state.get("target_ms"),
-                    "audio_ms": state.get("audio_ms"),
-                    "ended_reason": state.get("ended_reason"),
-                    "turns": transcript,
-                }, ensure_ascii=False, indent=2).encode("utf-8")
-                st.download_button(
-                    label="⬇️ Download Transcript (JSON)",
-                    data=json_bytes,
-                    file_name=f"{state.get('session_id','session')}_transcript.json",
-                    mime="application/json"
-                )
-
-                # CSV
-                csv_buf = io.StringIO()
-                writer = csv.DictWriter(csv_buf, fieldnames=["turn_id", "speaker", "ms", "text"])
-                writer.writeheader()
-                for row in transcript:
-                    writer.writerow(row)
-                st.download_button(
-                    label="⬇️ Download Transcript (CSV)",
-                    data=csv_buf.getvalue().encode("utf-8"),
-                    file_name=f"{state.get('session_id','session')}_transcript.csv",
-                    mime="text/csv"
-                )
-            except Exception:
-                pass
-    
-    cols = st.columns(len(st.session_state.picked_agents))
-    for i, agent in enumerate(st.session_state.picked_agents):
-        muted = state.get("mute", {}).get(agent, False)
-        cols[i].metric(
-            f"Agent {agent}",
-            "🔇 Muted" if muted else "🔊 Active",
-            "Speaking" if agent in state.get("current_speakers", {}) else "Idle"
-        )
-
-def render_conversation():
-    st.subheader("💬 Live Transcript")
-    state = get_state(st.session_state.session_id)
-    
-    if not state or not state.get("history"):
-        st.info("No conversation history yet")
-        return
-        
-    for turn in reversed(state["history"]):
-        with st.container():
-            timestamp = datetime.fromtimestamp(turn["timestamp"]).strftime("%H:%M:%S")
-            st.markdown(f"**{turn['agent']}** · `{timestamp}`")
-            st.write(turn["response"])
-            st.divider()
-
-def render_export():
-    st.subheader("📦 Export")
-    fmt = st.selectbox("Format", ["zip", "json"], index=0)
-    ended = False
-    try:
-        s = get_state(st.session_state.session_id)
-        ended = bool(s and s.get("ended"))
-    except Exception:
-        pass
-    auto_hint = "(auto-allowed after session end)" if ended else ""
-    # Debounce export
-    disabled_now = st.session_state.export_busy or (st.session_state.export_done and ended)
-    if st.button(f"Generate Export Bundle {auto_hint}", disabled=disabled_now):
-        if st.session_state.export_busy:
-            st.info("Export already in progress…")
-        else:
-            st.session_state.export_busy = True
-            try:
-                # ✅ Use POST helper
-                data = export_session(format=fmt)
-                if not data:
-                    raise RuntimeError("No export payload returned")
-
-                st.session_state.export_done = True
-                sid = st.session_state.session_id
-                st.success(f"Export complete for session {sid} (format: {fmt})")
-                st.json(data)
-                if data.get("download_url"):
-                    suggested = f"podcast_{sid}.{fmt}"
-                    st.markdown(f"[⬇️ Download export]({data['download_url']})")
-                    st.caption(f"Suggested filename: {suggested}")
-                # Always provide a reliable ZIP link when format is zip, regardless of download_url presence
-                try:
-                    if fmt == "zip":
-                        # Prefer Agent4 base from Graph registry
-                        a4_base = None
-                        reg = st.session_state.get("registry")
-                        if reg and isinstance(reg.get("agents"), dict):
-                            a4 = reg["agents"].get("agent4") or {}
-                            a4_base = str(a4.get("url", "")).rstrip("/")
-                        if not a4_base:
-                            a4_base = AGENT4_URL.rstrip("/")
-                        zip_url = f"{a4_base}/download/zip?title_or_session=Podcast_{sid}"
-                        st.markdown(f"[🗜️ Download ZIP]({zip_url})")
-                except Exception:
-                    pass
-                # Show final.wav download if present in files map
-                try:
-                    files = data.get("files", {}) or {}
-                    fin = files.get("final.wav")
-                    if fin:
-                        # Prefer registry Agent4 URL if available
-                        a4_base = None
-                        reg = st.session_state.get("registry")
-                        if reg and isinstance(reg.get("agents"), dict):
-                            a4 = reg["agents"].get("agent4") or {}
-                            a4_base = str(a4.get("url", "")).rstrip("/")
-                        if not a4_base:
-                            a4_base = AGENT4_URL.rstrip("/")
-                        dl = f"{a4_base}/download/file?path={fin}"
-                        st.markdown(f"[🎵 Download final.wav]({dl})")
-                except Exception as _e:
-                    st.caption("final.wav link unavailable")
-            except Exception as e:
-                st.error(f"Export failed: {e}")
-            finally:
-                st.session_state.export_busy = False
-    # Optional explicit re-export
-    if ended and st.session_state.export_done:
-        if st.button("Re-export", disabled=st.session_state.export_busy):
-            st.session_state.export_done = False
-            st.rerun()
-
-def render_metrics():
-    st.subheader("📊 System Metrics")
-    if st.button("Refresh Metrics"):
-        st.session_state.last_metrics = get_metrics()
-    
-    if not st.session_state.last_metrics:
-        st.info("No metrics available")
-        return
-        
-    metrics = st.session_state.last_metrics
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Sessions", metrics.get("sessions", 0))
-    col2.metric("Poll Interval", f"{metrics.get('poll_interval', 0)}s")
-    col3.metric("Retention Days", metrics.get("retention_days", 0))
-    st.code(metrics.get("db_path", ""), language="text")
-    st.caption(f"Metrics time: {metrics.get('time', 0)}")
-    st.json(metrics, expanded=False)
-
-def render_control_room():
-    col1, col2 = st.columns([3, 1])
-    col1.title("🎙 Podcast Control Room")
-    col2.metric("Current Session", st.session_state.session_id)
-    
-    render_audio_player()
-    render_autoplay_queue()
-    render_input_panel()
-    render_agent_status()
-    render_conversation()
-
-# --- Main App ---
-st.sidebar.title("Navigation")
-st.session_state.active_tab = st.sidebar.radio(
-    "Go to",
-    ["Control Room", "Export", "Metrics"],
-    index=0
-)
-
-_render_graph_debug_config_sidebar()
-render_sidebar()
-
-if st.session_state.active_tab == "Control Room":
-    render_control_room()
-elif st.session_state.active_tab == "Export":
-    render_export()
-elif st.session_state.active_tab == "Metrics":
-    render_metrics()
-
-# After session status / controls are rendered and session_id is known
-try:
-    if "session_id" in st.session_state and st.session_state["session_id"]:
-        # Live playback (optional)
-        if UI_LIVE_PLAYBACK:
-            _start_live_ws(st.session_state["session_id"])
-            _render_live_audio_if_any()
-        # Final audio on completion (always available)
-        _poll_and_render_final_audio(st.session_state["session_id"])
-except Exception:
-    pass
-
-# Auto-refresh logic
-if st.session_state.auto_refresh:
-    time.sleep(UI_AUTO_REFRESH_SEC)
-    st.rerun()
-_____________________________________________________________________________________________________________________________________________________________
-# agent3.py – 🔊 Production-Grade TTS Generator (AAD + Streaming + Per-Agent Mute) – v2.3.0
-
-import os
-import json
-import time
-import uuid
-import asyncio
-import logging
-import re
-from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
-
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
-
-from dotenv import load_dotenv
-load_dotenv()  # ensure .env is loaded even if CWD differs
-
-import azure.cognitiveservices.speech as speechsdk
-from azure.identity import ClientSecretCredential
-
-import wave as wave_mod
-from httpx import AsyncClient, Timeout
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-# LangChain (non-deprecated)
-from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_openai import AzureChatOpenAI
-
-# ---------- Optional utils (preferred if present) ----------
-try:
-    from utils import (
-        clean_text_for_processing,      # normalization + length cap
-        validate_session_id,            # id guard
-        is_session_muted as utils_is_session_muted,  # graph mute helper
-    )
-except Exception:
-    def clean_text_for_processing(text: str, max_length: int) -> str:
-        if not isinstance(text, str):
-            text = str(text) if text is not None else ""
-        text = " ".join(text.split())
-        if len(text) > max_length:
-            text = text[:max_length] + "..."
-        return text
-
-    def validate_session_id(session_id: str) -> bool:
-        return bool(session_id) and re.match(r"^[a-zA-Z0-9_-]+$", session_id) is not None
-
-    async def utils_is_session_muted(session_id: str, agent: Optional[str] = None) -> bool:
-        return False  # noop fallback if utils isn't available
-
-
-# ========== Settings ==========
-class Settings(BaseSettings):
-    # Azure AD for Speech
-    CLIENT_ID: str
-    CLIENT_SECRET: str
-    TENANT_ID: str
-    RESOURCE_ID: str
-    SPEECH_REGION: str = "eastus"
-
-    # Azure OpenAI (used in /v1/chat)
-    AZURE_OPENAI_KEY: str
-    AZURE_OPENAI_ENDPOINT: str
-    AZURE_OPENAI_DEPLOYMENT: str = "gpt-4o"
-    OPENAI_API_VERSION: str = "2024-05-01-preview"
-
-    # Service Integration
-    ORCHESTRATOR_URL: str = "http://localhost:8008"  # Graph base (no /conversation)
-    AGENT_TIMEOUT: float = 30.0
-    MAX_RETRIES: int = 3
-
-    # TTS / Files
-    DEFAULT_VOICE: str = "en-US-AriaNeural"
-    AUDIO_DIR: str = "audio_cache"
-    MAX_TEXT_LENGTH: int = 5000
-    MAX_CONCURRENT_SYNTHESIS: int = 3
-    AUDIO_CACHE_TTL: int = 3600  # seconds (1h)
-
-    # Voices cache
-    VOICES_CACHE_TTL: int = 900  # 15 minutes
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"
-
-
-try:
-    settings = Settings()
-except Exception as e:
-    print(f"❌ Agent3 Configuration Error: {e}")
-    raise
-
-
-# ========== Logging ==========
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("Agent3")
-
-
-# ---------- Orchestrator base normalizer ----------
-def _orch_base() -> str:
-    """Return normalized orchestrator base URL (no trailing slash and no /conversation)."""
-    base = (settings.ORCHESTRATOR_URL or "http://localhost:8008").rstrip("/")
-    if base.endswith("/conversation"):
-        logger.warning("[Agent3] ORCHESTRATOR_URL ended with /conversation; stripping for API calls")
-        base = base[:-len("/conversation")]
-    return base
-
-
-# ---------- FastAPI / CORS ----------
-app = FastAPI(
-    title="🔊 Agent3 - TTS Generator",
-    description="AAD-auth Azure Speech TTS with streaming, per-agent mute checks, and chat support",
-    version="2.3.0"
-)
-origins = [o.strip() for o in os.getenv("UI_ORIGINS", os.getenv("UI_ORIGIN", "http://localhost:8501")).split(",") if o.strip()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
-    allow_credentials=False,
-    max_age=86400,
-)
-
-
-# ========== Models ==========
-class TTSRequest(BaseModel):
-    text: str = Field(..., min_length=1, max_length=5000)
-    voice: str = Field(default=settings.DEFAULT_VOICE)
-    speed: float = Field(default=1.0, ge=0.5, le=2.0)  # 0.5x–2.0x
-    pitch: float = Field(default=1.0, ge=0.5, le=2.0)  # 0.5–2.0; converted to %
-    session_id: str = Field(default="default")
-
-
-class TTSResponse(BaseModel):
-    audio_path: Optional[str]
-    audio_hex: Optional[str] = None  # ✅ inline hex for immediate playback
-    duration: Optional[float] = None
-    text_length: int = 0
-    voice: str = settings.DEFAULT_VOICE
-    session_id: str = "default"
-    status: str = "success"
-    processing_time: Optional[float] = None
-    agent_info: Optional[Dict[str, Any]] = None
-    speed: Optional[float] = None
-    pitch: Optional[float] = None
-
-
-class ChatRequest(BaseModel):
-    text: str = Field(..., min_length=1, max_length=10000)
-    session_id: str = Field(default="default")
-    voice: str = Field(default="en-IN-PrabhatNeural")
-    conversation_mode: str = Field(default="agent_to_agent")
-    is_conversation_turn: bool = Field(default=False)
-    is_interruption: bool = Field(default=False)
-    turn_number: Optional[int] = None
-    max_turns: Optional[int] = None
-    conversation_context: Optional[str] = None
-
-
-class ChatResponse(BaseModel):
-    response: str
-    audio_path: Optional[str] = None
-    audio_hex: Optional[str] = None  # optional for chat, too
-    session_id: str
-    status: str = "success"
-    processing_time: Optional[float] = None
-    agent_info: Optional[Dict[str, Any]] = None
-    turn_number: Optional[int] = None
-
-
-# ========== Auth Manager (AAD only, with caching) ==========
-class AzureSpeechAuthManager:
-    def __init__(self):
-        self._auth_cache: Dict[str, speechsdk.SpeechConfig] = {}
-        self._last_auth_time: Dict[str, float] = {}
-        self._cache_ttl = 3600  # 1h
-
-    def get_speech_config(self, voice: str = settings.DEFAULT_VOICE) -> speechsdk.SpeechConfig:
-        cache_key = f"config:{voice}"
-        now = time.time()
-        if cache_key in self._auth_cache and now - self._last_auth_time.get(cache_key, 0) < self._cache_ttl:
-            return self._auth_cache[cache_key]
-
-        credential = ClientSecretCredential(
-            tenant_id=settings.TENANT_ID,
-            client_id=settings.CLIENT_ID,
-            client_secret=settings.CLIENT_SECRET
-        )
-        token = credential.get_token("https://cognitiveservices.azure.com/.default")
-        # NOTE: Using aad#RESOURCE_ID#token is a known working pattern in this project
-        auth_token = f"aad#{settings.RESOURCE_ID}#{token.token}"
-
-        speech_config = speechsdk.SpeechConfig(auth_token=auth_token, region=settings.SPEECH_REGION)
-        speech_config.speech_synthesis_voice_name = voice
-
-        self._auth_cache[cache_key] = speech_config
-        self._last_auth_time[cache_key] = now
-        logger.info(f"[Agent3][AUTH] ✅ AAD token acquired; voice={voice}")
-        return speech_config
-
-    def clear_cache(self):
-        self._auth_cache.clear()
-        self._last_auth_time.clear()
-        logger.info("[Agent3][AUTH] 🗑️ Cleared speech auth cache")
-
-
-# ========== TTS Manager ==========
-class TTSManager:
-    def __init__(self, auth_manager: AzureSpeechAuthManager):
-        self.auth_manager = auth_manager
-        self.semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_SYNTHESIS)
-        self.audio_dir = Path(settings.AUDIO_DIR)
-        try:
-            self.audio_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            logger.warning(f"[Agent3][TTS] ⚠️ could not create audio_dir={self.audio_dir}: {e}")
-
-    def _make_ssml(self, text: str, voice: str, speed: float = 1.0, pitch: float = 1.0) -> str:
-        """Generate SSML with natural speech patterns, with basic injection safety."""
-        # Clamp params to natural ranges
-        speed = max(0.8, min(speed, 1.2))  # 0.8x-1.2x speed
-        pitch = max(0.8, min(pitch, 1.2))  # ~-20% to +20%
-
-        # Sanitize: strip tags to prevent SSML injection
-        safe = re.sub(r"<[^>]+>", "", text or "")
-        # Remove any audio src-like patterns defensively
-        safe = re.sub(r"\b(src|href)\s*=\s*['\"]?[^'\"\s>]+", "", safe, flags=re.IGNORECASE)
-
-        # Natural pauses
-        safe = re.sub(r'([.!?])', r'\1<break time="400ms"/>', safe)
-        safe = re.sub(r'(,|;)', r'\1<break time="200ms"/>', safe)
-
-        pct = int(round((pitch - 1.0) * 100))
-        pitch_attr = f"{pct:+d}%"
-        rate_attr = f"{int(round((speed - 1.0) * 100)):+d}%"
-
-        ssml = f"""
-        <speak version='1.0' xml:lang='en-US'>
-            <voice name='{voice}'>
-                <prosody rate='{rate_attr}' pitch='{pitch_attr}'>
-                    {safe}
-                </prosody>
-            </voice>
-        </speak>
-        """.strip()
-        return ssml
-
-    async def synthesize_wav(self, text: str, voice: str, speed: float = 1.0, pitch: float = 1.0) -> Optional[str]:
-        """Generate WAV file with natural pacing."""
-        speech_config = self.auth_manager.get_speech_config(voice)
-        speech_config.set_speech_synthesis_output_format(
-            speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
-        )
-
-        # Unique filename with voice prefix for debugging
-        voice_prefix = voice.split("-")[-1].lower()[:4]
-        filename = f"{voice_prefix}_{uuid.uuid4().hex}.wav"
-        out_path = self.audio_dir / filename
-
-        try:
-            audio_config = speechsdk.audio.AudioOutputConfig(filename=str(out_path))
-            synthesizer = speechsdk.SpeechSynthesizer(
-                speech_config=speech_config,
-                audio_config=audio_config
-            )
-
-            ssml = self._make_ssml(text, voice, speed, pitch)
-            result = await asyncio.to_thread(
-                lambda: synthesizer.speak_ssml_async(ssml).get()
-            )
-
-            if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-                logger.info(f"[Agent3][TTS] ✅ Synth complete voice={voice} file={filename}")
-                return str(out_path)
-
-            if result.reason == speechsdk.ResultReason.Canceled:
-                details = result.cancellation_details
-                logger.error(f"[Agent3][TTS] ❌ Canceled: {details.reason} - {details.error_details}")
-            else:
-                logger.error(f"[Agent3][TTS] ❌ Failed: {result.reason}")
-
-        except Exception as e:
-            logger.error(f"[Agent3][TTS] ❌ Synthesis error: {str(e)}", exc_info=True)
-
-        return None
-
-    async def synthesize(self, req: TTSRequest) -> TTSResponse:
-        """Main synthesis endpoint with enhanced validation."""
-        start_time = time.time()
-        async with self.semaphore:
-            try:
-                if not validate_session_id(req.session_id):
-                    raise ValueError("Invalid session ID format")
-
-                cleaned_text = clean_text_for_processing(req.text, settings.MAX_TEXT_LENGTH)
-                if not cleaned_text.strip():
-                    raise ValueError("Empty or invalid text after cleaning")
-
-                wav_path = await self.synthesize_wav(cleaned_text, req.voice, req.speed, req.pitch)
-                if not wav_path:
-                    raise RuntimeError("Audio synthesis returned no path")
-
-                duration = self._estimate_duration(wav_path)
-                char_count = len(cleaned_text)
-                words_per_min = int((char_count / 5) / (duration / 60)) if (duration and duration > 0) else 0
-
-                return TTSResponse(
-                    audio_path=wav_path,
-                    duration=duration,
-                    text_length=char_count,
-                    voice=req.voice,
-                    session_id=req.session_id,
-                    status="success",
-                    processing_time=round(time.time() - start_time, 3),
-                    agent_info={
-                        "agent": "agent3",
-                        "ssml": True,
-                        "words_per_min": words_per_min,
-                        "speed_setting": req.speed,
-                        "pitch_setting": req.pitch
-                    },
-                    speed=req.speed,
-                    pitch=req.pitch,
-                )
-
-            except Exception as e:
-                logger.error(f"[Agent3][TTS] ❌ processing failed: {str(e)}", exc_info=True)
-                return TTSResponse(
-                    audio_path=None,
-                    text_length=len(getattr(req, "text", "")),
-                    voice=getattr(req, "voice", settings.DEFAULT_VOICE),
-                    session_id=getattr(req, "session_id", "default"),
-                    status="error",
-                    processing_time=round(time.time() - start_time, 3),
-                    agent_info={
-                        "error": str(e),
-                        "input_sample": (req.text[:100] + "...") if getattr(req, "text", None) else None
-                    }
-                )
-
-    def _estimate_duration(self, file_path: str) -> Optional[float]:
-        """More accurate duration estimation from WAV header; fallback to size approximation."""
-        try:
-            with wave_mod.open(str(file_path), 'rb') as wf:
-                frames = wf.getnframes()
-                rate = wf.getframerate()
-                return round(frames / float(rate), 2)
-        except Exception as e:
-            logger.debug(f"[Agent3][TTS] duration header read failed: {e}")
-            try:
-                size = os.path.getsize(file_path)
-                # 24kHz * 16-bit mono ≈ 48KB/sec -> size/48000 ~ seconds (approx)
-                return round(size / 48000.0, 2)
-            except Exception as e2:
-                logger.warning(f"[Agent3][TTS] ⚠️ duration estimation failed: {e2}")
-                return None
-
-    async def _periodic_cleanup(self):
-        """Enhanced cleanup with size limits."""
-        while True:
-            try:
-                await asyncio.sleep(300)  # Every 5 minutes
-                now = time.time()
-                removed = 0
-                total_size = 0
-
-                files = sorted(self.audio_dir.glob("*.wav"), key=lambda f: f.stat().st_mtime)
-
-                for fp in files:
-                    try:
-                        file_age = now - fp.stat().st_mtime
-                        file_size = fp.stat().st_size
-
-                        # Remove if older than TTL OR if cache exceeds ~100MB
-                        if file_age > settings.AUDIO_CACHE_TTL or total_size > 100 * 1024 * 1024:
-                            fp.unlink(missing_ok=True)
-                            removed += 1
-                        else:
-                            total_size += file_size
-                    except Exception as e:
-                        logger.warning(f"[Agent3][CLEANUP] ⚠️ Failed to process {fp.name}: {e}")
-
-                if removed:
-                    logger.info(f"[Agent3][CLEANUP] 🗑️ Removed {removed} old files. Cache now ~{total_size/1024/1024:.1f}MB")
-            except Exception as e:
-                logger.error(f"[Agent3][CLEANUP] ❌ Cleanup cycle failed: {e}")
-                await asyncio.sleep(60)  # wait longer on error
-
-
-# ========== Per-agent mute helper ==========
-@retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
-async def _fetch_mute_status_fallback(session_id: str) -> Optional[bool]:
-    url = f"{_orch_base()}/session/{session_id}/mute-status"
-    params = {"agent": "agent3"}
-    async with AsyncClient(timeout=Timeout(settings.AGENT_TIMEOUT)) as client:
-        r = await client.get(url, params=params)
-        if r.status_code >= 500:
-            raise RuntimeError(f"transient {r.status_code}")
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        return bool(data.get("muted", False))
-
-
-async def is_effectively_muted(session_id: Optional[str]) -> bool:
-    """Check Graph /mute-status with agent=agent3 via utils; fallback to direct HTTP with retry."""
-    if not session_id:
-        return False
-    try:
-        return bool(await utils_is_session_muted(session_id, "agent3"))
-    except Exception:
-        pass
-    try:
-        res = await _fetch_mute_status_fallback(session_id)
-        return bool(res) if res is not None else False
-    except Exception as e:
-        logger.warning(f"[Agent3][MUTE] fallback failed: {e}")
-        return False
-
-
-# ========== Voices Cache ==========
-class VoicesCache:
-    """Simple in-memory cache with TTL for Azure Speech voices."""
-    def __init__(self, ttl_seconds: int):
-        self.ttl = ttl_seconds
-        self._data: Optional[Tuple[float, List[Dict[str, Any]]]] = None
-        self._lock = asyncio.Lock()
-
-    async def get(self) -> Optional[List[Dict[str, Any]]]:
-        async with self._lock:
-            if not self._data:
-                return None
-            ts, voices = self._data
-            if (time.time() - ts) > self.ttl:
-                self._data = None
-                return None
-            return voices
-
-    async def set(self, voices: List[Dict[str, Any]]):
-        async with self._lock:
-            self._data = (time.time(), voices)
-
-
-voices_cache = VoicesCache(ttl_seconds=settings.VOICES_CACHE_TTL)
-
-
-# ========== Agent ==========
-class Agent3:
-    def __init__(self):
-        self._start_time = time.time()
-        self.auth = AzureSpeechAuthManager()
-        self.tts = TTSManager(self.auth)
-
-        # LLM for /v1/chat (non-deprecated)
-        self.llm = AzureChatOpenAI(
-            deployment_name=settings.AZURE_OPENAI_DEPLOYMENT,
-            api_key=settings.AZURE_OPENAI_KEY,
-            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-            api_version=settings.OPENAI_API_VERSION,
-            temperature=0.7,
-            timeout=settings.AGENT_TIMEOUT
-        )
-        logger.info("[Agent3] ✅ initialized (LLM + TTS ready)")
-
-    @retry(stop=stop_after_attempt(settings.MAX_RETRIES),
-           wait=wait_exponential(multiplier=1, min=1, max=8))
-    async def generate_audio(self, req: TTSRequest) -> TTSResponse:
-        if not validate_session_id(req.session_id):
-            return TTSResponse(
-                audio_path=None,
-                audio_hex=None,
-                text_length=len(req.text),
-                voice=req.voice,
-                session_id=req.session_id,
-                status="error",
-                processing_time=0.0,
-                agent_info={"error": "Invalid session_id"}
-            )
-
-        if await is_effectively_muted(req.session_id):
-            logger.info(f"[Agent3] 🔇 session={req.session_id} muted; skip synthesis")
-            return TTSResponse(
-                audio_path=None,
-                audio_hex=None,
-                text_length=len(req.text),
-                voice=req.voice,
-                session_id=req.session_id,
-                status="muted",
-                processing_time=0.0
-            )
-
-        # Do synthesis (returns path)
-        tts_resp = await self.tts.synthesize(req)
-
-        # If success, add audio_hex
-        if tts_resp and tts_resp.status == "success" and tts_resp.audio_path:
-            try:
-                fp = Path(tts_resp.audio_path)
-                # make a public route path if raw path provided
-                public_path = f"/audio/{fp.name}"
-                with open(fp, "rb") as f:
-                    audio_bytes = f.read()
-                tts_resp.audio_hex = audio_bytes.hex()
-                tts_resp.audio_path = public_path  # serve via endpoint
-            except Exception as e:
-                logger.warning(f"[Agent3] Could not read WAV to hex: {e}")
-
-        return tts_resp
-
-    def _build_conversation_system_prompt(self, request: ChatRequest) -> str:
-        base = (
-            "You are Agent3, a creative storyteller for a podcast panel.\n"
-            "- Be vivid, concise (2–3 sentences), and engaging.\n"
-            "- Use light humor and illustrative examples.\n"
-            "- Fit the ongoing conversation naturally."
-        )
-        if request.is_interruption:
-            base += "\n(Respond to an interruption; acknowledge and add color.)"
-        if request.turn_number and request.max_turns:
-            base += f"\n(This is turn {request.turn_number} of {request.max_turns}.)"
-        if request.conversation_context:
-            base += f"\nContext:\n{request.conversation_context}"
-        return base
-
-    @retry(stop=stop_after_attempt(settings.MAX_RETRIES),
-           wait=wait_exponential(multiplier=1, min=1, max=8))
-    async def handle_chat(self, request: ChatRequest) -> ChatResponse:
-        start = time.time()
-        try:
-            if not validate_session_id(request.session_id):
-                raise ValueError("Invalid session_id")
-
-            sys_msg = SystemMessage(content=self._build_conversation_system_prompt(request))
-            human = HumanMessage(content=request.text)
-            resp = await self.llm.ainvoke([sys_msg, human])
-            text = (resp.content or "").strip()
-            if not text:
-                raise ValueError("LLM returned empty response")
-
-            audio_path = None
-            audio_hex = None
-            if not await is_effectively_muted(request.session_id):
-                tts_resp = await self.tts.synthesize(
-                    TTSRequest(text=text, voice=request.voice, session_id=request.session_id)
-                )
-                if tts_resp.status == "success" and tts_resp.audio_path:
-                    fp = Path(tts_resp.audio_path)
-                    audio_path = f"/audio/{fp.name}"
-                    try:
-                        with open(fp, "rb") as f:
-                            audio_hex = f.read().hex()
-                    except Exception as e:
-                        logger.warning(f"[Agent3][CHAT] hex read failed: {e}")
-
-            return ChatResponse(
-                response=text,
-                audio_path=audio_path,
-                audio_hex=audio_hex,
-                session_id=request.session_id,
-                status="success",
-                processing_time=round(time.time() - start, 3),
-                agent_info={
-                    "agent": "agent3",
-                    "conversation_mode": request.conversation_mode,
-                    "is_interruption": request.is_interruption,
-                    "voice": request.voice,
-                    "audio_generated": bool(audio_path)
-                },
-                turn_number=request.turn_number
-            )
-        except Exception as e:
-            logger.error(f"[Agent3][CHAT] ❌ failed: {e}")
-            return ChatResponse(
-                response=f"Error: {e}",
-                session_id=request.session_id,
-                status="error",
-                processing_time=round(time.time() - start, 3)
-            )
-
-    # For streaming: send PCM chunks via WebSocket
-    async def ws_stream_text(self, text: str, voice: str, speed: float, pitch: float, websocket: WebSocket):
-        cleaned = clean_text_for_processing(text, settings.MAX_TEXT_LENGTH)
-        if not cleaned.strip():
-            await websocket.send_json({"error": "empty text"})
-            return
-
-        speech_config = self.auth.get_speech_config(voice)
-        speech_config.set_speech_synthesis_output_format(
-            speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
-        )
-        synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
-        ssml = self.tts._make_ssml(cleaned, voice, speed, pitch)
-
-        result = await asyncio.to_thread(lambda: synthesizer.speak_ssml_async(ssml).get())
-        if result.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
-            await websocket.send_json({"error": f"TTS failed: {result.reason}"})
-            return
-
-        stream = speechsdk.AudioDataStream(result)
-        buffer = bytearray(4800)  # ~100ms chunks at 24kHz 16-bit mono
-        while True:
-            n = stream.read_data(buffer)
-            if n == 0:
-                break
-            await websocket.send_bytes(buffer[:n])
-        await websocket.send_json({"status": "completed", "voice": voice, "speed": speed, "pitch": pitch})
-
-
-# ========== FastAPI App Lifecycle ==========
-agent = Agent3()
-
-@app.on_event("startup")
-async def _start_cleanup():
-    # Startup diagnostics
-    presence = {k: ("present" if os.getenv(k) else "MISSING") for k in [
-        "CLIENT_ID","CLIENT_SECRET","TENANT_ID","RESOURCE_ID","SPEECH_REGION",
-        "AZURE_OPENAI_KEY","AZURE_OPENAI_ENDPOINT","AZURE_OPENAI_DEPLOYMENT","OPENAI_API_VERSION",
-        "ORCHESTRATOR_URL"
-    ]}
-    print(f"[Agent3][STARTUP] Env presence: {presence}")
-    print(f"[Agent3][STARTUP] ORCHESTRATOR_BASE={_orch_base()}")
-    asyncio.create_task(agent.tts._periodic_cleanup())
-
-
-# ========== API Endpoints ==========
-@app.post("/generate-audio", response_model=TTSResponse)
-async def generate_audio(request: TTSRequest):
-    """JSON endpoint used by other agents: synthesize WAV and return path + inline hex."""
-    tts_resp = await agent.generate_audio(request)
-    return tts_resp
-
-
-@app.post("/v1/chat", response_model=ChatResponse)
-async def chat_handler(request: ChatRequest):
-    """Generate a short spoken reply and (optionally) synthesize audio (with audio_hex)."""
-    return await agent.handle_chat(request)
-
-
-@app.get("/audio/{filename}")
-async def get_audio(filename: str):
-    """Serve audio files by name (with path traversal protection)."""
-    base = Path(settings.AUDIO_DIR).resolve()
-    fp = (base / filename).resolve()
-    if base not in fp.parents and fp != base:
-        raise HTTPException(status_code=400, detail="Invalid path")
-    if not fp.exists() or not fp.is_file():
-        raise HTTPException(status_code=404, detail="Audio file not found")
-    return FileResponse(path=str(fp), media_type="audio/wav", filename=fp.name)
-
-
-# ---- AAD-compatible, retry-hardened voices route with caching ----
-@app.get("/voices")
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=6))
-async def get_voices(force_refresh: bool = Query(False, description="Bypass cache if true")):
-    """List available Azure Speech voices (AAD auth) with in-memory TTL cache."""
-    try:
-        if not force_refresh:
-            cached = await voices_cache.get()
-            if cached is not None:
-                return {
-                    "status": "ok",
-                    "default_voice": settings.DEFAULT_VOICE,
-                    "count": len(cached),
-                    "cached": True,
-                    "voices": cached
-                }
-
-        credential = ClientSecretCredential(
-            tenant_id=settings.TENANT_ID,
-            client_id=settings.CLIENT_ID,
-            client_secret=settings.CLIENT_SECRET
-        )
-        token = credential.get_token("https://cognitiveservices.azure.com/.default")
-        auth_token = f"aad#{settings.RESOURCE_ID}#{token.token}"
-
-        speech_config = speechsdk.SpeechConfig(auth_token=auth_token, region=settings.SPEECH_REGION)
-
-        voices_result = await asyncio.to_thread(
-            lambda: speechsdk.SpeechSynthesizer(speech_config=speech_config).get_voices_async().get()
-        )
-
-        voices = [
-            {
-                "shortName": v.short_name,
-                "locale": getattr(v, "locale", None),
-                "gender": getattr(v, "gender", None),
-                "voiceType": getattr(v, "voice_type", None)
-            }
-            for v in (voices_result.voices or [])
-        ]
-
-        await voices_cache.set(voices)
-
-        return {
-            "status": "ok",
-            "default_voice": settings.DEFAULT_VOICE,
-            "count": len(voices),
-            "cached": False,
-            "ttl_seconds": settings.VOICES_CACHE_TTL,
-            "voices": voices
-        }
-    except Exception as e:
-        logger.error(f"[Agent3][VOICES] ❌ fetch failed: {e}")
-        raise HTTPException(status_code=500, detail="Unable to fetch voices")
-
-
-@app.post("/clear-cache")
-async def clear_cache():
-    """Clear auth cache and delete cached audio WAVs."""
-    try:
-        agent.auth.clear_cache()
-        count = 0
-        for fp in Path(settings.AUDIO_DIR).glob("*.wav"):
-            fp.unlink(missing_ok=True)
-            count += 1
-        await voices_cache.set([])  # clear voices cache
-        return {"status": "success", "message": f"Cache cleared ({count} files)", "voices_cache_cleared": True}
-    except Exception as e:
-        logger.error(f"[Agent3][CACHE] ❌ clear failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.websocket("/ws/stream-audio")
-async def ws_stream_audio(ws: WebSocket):
-    """WebSocket: send PCM WAV chunks for live playback."""
-    await ws.accept()
-    try:
-        while True:
-            data = await ws.receive_json()
-            text = data.get("text", "") or ""
-            voice = data.get("voice", settings.DEFAULT_VOICE)
-            session_id = data.get("session_id", "default")
-            speed = float(data.get("speed", 1.0))
-            pitch = float(data.get("pitch", 1.0))
-
-            if await is_effectively_muted(session_id):
-                await ws.send_json({"status": "muted"})
-                continue
-
-            await agent.ws_stream_text(text=text, voice=voice, speed=speed, pitch=pitch, websocket=ws)
-    except WebSocketDisconnect:
-        logger.info("[Agent3][WS] disconnected")
-    except Exception as e:
-        logger.error(f"[Agent3][WS] error: {e}")
-        try:
-            await ws.send_json({"error": str(e)})
-        except Exception:
-            pass
-
-
-@app.get("/health")
-async def health():
-    """Health check with basic environment status."""
-    try:
-        cached_voices = await voices_cache.get()
-        cached_count = len(list(Path(settings.AUDIO_DIR).glob("*.wav")))
-        return {
-            "status": "healthy",
-            "service": "Agent3 - TTS Generator",
-            "version": "2.3.0",
-            "uptime_sec": round(time.time() - agent._start_time, 2),
-            "audio_cache_dir": str(Path(settings.AUDIO_DIR).resolve()),
-            "cached_files": cached_count,
-            "voices_cached": (len(cached_voices) if cached_voices is not None else 0),
-            "voices_cache_ttl": settings.VOICES_CACHE_TTL
-        }
-    except Exception as e:
-        logger.error(f"[Agent3][HEALTH] failed: {e}")
-        return {"status": "unhealthy", "error": str(e)}
-
-
-@app.get("/")
-async def root():
-    return {
-        "service": "Agent3 - TTS Generator",
-        "version": "2.3.0",
-        "endpoints": {
-            "generate_audio": "/generate-audio",
-            "chat": "/v1/chat",
-            "ws_stream": "/ws/stream-audio",
-            "get_audio": "/audio/{filename}",
-            "voices": "/voices",
-            "clear_cache": "/clear-cache",
-            "health": "/health",
-            "debug_config": "/debug/config"
-        },
-        "features": [
-            "Azure AD Speech (no subscription key)",
-            "JSON /generate-audio returns audio_path + audio_hex ✅",
-            "WAV output + file serving",
-            "WebSocket streaming (PCM WAV chunks)",
-            "Per-agent mute integration with orchestrator",
-            "LLM-assisted /v1/chat with optional TTS (also returns audio_hex)",
-            "Cache clearing + periodic cleanup (startup scheduled)",
-            "Path traversal protection on file serving",
-            "Retries + timeouts on critical paths",
-            "In-memory voices cache with TTL"
-        ]
-    }
-
-
-# ---- Debug config endpoint (safe, no secrets)
-  # alias to avoid shadowing
-from typing import List as _List  # re-import cleanly
-
-def _present(k: str) -> bool:
-    v = os.getenv(k, "")
-    return bool(v and v.strip())
-
-def _looks_url(k: str) -> bool:
-    v = os.getenv(k, "")
-    return v.startswith("http://") or v.startswith("https://")
-
-def attach_debug_config(app: FastAPI, service_name: str, required_vars: _List[str], url_vars: _List[str] = []):
-    @app.get("/debug/config")
-    def debug_config():
-        ok: Dict[str, str] = {}
-        for k in required_vars:
-            ok[k] = "present" if _present(k) else "MISSING"
-        for k in url_vars:
-            if _present(k):
-                ok[k] = ok.get(k, "present")
-            ok[f"{k}_is_url"] = "ok" if _looks_url(k) else "INVALID_URL"
-        return {"service": service_name, "vars": ok}
-
-# Attach with correct var names (✅ ORCHESTRATOR_URL instead of old GRAPH_URL)
-attach_debug_config(
-    app, "agent3",
-    required_vars=[
-        "CLIENT_ID","CLIENT_SECRET","TENANT_ID","RESOURCE_ID","SPEECH_REGION",
-        "AZURE_OPENAI_KEY","AZURE_OPENAI_ENDPOINT","AZURE_OPENAI_DEPLOYMENT","OPENAI_API_VERSION",
-        "ORCHESTRATOR_URL"
-    ],
-    url_vars=["ORCHESTRATOR_URL"]
-)
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("agent3:app", host="0.0.0.0", port=8004, log_level="info", reload=False)
