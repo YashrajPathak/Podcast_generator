@@ -1,114 +1,15 @@
-def render_autoplay_queue():
-    st.subheader("🎧 Auto-play (text → audio → next)")
-    st.caption("Click **Start Player** once (browser autoplay policy). It will keep pulling the next clip automatically.")
-    sid = st.session_state.session_id
-    base = GRAPH_BASE_URL.rstrip("/")
-    html = f"""
-    <div id="player-root" style="padding:8px; border:1px solid #444; border-radius:12px;">
-      <div style="display:flex; gap:8px; align-items:center;">
-        <button id="startBtn">▶ Start Player</button>
-        <button id="stopBtn" disabled>⏹ Stop</button>
-        <span id="status" style="margin-left:8px; color:#0a0;">idle</span>
-      </div>
-      <div style="margin-top:6px; font-family: ui-monospace, monospace; font-size:12px;">
-        Session: <b>{sid}</b> • Server: <b>{base}</b>
-      </div>
-    </div>
-    <script>
-    (function() {{
-      const GRAPH = "{base}";
-      const SID = "{sid}";
-      let running = false;
-      let currentAudio = null;
-      const statusEl = document.getElementById("status");
-      const startBtn = document.getElementById("startBtn");
-      const stopBtn  = document.getElementById("stopBtn");
-
-      function setStatus(t, color="#0a0") {{
-        statusEl.textContent = t;
-        statusEl.style.color = color;
-      }}
-
-      async function playNext() {{
-        if (!running) return;
-        try {{
-          const res = await fetch(`${{GRAPH}}/session/${{SID}}/next-audio`, {{
-            method: "POST",
-            headers: {{ "Content-Type": "application/json" }},
-          }});
-          if (!running) return;
-          if (!res.ok) {{
-            setStatus("server error " + res.status, "#d00");
-            setTimeout(playNext, 1200);
-            return;
-          }}
-          const data = await res.json();
-          if (data.status === "none") {{
-            setStatus("waiting for next clip…", "#888");
-            setTimeout(playNext, 1000);
-            return;
-          }}
-          const b64 = data.audio_b64;
-          if (!b64) {{
-            setStatus("no audio in payload", "#d00");
-            setTimeout(playNext, 1000);
-            return;
-          }}
-          const src = "data:audio/wav;base64," + b64;
-          const audio = new Audio(src);
-          audio.autoplay = true;
-          currentAudio = audio;
-          setStatus("playing turn " + data.turn_id + " (" + (data.agent||"agent") + ")", "#0a0");
-
-          audio.onended = () => {{
-            if (!running) return;
-            setTimeout(playNext, 200);
-          }};
-          audio.onerror = () => {{
-            setStatus("audio error; retrying…", "#d00");
-            if (!running) return;
-            setTimeout(playNext, 500);
-          }};
-          try {{
-            await audio.play();
-          }} catch (e) {{
-            setStatus("autoplay blocked — click Start Player", "#d00");
-            running = false;
-            startBtn.disabled = false;
-            stopBtn.disabled = true;
-          }}
-        }} catch (e) {{
-          setStatus("network error; retrying…", "#d00");
-          if (!running) return;
-          setTimeout(playNext, 1200);
-        }}
-      }}
-
-      startBtn.onclick = () => {{
-        running = true;
-        startBtn.disabled = true;
-        stopBtn.disabled = false;
-        setStatus("starting…", "#0a0");
-        playNext();
-      }};
-      stopBtn.onclick = () => {{
-        running = false;
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
-        setStatus("stopped", "#888");
-        try {{ if (currentAudio) currentAudio.pause(); }} catch (_e) {{}}
-      }};
-    }})();
-    </script>
-    """
-    components.html(html, height=150, scrolling=False)
-
-    # Convenience button to reset playback flags server-side
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        if st.button("🔄 Reset auto-play queue"):
-            try:
-                requests.post(f"{GRAPH_BASE_URL}/session/{sid}/reset-playback", timeout=5)
-                st.success("Playback flags reset.")
-            except Exception as e:
-                st.error(f"Reset failed: {e}")
+[1] agent1: (2025-08-18T04:22:10.087052Z) Welcome back to the panel discussion, folks! Today, we're diving into some fascinating data trends from 2024 to 2025. It seems like February 2025 saw a noticeable drop in numbers with a month-over-month decrease of 42.6%. This shift is intriguing, especially given the weekly frequency of data collection. What do you think might be driving these fluctuations, and how do they compare to previous years?
+  [audio] audio_cache\aria_8ce999970f3c400b8e0238a6c2c34468.wav
+[2] agent2: (2025-08-18T04:22:12.687186Z) Looking at the data, February 2025 saw a significant drop compared to the previous period, with a month-over-month decrease of 42.6%. This decline contrasts sharply with the 2024 average of 415.5, highlighting potential seasonal or market fluctuations. It's crucial to explore underlying factors, such as economic shifts or external events, that might have influenced this downward trend.
+[3] agent1: (2025-08-18T04:22:22.444544Z) Welcome back to our data deep dive, everyone! We've seen a sharp drop in February 2025, with numbers plummeting by 42.6% month-over-month. This is particularly interesting when we compare it to the steady growth in previous years like 2024, which had a healthy average of 415.5. Do you think there's an underlying trend or external factor that's causing these fluctuations, or is it more of a cyclical pattern we're observing?
+  [audio] audio_cache\aria_5f2c8b12c4f045208925de357a4c967a.wav
+[4] agent2: (2025-08-18T04:22:24.930664Z) Looking at the data, February 2025 showed a significant drop of 42.6% compared to the previous month, highlighting volatility in the values. This contrasts sharply with the 2024 average of 415.5, indicating that while fluctuations are common, the overall trend might still be stable over longer periods. It’s crucial to consider these month-over-month changes within the broader yearly context to understand the underlying patterns.
+[5] agent1: (2025-08-18T04:22:32.085223Z) Thanks for tuning in again, folks! It's fascinating to see February 2025 take such a dive with a 42.6% decrease month-over-month. This contrasts sharply with the robust figures from 2024, where we saw an average of 415.5. Could this be a sign of shifting economic conditions, or perhaps a natural ebb and flow in the data cycles? What factors do you think might be influencing these numbers?
+  [audio] audio_cache\aria_00c07347a8f54f2a8fdf7e895a792d63.wav
+[6] agent2: (2025-08-18T04:22:34.818772Z) Looking at the year-to-date data for 2025, we're seeing a noticeable dip in the average compared to 2024, with the current average sitting at 351.4 versus last year's 415.5. This month-on-month decrease of 42.6% from February's 372.8 indicates a significant shift, possibly reflecting seasonal trends or external factors impacting the data.
+[7] agent3: (2025-08-18T04:22:56.434148Z) Ah, those numbers are like a rollercoaster ride through a spreadsheet! It seems February took a nosedive with a 42.6% drop—like a kid who just realized they forgot their lunch at home. But hey, looking at 2024, the year was quite the overachiever with a max value that almost hit 842.0, resembling that one friend who’s always setting personal records at the gym!
+  [audio] audio_cache\prab_a0323595e89e407380af32763e3dbd2b.wav
+[8] agent3: (2025-08-18T04:23:18.180971Z) Well, folks, it looks like the numbers have been on a rollercoaster more thrilling than a squirrel on espresso! With the year-to-date average for 2025 coming in at 351.4, we're seeing a dip from the previous year's average of 415.5. It's like our data decided to skip the gym in January, while February was just a warm-up round. But hey, at least we didn't hit that all-time low of 113.7 from back in 2022—now that was a real limbo moment!
+  [audio] audio_cache\prab_c713321cc59c4345b4582397e7ff5ad2.wav
+[9] agent3: (2025-08-18T04:23:26.107325Z) Alright, folks, let's dive into these numbers like a penguin into the sea! With a whopping 22,022.5 sum in 2024, it seems we were on a rollercoaster ride—peaking at a dizzying 842.0 and dipping to a low of 155.2. But this February, it’s like the numbers decided to practice yoga, stretching out with a peaceful average of 351.4. It's a bit like a toddler learning to walk—wobbly at first but getting steadier with each step.
+  [audio] audio_cache\prab_049888f4a327408dbb0c916079fc76ec.wav
