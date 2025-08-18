@@ -16,6 +16,7 @@ import numpy as np
 import wave
 import requests
 import threading
+import streamlit.components.v1 as components
 from io import BytesIO
 try:
     import websocket  # websocket-client
@@ -480,7 +481,120 @@ def render_audio_player():
         audio_receiver_size=1024,
     )
     st.session_state.audio_ctx = audio_ctx
+def render_autoplay_queue():
+    st.subheader("🎧 Auto-play (text → audio → next)")
+    st.caption("Click **Start Player** once (browser autoplay policy). It will keep pulling the next clip automatically.")
+    sid = st.session_state.session_id
+    base = GRAPH_BASE_URL.rstrip("/")
+    html = f"""
+    <div id="player-root" style="padding:8px; border:1px solid #444; border-radius:12px;">
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button id="startBtn">▶ Start Player</button>
+        <button id="stopBtn" disabled>⏹ Stop</button>
+        <span id="status" style="margin-left:8px; color:#0a0;">idle</span>
+      </div>
+      <div style="margin-top:6px; font-family: ui-monospace, monospace; font-size:12px;">
+        Session: <b>{sid}</b> • Server: <b>{base}</b>
+      </div>
+    </div>
+    <script>
+    (function() {{
+      const GRAPH = "{base}";
+      const SID = "{sid}";
+      let running = false;
+      let currentAudio = null;
+      const statusEl = document.getElementById("status");
+      const startBtn = document.getElementById("startBtn");
+      const stopBtn  = document.getElementById("stopBtn");
 
+      function setStatus(t, color="#0a0") {{
+        statusEl.textContent = t;
+        statusEl.style.color = color;
+      }}
+
+      async function playNext() {{
+        if (!running) return;
+        try {{
+          const res = await fetch(`${{GRAPH}}/session/${{SID}}/next-audio`, {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+          }});
+          if (!running) return;
+          if (!res.ok) {{
+            setStatus("server error " + res.status, "#d00");
+            setTimeout(playNext, 1200);
+            return;
+          }}
+          const data = await res.json();
+          if (data.status === "none") {{
+            setStatus("waiting for next clip…", "#888");
+            setTimeout(playNext, 1000);
+            return;
+          }}
+          const b64 = data.audio_b64;
+          if (!b64) {{
+            setStatus("no audio in payload", "#d00");
+            setTimeout(playNext, 1000);
+            return;
+          }}
+          const src = "data:audio/wav;base64," + b64;
+          const audio = new Audio(src);
+          audio.autoplay = true;
+          currentAudio = audio;
+          setStatus("playing turn " + data.turn_id + " (" + (data.agent||"agent") + ")", "#0a0");
+
+          audio.onended = () => {{
+            if (!running) return;
+            setTimeout(playNext, 200);
+          }};
+          audio.onerror = () => {{
+            setStatus("audio error; retrying…", "#d00");
+            if (!running) return;
+            setTimeout(playNext, 500);
+          }};
+          try {{
+            await audio.play();
+          }} catch (e) {{
+            setStatus("autoplay blocked — click Start Player", "#d00");
+            running = false;
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+          }}
+        }} catch (e) {{
+          setStatus("network error; retrying…", "#d00");
+          if (!running) return;
+          setTimeout(playNext, 1200);
+        }}
+      }}
+
+      startBtn.onclick = () => {{
+        running = true;
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        setStatus("starting…", "#0a0");
+        playNext();
+      }};
+      stopBtn.onclick = () => {{
+        running = false;
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        setStatus("stopped", "#888");
+        try {{ if (currentAudio) currentAudio.pause(); }} catch (_e) {{}}
+      }};
+    }})();
+    </script>
+    """
+    components.html(html, height=150, scrolling=False)
+
+    # Convenience button to reset playback flags server-side
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        if st.button("🔄 Reset auto-play queue"):
+            try:
+                requests.post(f"{GRAPH_BASE_URL}/session/{sid}/reset-playback", timeout=5)
+                st.success("Playback flags reset.")
+            except Exception as e:
+                st.error(f"Reset failed: {e}")
 def render_input_panel():
     st.subheader("💬 Drive Conversation")
     tab1, tab2, tab3, tab4 = st.tabs(["Topic", "Message", "Interrupt", "Audio"])
@@ -801,6 +915,7 @@ def render_control_room():
     col2.metric("Current Session", st.session_state.session_id)
     
     render_audio_player()
+    render_autoplay_queue()
     render_input_panel()
     render_agent_status()
     render_conversation()
