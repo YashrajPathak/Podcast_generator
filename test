@@ -1,12 +1,100 @@
-# If still no bytes and Agent returned an HTTP(S) URL, fetch it
-if (not audio_data) and isinstance(audio_path, str) and audio_path.startswith(("http://", "https://")):
-    try:
-        async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
-            r2 = await c.get(audio_path)
-        if r2.status_code == 200 and r2.content:
-            audio_data = r2.content
-        else:
-            logger.warning(f"_agent_chat: HTTP fetch failed {audio_path} -> {r2.status_code}")
-    except Exception as e:
-        logger.warning(f"_agent_chat: HTTP fetch exception for {audio_path}: {e}")
-        audio_data = b""
+@retry(stop=stop_after_attempt(settings.MAX_RETRIES), wait=wait_exponential(multiplier=1, min=1, max=8))
+async def _agent_chat(
+    agent_key: str,
+    *, 
+    text: str,
+    session_id: str,
+    voice: str,
+    turn_number: Optional[int],
+    max_turns: Optional[int],
+    conversation_context: Optional[str],
+    is_interruption: bool
+) -> Tuple[str, bytes, Optional[str]]:
+    """
+    Call an agent's /v1/chat endpoint and return (response_text, audio_bytes, audio_path_returned).
+    Robustly extracts audio by preferring inline hex, then local file, then HTTP/relative fetch.
+    """
+    url = _chat_url(agent_key)
+    if not url:
+        raise RuntimeError(f"No chat URL for {agent_key}")
+
+    payload = {
+        "text": text,
+        "session_id": session_id,
+        "voice": voice,
+        "conversation_mode": "agent_to_agent",
+        "is_conversation_turn": True,
+        "is_interruption": is_interruption,
+        "turn_number": turn_number,
+        "max_turns": max_turns,
+        "conversation_context": conversation_context,
+        "return_audio": True,
+    }
+
+    # --- POST to agent ---
+    async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as client:
+        r = await client.post(url, json=payload)
+    if r.status_code != 200:
+        raise RuntimeError(f"{agent_key} chat failed ({r.status_code}): {r.text}")
+    data = r.json() or {}
+
+    # --- Extract text ---
+    response_text = (data.get("response") or "").strip()
+
+    # --- Extract audio bytes robustly ---
+    audio_hex = (data.get("audio_hex") or "") or ""
+    audio_path = data.get("audio_path")
+    audio_data: bytes = b""
+
+    # 1) Inline hex wins
+    if isinstance(audio_hex, str) and audio_hex:
+        try:
+            audio_data = bytes.fromhex(audio_hex)
+        except Exception as e:
+            logger.warning(f"_agent_chat: hex decode failed for {agent_key}: {e}")
+            audio_data = b""
+
+    # 2) Local filesystem path
+    if (not audio_data) and isinstance(audio_path, str) and audio_path:
+        try:
+            p = Path(str(audio_path))
+            if p.exists():
+                audio_data = p.read_bytes()
+        except Exception:
+            audio_data = b""
+
+    # 3) Absolute HTTP(S) URL
+    if (not audio_data) and isinstance(audio_path, str) and audio_path.startswith(("http://", "https://")):
+        try:
+            async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
+                r2 = await c.get(audio_path)
+            if r2.status_code == 200 and r2.content:
+                audio_data = r2.content
+            else:
+                logger.warning(f"_agent_chat: HTTP fetch failed {audio_path} -> {r2.status_code}")
+        except Exception as e:
+            logger.warning(f"_agent_chat: HTTP fetch exception for {audio_path}: {e}")
+            audio_data = b""
+
+    # 4) Relative path (construct from agent base URL)
+    if (not audio_data) and isinstance(audio_path, str) and audio_path and not audio_path.startswith(("http://", "https://")):
+        try:
+            # Derive base from the chat URL: ".../v1/chat" -> base service URL
+            base = url.rsplit("/v1/chat", 1)[0].rstrip("/")
+            fetch_url = f"{base}/{audio_path.lstrip('/')}"
+            async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
+                r3 = await c.get(fetch_url)
+            if r3.status_code == 200 and r3.content:
+                audio_data = r3.content
+            else:
+                logger.warning(f"_agent_chat: relative fetch failed {fetch_url} -> {r3.status_code}")
+        except Exception as e:
+            logger.warning(f"_agent_chat: relative fetch exception for {audio_path}: {e}")
+            audio_data = b""
+
+    # --- Log + return ---
+    logger.info(
+        f"agent_turn_ok session_id={session_id} agent={agent_key} "
+        f"text_len={len(text)} audio_bytes={len(audio_data)}"
+    )
+    return response_text, _normalize_audio(audio_data), audio_path
