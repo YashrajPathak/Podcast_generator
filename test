@@ -1,65 +1,49 @@
 # agent2_demo_livekit_local.py
 # pip install livekit-rtc azure-cognitiveservices-speech azure-identity openai python-dotenv
-import os, time, asyncio
+import os, asyncio
 from dotenv import load_dotenv; load_dotenv()
 
-# --- Azure OpenAI (brain) ---
+# ---------- Azure OpenAI (brain) ----------
 from openai import AzureOpenAI
-AZURE_OPENAI_API_KEY   = os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-AZURE_OPENAI_ENDPOINT  = os.getenv("AZURE_OPENAI_ENDPOINT")   # e.g. https://<your>.openai.azure.com/
-AZURE_OPENAI_DEPLOYMENT= os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")  # your deployment name
-oai = AzureOpenAI(api_key=AZURE_OPENAI_API_KEY, azure_endpoint=AZURE_OPENAI_ENDPOINT)
+AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")       # e.g. https://<your>.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+OPENAI_API_VERSION      = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
+oai = AzureOpenAI(api_key=AZURE_OPENAI_KEY, azure_endpoint=AZURE_OPENAI_ENDPOINT, api_version=OPENAI_API_VERSION)
 
-# --- Azure Speech (STT + TTS) with AAD ClientSecretCredential (no subscription key) ---
+# ---------- Azure Speech (STT + TTS) via AAD client credentials ----------
 import azure.cognitiveservices.speech as speechsdk
 from azure.identity import ClientSecretCredential
 
-TENANT_ID   = os.getenv("AZURE_TENANT_ID")
-CLIENT_ID   = os.getenv("AZURE_CLIENT_ID")
-CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
-SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")   # e.g., "eastus"
+TENANT_ID     = os.getenv("TENANT_ID")
+CLIENT_ID     = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+SPEECH_REGION = os.getenv("SPEECH_REGION")            # e.g., "eastus"
+RESOURCE_ID   = os.getenv("RESOURCE_ID")              # optional; if set we’ll prefix token as aad#{RESOURCE_ID}#{token}
 STT_LANGUAGE  = os.getenv("STT_LANGUAGE", "en-US")
+COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
 
-# Acquire AAD token for Cognitive Services
-COG_SCOPE = "https://cognitiveservices.azure.com/.default"
+if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
+    raise RuntimeError("Missing one of: TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION")
+
 cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
 
-def get_speech_auth_token() -> str:
-    token = cred.get_token(COG_SCOPE)
-    # token.expires_on is epoch seconds; Speech SDK expects raw bearer token string
-    return token.token
+def get_cog_token_str() -> str:
+    raw = cred.get_token(COG_SCOPE).token
+    # For compatibility with your Agent3 pattern:
+    return f"aad#{RESOURCE_ID}#{raw}" if RESOURCE_ID else raw
 
-# Build SpeechConfig using auth token (no subscription key)
-speech_cfg = speechsdk.SpeechConfig(region=SPEECH_REGION)
-speech_cfg.speech_recognition_language = STT_LANGUAGE
-# Initial token set
-speech_cfg.set_property(speechsdk.PropertyId.SpeechServiceAuthorization_Token, get_speech_auth_token())
-# TTS will output raw PCM we can feed to LiveKit track:
-TTS_FORMAT = speechsdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm
-
-# Background refresher to keep token valid (Speech tokens typically ~10 minutes)
-async def refresh_speech_token_loop():
-    while True:
-        try:
-            speech_cfg.set_property(speechsdk.PropertyId.SpeechServiceAuthorization_Token, get_speech_auth_token())
-        except Exception as e:
-            print("⚠️ Speech token refresh failed:", e)
-        # refresh a bit before expiry; 9 minutes is safe
-        await asyncio.sleep(9 * 60)
-
-# --- LiveKit client SDK (demo/local mode; no server, no LK keys) ---
+# ---------- LiveKit client SDK (demo/local mode; no server/keys) ----------
 from livekit import rtc
 SAMPLE_RATE, CHANNELS, FRAME_MS = 24000, 1, 20
 SAMPLES_PER_CH  = SAMPLE_RATE * FRAME_MS // 1000
 BYTES_PER_FRAME = SAMPLES_PER_CH * CHANNELS * 2
 
 async def publish_pcm_as_track(room: rtc.Room, identity: str, pcm: bytes):
-    """Publish PCM bytes into a LocalAudioTrack and also play them locally."""
     source = rtc.AudioSource(sample_rate=SAMPLE_RATE, num_channels=CHANNELS)
     track  = rtc.LocalAudioTrack.create_audio_track(f"{identity}-voice", source)
     await room.local_participant.publish_track(track)
-
-    # also attach a local player so you can hear it in demo mode
+    # local playback in demo mode
     player = rtc.AudioFramePlayer()
     track.add_sink(player)
 
@@ -70,81 +54,94 @@ async def publish_pcm_as_track(room: rtc.Room, identity: str, pcm: bytes):
         await source.capture_frame(frame)
         await asyncio.sleep(FRAME_MS / 1000)
 
-async def main():
-    # Start token refresh task
-    asyncio.create_task(refresh_speech_token_loop())
+async def handle_text_and_reply(room: rtc.Room, user_text: str):
+    # 1) LLM reply
+    try:
+        resp = oai.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": "You are a concise, helpful panelist."},
+                {"role": "user", "content": user_text}
+            ],
+            max_tokens=80, temperature=0.7,
+        )
+        reply = (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        print("OpenAI error:", e)
+        reply = "Sorry, I had an issue thinking about that."
+    print(f"🧠 Agent2 reply: {reply}")
 
-    # 1) Create a local-only "room" (no server, no keys)
+    # 2) TTS with fresh AAD token (no subscription key)
+    try:
+        tts_cfg = speechsdk.SpeechConfig(region=SPEECH_REGION)
+        tts_cfg.set_property(speechsdk.PropertyId.SpeechServiceAuthorization_Token, get_cog_token_str())
+        tts_cfg.set_speech_synthesis_output_format(
+            speechsdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm
+        )
+        tts_syn = speechsdk.SpeechSynthesizer(speech_config=tts_cfg, audio_config=None)
+        tts_res = tts_syn.speak_text_async(reply).get()
+        if tts_res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+            print("TTS failed:", tts_res.reason); return
+        pcm = tts_res.audio_data
+    except Exception as e:
+        print("Azure TTS error:", e); return
+
+    # 3) Publish audio as LiveKit local track
+    await publish_pcm_as_track(room, "agent2", pcm)
+
+async def main():
     room = rtc.Room()
 
-    # 2) Agent1 mic track (so you can talk)
+    # Agent1 mic (publish + local monitor)
     mic = rtc.AudioSource.capture_microphone()
     talker = rtc.LocalAudioTrack.create_audio_track("agent1-mic", mic)
     await room.local_participant.publish_track(talker)
-
-    # Also play back mic locally so you know it’s capturing
     mic_player = rtc.AudioFramePlayer()
     talker.add_sink(mic_player)
-    print("🎙 Agent1 mic active. Speak a sentence, I’ll reply.")
+    print("🎙 Agent1 mic active. Speak; Agent2 will reply.")
 
-    # 3) Azure STT recognizer (uses system mic) — uses the same SpeechConfig with AAD token
+    # STT recognizer using AAD token
+    stt_cfg = speechsdk.SpeechConfig(region=SPEECH_REGION)
+    stt_cfg.speech_recognition_language = STT_LANGUAGE
+    stt_cfg.set_property(speechsdk.PropertyId.SpeechServiceAuthorization_Token, get_cog_token_str())
     rec_audio = speechsdk.audio.AudioConfig(use_default_microphone=True)
-    recognizer = speechsdk.SpeechRecognizer(speech_config=speech_cfg, audio_config=rec_audio)
+    recognizer = speechsdk.SpeechRecognizer(speech_config=stt_cfg, audio_config=rec_audio)
 
-    # 4) On recognized text → Azure OpenAI → TTS → publish via LiveKit track
+    # refresh token every ~9 minutes
+    async def refresh_loop():
+        while True:
+            try:
+                tok = get_cog_token_str()
+                recognizer.authorization_token = tok
+            except Exception as e:
+                print("⚠️ Token refresh failed:", e)
+            await asyncio.sleep(9 * 60)
+
+    asyncio.create_task(refresh_loop())
+
+    loop = asyncio.get_running_loop()
+
     def on_recognized(evt):
         if evt.result.reason != speechsdk.ResultReason.RecognizedSpeech:
             return
-        user_text = (evt.result.text or "").strip()
-        if not user_text:
+        text = (evt.result.text or "").strip()
+        if not text:
             return
-        print(f"👂 Agent1 said: {user_text}")
-
-        # Generate a short reply (Azure OpenAI)
-        try:
-            resp = oai.chat.completions.create(
-                model=AZURE_OPENAI_DEPLOYMENT,
-                messages=[
-                    {"role": "system", "content": "You are a concise helpful panelist."},
-                    {"role": "user", "content": user_text}
-                ],
-                max_tokens=80, temperature=0.7,
-            )
-            reply = (resp.choices[0].message.content or "").strip()
-        except Exception as e:
-            reply = "Sorry, I had an issue thinking about that."
-            print("OpenAI error:", e)
-
-        print(f"🧠 Agent2 reply: {reply}")
-
-        # Synthesize reply → PCM (using auth token speech_cfg)
-        try:
-            tts_cfg = speechsdk.SpeechConfig(region=SPEECH_REGION)
-            tts_cfg.set_property(speechsdk.PropertyId.SpeechServiceAuthorization_Token, get_speech_auth_token())
-            tts_cfg.set_speech_synthesis_output_format(TTS_FORMAT)
-            tts_syn = speechsdk.SpeechSynthesizer(speech_config=tts_cfg, audio_config=None)
-            tts_res = tts_syn.speak_text_async(reply).get()
-            if tts_res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
-                print("TTS failed:", tts_res.reason); return
-            pcm = tts_res.audio_data
-        except Exception as e:
-            print("Azure TTS error:", e); return
-
-        # Publish reply as a LiveKit local track (and play it)
-        asyncio.create_task(publish_pcm_as_track(room, "agent2", pcm))
+        print(f"👂 Agent1 said: {text}")
+        loop.call_soon_threadsafe(asyncio.create_task, handle_text_and_reply(room, text))
 
     recognizer.recognized.connect(on_recognized)
     recognizer.start_continuous_recognition()
     print("🎧 Listening... (Ctrl+C to stop)")
 
-    # Keep running
     try:
         await asyncio.Future()
     except KeyboardInterrupt:
         pass
 
 if __name__ == "__main__":
-    # Required env vars:
-    #  AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_SPEECH_REGION
-    #  AZURE_OPENAI_API_KEY (or OPENAI_API_KEY), AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT
+    # Required env (aligned with agent3.py):
+    #  CLIENT_ID, CLIENT_SECRET, TENANT_ID, SPEECH_REGION,  [RESOURCE_ID optional]
+    #  AZURE_OPENAI_KEY (or OPENAI_API_KEY), AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OPENAI_API_VERSION
     asyncio.run(main())
+```0
