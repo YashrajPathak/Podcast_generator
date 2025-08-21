@@ -1,28 +1,56 @@
 # agent2_demo_livekit_local.py
-# pip install livekit-rtc azure-cognitiveservices-speech openai python-dotenv
-import os, asyncio
+# pip install livekit-rtc azure-cognitiveservices-speech azure-identity openai python-dotenv
+import os, time, asyncio
 from dotenv import load_dotenv; load_dotenv()
 
 # --- Azure OpenAI (brain) ---
 from openai import AzureOpenAI
-AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")  # e.g. https://<your>.openai.azure.com/
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")  # your deployment name
+AZURE_OPENAI_API_KEY   = os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT  = os.getenv("AZURE_OPENAI_ENDPOINT")   # e.g. https://<your>.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT= os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")  # your deployment name
 oai = AzureOpenAI(api_key=AZURE_OPENAI_API_KEY, azure_endpoint=AZURE_OPENAI_ENDPOINT)
 
-# --- Azure Speech (STT + TTS) ---
+# --- Azure Speech (STT + TTS) with AAD ClientSecretCredential (no subscription key) ---
 import azure.cognitiveservices.speech as speechsdk
-SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY")
-SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
-speech_cfg = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
-speech_cfg.speech_recognition_language = os.getenv("STT_LANGUAGE", "en-US")
+from azure.identity import ClientSecretCredential
+
+TENANT_ID   = os.getenv("AZURE_TENANT_ID")
+CLIENT_ID   = os.getenv("AZURE_CLIENT_ID")
+CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
+SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")   # e.g., "eastus"
+STT_LANGUAGE  = os.getenv("STT_LANGUAGE", "en-US")
+
+# Acquire AAD token for Cognitive Services
+COG_SCOPE = "https://cognitiveservices.azure.com/.default"
+cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+
+def get_speech_auth_token() -> str:
+    token = cred.get_token(COG_SCOPE)
+    # token.expires_on is epoch seconds; Speech SDK expects raw bearer token string
+    return token.token
+
+# Build SpeechConfig using auth token (no subscription key)
+speech_cfg = speechsdk.SpeechConfig(region=SPEECH_REGION)
+speech_cfg.speech_recognition_language = STT_LANGUAGE
+# Initial token set
+speech_cfg.set_property(speechsdk.PropertyId.SpeechServiceAuthorization_Token, get_speech_auth_token())
 # TTS will output raw PCM we can feed to LiveKit track:
 TTS_FORMAT = speechsdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm
 
-# --- LiveKit client SDK (demo/local mode) ---
+# Background refresher to keep token valid (Speech tokens typically ~10 minutes)
+async def refresh_speech_token_loop():
+    while True:
+        try:
+            speech_cfg.set_property(speechsdk.PropertyId.SpeechServiceAuthorization_Token, get_speech_auth_token())
+        except Exception as e:
+            print("⚠️ Speech token refresh failed:", e)
+        # refresh a bit before expiry; 9 minutes is safe
+        await asyncio.sleep(9 * 60)
+
+# --- LiveKit client SDK (demo/local mode; no server, no LK keys) ---
 from livekit import rtc
 SAMPLE_RATE, CHANNELS, FRAME_MS = 24000, 1, 20
-SAMPLES_PER_CH = SAMPLE_RATE * FRAME_MS // 1000
+SAMPLES_PER_CH  = SAMPLE_RATE * FRAME_MS // 1000
 BYTES_PER_FRAME = SAMPLES_PER_CH * CHANNELS * 2
 
 async def publish_pcm_as_track(room: rtc.Room, identity: str, pcm: bytes):
@@ -31,7 +59,7 @@ async def publish_pcm_as_track(room: rtc.Room, identity: str, pcm: bytes):
     track  = rtc.LocalAudioTrack.create_audio_track(f"{identity}-voice", source)
     await room.local_participant.publish_track(track)
 
-    # also attach a local player to hear it in demo mode
+    # also attach a local player so you can hear it in demo mode
     player = rtc.AudioFramePlayer()
     track.add_sink(player)
 
@@ -43,6 +71,9 @@ async def publish_pcm_as_track(room: rtc.Room, identity: str, pcm: bytes):
         await asyncio.sleep(FRAME_MS / 1000)
 
 async def main():
+    # Start token refresh task
+    asyncio.create_task(refresh_speech_token_loop())
+
     # 1) Create a local-only "room" (no server, no keys)
     room = rtc.Room()
 
@@ -56,15 +87,15 @@ async def main():
     talker.add_sink(mic_player)
     print("🎙 Agent1 mic active. Speak a sentence, I’ll reply.")
 
-    # 3) Azure STT recognizer (uses system mic)
+    # 3) Azure STT recognizer (uses system mic) — uses the same SpeechConfig with AAD token
     rec_audio = speechsdk.audio.AudioConfig(use_default_microphone=True)
     recognizer = speechsdk.SpeechRecognizer(speech_config=speech_cfg, audio_config=rec_audio)
 
-    # 4) On recognized text → call Azure OpenAI → synthesize TTS → publish via LiveKit track
+    # 4) On recognized text → Azure OpenAI → TTS → publish via LiveKit track
     def on_recognized(evt):
         if evt.result.reason != speechsdk.ResultReason.RecognizedSpeech:
             return
-        user_text = evt.result.text.strip()
+        user_text = (evt.result.text or "").strip()
         if not user_text:
             return
         print(f"👂 Agent1 said: {user_text}")
@@ -86,9 +117,10 @@ async def main():
 
         print(f"🧠 Agent2 reply: {reply}")
 
-        # Synthesize reply → PCM
+        # Synthesize reply → PCM (using auth token speech_cfg)
         try:
-            tts_cfg = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
+            tts_cfg = speechsdk.SpeechConfig(region=SPEECH_REGION)
+            tts_cfg.set_property(speechsdk.PropertyId.SpeechServiceAuthorization_Token, get_speech_auth_token())
             tts_cfg.set_speech_synthesis_output_format(TTS_FORMAT)
             tts_syn = speechsdk.SpeechSynthesizer(speech_config=tts_cfg, audio_config=None)
             tts_res = tts_syn.speak_text_async(reply).get()
@@ -112,4 +144,7 @@ async def main():
         pass
 
 if __name__ == "__main__":
+    # Required env vars:
+    #  AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_SPEECH_REGION
+    #  AZURE_OPENAI_API_KEY (or OPENAI_API_KEY), AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT
     asyncio.run(main())
