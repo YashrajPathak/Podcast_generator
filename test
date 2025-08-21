@@ -1,12 +1,13 @@
-# two_agents_livekit_local.py  —  full, self-contained
+# two_agents_livekit_local.py — full, self-contained
 # No LiveKit server/keys. No Speech key. AAD + Azure OpenAI + LiveKit local audio.
 # pip install -U livekit azure-cognitiveservices-speech azure-identity openai python-dotenv
 
-import os, sys, asyncio, json, wave
+import os, sys, asyncio, wave
 from dotenv import load_dotenv; load_dotenv()
 
 # ---------- Azure OpenAI (LLM) ----------
 from openai import AzureOpenAI
+
 AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
@@ -21,7 +22,7 @@ oai = AzureOpenAI(
     api_version=OPENAI_API_VERSION,
 )
 
-# ---------- Azure Speech (AAD client credentials, no speech key) ----------
+# ---------- Azure Speech (AAD, no speech key) ----------
 import azure.cognitiveservices.speech as speechsdk
 from azure.identity import ClientSecretCredential
 
@@ -29,19 +30,23 @@ TENANT_ID     = os.getenv("TENANT_ID")
 CLIENT_ID     = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
-RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional; include if your policy requires it
+RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional
 COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
 
 if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
-    raise RuntimeError("Missing AAD Speech env vars (TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION)")
+    raise RuntimeError("Missing AAD Speech env vars")
 
-cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+cred = ClientSecretCredential(
+    tenant_id=TENANT_ID,
+    client_id=CLIENT_ID,
+    client_secret=CLIENT_SECRET
+)
 
 def cog_token_str() -> str:
     raw = cred.get_token(COG_SCOPE).token
     return f"aad#{RESOURCE_ID}#{raw}" if RESOURCE_ID else raw
 
-# ---------- LiveKit (pure local usage) ----------
+# ---------- LiveKit local ----------
 from livekit import rtc
 
 SESSION_ID = os.getenv("SESSION_ID", "demo-session")
@@ -50,42 +55,34 @@ AGENT_B    = os.getenv("AGENT_B", "Agent B")
 VOICE_A    = os.getenv("VOICE_A", "en-US-GuyNeural")
 VOICE_B    = os.getenv("VOICE_B", "en-US-AriaNeural")
 
-# Audio framing for streaming PCM into LiveKit local track
 SAMPLE_RATE, CHANNELS, FRAME_MS = 24000, 1, 20
 SAMPLES_PER_CH  = SAMPLE_RATE * FRAME_MS // 1000
-BYTES_PER_FRAME = SAMPLES_PER_CH * CHANNELS * 2  # 16-bit mono
+BYTES_PER_FRAME = SAMPLES_PER_CH * CHANNELS * 2
 
 def track_name(agent: str) -> str:
     return f"{SESSION_ID}-{agent}-voice"
 
 async def lk_connect(room: rtc.Room):
-    # Pure-local mode: do not connect to any server. We only create local tracks + local playback.
     print("🔌 LiveKit: local-only mode (no server connection).")
     return
 
-async def publish_pcm_streaming(room: rtc.Room, agent_label: str, stream: speechsdk.AudioDataStream, buffers: list):
-    """
-    Read Azure TTS PCM stream and:
-      1) feed into a LiveKit local audio track for local playback,
-      2) append raw PCM to 'buffers' so we can write podcast.wav at the end.
-    """
+async def publish_pcm_streaming(room: rtc.Room, agent_label: str,
+                                stream: speechsdk.AudioDataStream, buffers: list):
     source = rtc.AudioSource(sample_rate=SAMPLE_RATE, num_channels=CHANNELS)
     track  = rtc.LocalAudioTrack.create_audio_track(track_name(agent_label), source)
     await room.local_participant.publish_track(track)
 
-    # local monitor so you actually hear it now
+    # play live
     monitor = rtc.AudioFramePlayer()
     track.add_sink(monitor)
 
-    buf = bytearray(BYTES_PER_FRAME * 5)  # read in ~100ms chunks then slice to frame size
+    buf = bytearray(BYTES_PER_FRAME * 5)
     while True:
         n = stream.read_data(buf)
         if n == 0:
             break
         chunk = bytes(buf[:n])
-        buffers.append(chunk)  # collect for final podcast.wav
-
-        # slice into fixed frames for LiveKit
+        buffers.append(chunk)
         for i in range(0, len(chunk), BYTES_PER_FRAME):
             seg = chunk[i:i+BYTES_PER_FRAME]
             if len(seg) < BYTES_PER_FRAME:
@@ -109,14 +106,10 @@ async def tts_stream(room: rtc.Room, agent_label: str, text: str, voice: str, bu
     await publish_pcm_streaming(room, agent_label, stream, buffers)
 
 # ---------- Debate prompts ----------
-SYSTEM_A = (
-    "You are Agent A, a friendly analyst. "
-    "Speak 2–3 short sentences; reference the given context; ask a probing question when helpful."
-)
-SYSTEM_B = (
-    "You are Agent B, a pragmatic strategist. "
-    "Speak 2–3 short sentences; build on or challenge A respectfully; propose next steps."
-)
+SYSTEM_A = ("You are Agent A, a friendly analyst. "
+            "Speak 2–3 short sentences; reference the given context; ask a probing question when helpful.")
+SYSTEM_B = ("You are Agent B, a pragmatic strategist. "
+            "Speak 2–3 short sentences; build on or challenge A respectfully; propose next steps.")
 
 async def llm(panel_prompt: str, msg: str) -> str:
     r = await asyncio.to_thread(lambda: oai.chat.completions.create(
@@ -127,15 +120,11 @@ async def llm(panel_prompt: str, msg: str) -> str:
     ))
     return (r.choices[0].message.content or "").strip()
 
-# ---------- Interrupt handling ----------
+# ---------- Interrupts ----------
 interrupt_q: asyncio.Queue[str] = asyncio.Queue()
 
 async def read_interrupts():
-    """
-    Background: read a line from stdin at any time and enqueue as interruption text.
-    After you've pasted the initial context (blocking input), this keeps watching for lines.
-    """
-    print("⏸  Type an interruption line anytime and press Enter to cut in.")
+    print("⏸  Type an interruption anytime and press Enter to cut in.")
     while True:
         try:
             line = await asyncio.to_thread(sys.stdin.readline)
@@ -148,181 +137,39 @@ async def read_interrupts():
         except Exception:
             await asyncio.sleep(0.2)
 
-# ---------- Debate loop ----------
-async def debate(room: rtc.Room, script_path="podcast.txt"):
-    """
-    Flow:
-      1) Agent A SPEAKS the greeting (not just print).
-      2) You paste the context (terminal).
-      3) Agents alternate A/B forever (Ctrl+C to stop).
-      4) You can interrupt any time; they incorporate your line next turn.
-      5) On stop, podcast.wav + transcript saved.
-    """
-    buffers: list[bytes] = []
-    transcript: list[str] = []
-
-    # 1) Spoken greeting
-    greeting = "Hi Yashraj, how are you? Ready to listen to a debate on any topic or data? Just paste it below."
-    print(f"\n🟦 {AGENT_A} (greeting): {greeting}\n")
-    await tts_stream(room, AGENT_A, greeting, VOICE_A, buffers)
-    transcript.append(f"{AGENT_A} (greeting): {greeting}")
-
-    # 2) Wait for pasted context (blocking once)
-    print("📥 Please paste your context (end with Enter).")
-    context = sys.stdin.readline().strip()
-    if not context:
-        context = "Sample context about your topic."
-    print("📚 Context captured. Starting debate...\n")
-
-    # 2b) Warm-up reply from B (spoken)
-    warmup = await llm(SYSTEM_B, "Agent A greeted the user; reply briefly and warmly, then mention you're ready.")
-    print(f"🟩 {AGENT_B} (warm-up): {warmup}\n")
-    await tts_stream(room, AGENT_B, warmup, VOICE_B, buffers)
-    transcript.append(f"{AGENT_B} (warm-up): {warmup}")
-
-    # 3) Continuous round-robin with interrupts
-    last = f"Context to discuss:\n{context}"
-    while True:
-        intr = None
-        try:
-            intr = interrupt_q.get_nowait()
-        except asyncio.QueueEmpty:
-            pass
-        if intr:
-            last = f"User interruption: {intr}"
-
-        # Agent A turn
-        a_in  = last
-        a_out = await llm(SYSTEM_A, a_in)
-        print(f"\n🟦 {AGENT_A}: {a_out}\n")
-        await tts_stream(room, AGENT_A, a_out, VOICE_A, buffers)
-        transcript.append(f"{AGENT_A}: {a_out}")
-
-        # Agent B turn
-        intr = None
-        try:
-            intr = interrupt_q.get_nowait()
-        except asyncio.QueueEmpty:
-            pass
-        b_in = f"{AGENT_A} said: {a_out}\nOriginal context (for reference):\n{context[:1500]}"
-        if intr:
-            b_in += f"\nUser interruption: {intr}"
-        b_out = await llm(SYSTEM_B, b_in)
-        print(f"\n🟩 {AGENT_B}: {b_out}\n")
-        await tts_stream(room, AGENT_B, b_out, VOICE_B, buffers)
-        transcript.append(f"{AGENT_B}: {b_out}")
-
-        last = b_out
-
-    # (Not reached; saved on KeyboardInterrupt)
-    # But keep function structure tidy.
-
-def save_outputs(buffers: list[bytes], transcript: list[str]):
-    # Save transcript
-    with open("podcast.txt", "w", encoding="utf-8") as f:
-        f.write("🎙️ Podcast Transcript\n\n")
-        f.write("\n".join(transcript))
-    # Save WAV
-    pcm = b"".join(buffers)
-    with wave.open("podcast.wav", "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)     # 16-bit
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(pcm)
-    print("✅ Saved podcast.wav and podcast.txt")
-
-# ---------- Main ----------
-async def main():
-    # Create a local-only LiveKit room and start reading interrupts in background
-    room = rtc.Room()
-    await lk_connect(room)
-
-    # Start the background interrupt reader AFTER the blocking context paste step begins inside debate()
-    # (We still start it now; first read happens after you've pasted the context.)
-    asyncio.create_task(read_interrupts())
-
-    print("▶️  Two-agent podcast starting. Press Ctrl+C to stop at any time.")
-    try:
-        await debate(room)
-    except KeyboardInterrupt:
-        # We can’t access buffers/transcript from debate() directly here since it runs infinite;
-        # simplest is to instruct the user where audio played (live) and how to persist next time.
-        # But to fulfill your requirement strictly, we re-run a short saver using a signal approach,
-        # or simpler: notify that continuous stream was played live.
-        # For strict file persist, we capture in a wrapper below that runs debate logic and catches buffers.
-        print("\n⏹️ Stopped by user.")
-
-# --------- Wrapper to capture buffers & transcript for saving ---------
-# To keep code compact AND still save files on Ctrl+C, we run the debate loop in a Task and
-# cancel it while retaining buffers + transcript via a small runner.
-
+# ---------- Debate ----------
 async def run_with_saver():
-    # duplicate minimal logic to keep buffers & transcript accessible here
-    # we reuse the same functions but intercept outputs by patching tts_stream to collect globally
-    # To avoid over-complication, we implement a thin inline version:
+    room = rtc.Room()
+    await lk_connect(room)
+
     buffers: list[bytes] = []
     transcript: list[str] = []
 
-    # Local helpers that forward to original but collect buffers/transcript here
-    async def tts_stream_collect(room: rtc.Room, who: str, text: str, voice: str):
-        cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
-        cfg.speech_synthesis_voice_name = voice
-        cfg.set_speech_synthesis_output_format(
-            speechsdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm
-        )
-        synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=None)
-        res = await asyncio.to_thread(lambda: synth.speak_text_async(text).get())
-        if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
-            print(f"❌ TTS failed ({who}): {res.reason}")
-            return
-        stream = speechsdk.AudioDataStream(res)
-
-        source = rtc.AudioSource(sample_rate=SAMPLE_RATE, num_channels=CHANNELS)
-        track  = rtc.LocalAudioTrack.create_audio_track(track_name(who), source)
-        await room.local_participant.publish_track(track)
-        monitor = rtc.AudioFramePlayer(); track.add_sink(monitor)
-
-        buf = bytearray(BYTES_PER_FRAME * 5)
-        while True:
-            n = stream.read_data(buf)
-            if n == 0:
-                break
-            chunk = bytes(buf[:n])
-            buffers.append(chunk)
-            for i in range(0, len(chunk), BYTES_PER_FRAME):
-                seg = chunk[i:i+BYTES_PER_FRAME]
-                if len(seg) < BYTES_PER_FRAME:
-                    continue
-                frame = rtc.AudioFrame(seg, SAMPLE_RATE, CHANNELS, SAMPLES_PER_CH)
-                await source.capture_frame(frame)
-                await asyncio.sleep(FRAME_MS / 1000)
-
-    # Actual flow (same as debate, but inline so we can save on Ctrl+C)
-    room = rtc.Room()
-    await lk_connect(room)
-    asyncio.create_task(read_interrupts())
-
-    # Greeting
+    # Greeting (spoken)
     greet = "Hi Yashraj, how are you? Ready to listen to a debate on any topic or data? Just paste it below."
     print(f"\n🟦 {AGENT_A} (greeting): {greet}\n")
-    await tts_stream_collect(room, AGENT_A, greet, VOICE_A)
+    await tts_stream(room, AGENT_A, greet, VOICE_A, buffers)
     transcript.append(f"{AGENT_A} (greeting): {greet}")
 
-    # Context
+    # Context (blocking, BEFORE we start interrupts)
     print("📥 Please paste your context (end with Enter).")
     context = sys.stdin.readline().strip()
     if not context:
         context = "Sample context about your topic."
     print("📚 Context captured. Starting debate...\n")
+
+    # Now start reading interrupts
+    asyncio.create_task(read_interrupts())
 
     warm = await llm(SYSTEM_B, "Agent A greeted the user; reply briefly and warmly, then mention you're ready.")
     print(f"🟩 {AGENT_B} (warm-up): {warm}\n")
-    await tts_stream_collect(room, AGENT_B, warm, VOICE_B)
+    await tts_stream(room, AGENT_B, warm, VOICE_B, buffers)
     transcript.append(f"{AGENT_B} (warm-up): {warm}")
 
     last = f"Context to discuss:\n{context}"
     try:
         while True:
+            # A
             intr = None
             try: intr = interrupt_q.get_nowait()
             except asyncio.QueueEmpty: pass
@@ -331,24 +178,25 @@ async def run_with_saver():
 
             a_out = await llm(SYSTEM_A, last)
             print(f"\n🟦 {AGENT_A}: {a_out}\n")
-            await tts_stream_collect(room, AGENT_A, a_out, VOICE_A)
+            await tts_stream(room, AGENT_A, a_out, VOICE_A, buffers)
             transcript.append(f"{AGENT_A}: {a_out}")
 
+            # B
             intr = None
             try: intr = interrupt_q.get_nowait()
             except asyncio.QueueEmpty: pass
-            b_in = f"{AGENT_A} said: {a_out}\nOriginal context (for reference):\n{context[:1500]}"
+            b_in = f"{AGENT_A} said: {a_out}\nOriginal context:\n{context[:1500]}"
             if intr:
                 b_in += f"\nUser interruption: {intr}"
             b_out = await llm(SYSTEM_B, b_in)
             print(f"\n🟩 {AGENT_B}: {b_out}\n")
-            await tts_stream_collect(room, AGENT_B, b_out, VOICE_B)
+            await tts_stream(room, AGENT_B, b_out, VOICE_B, buffers)
             transcript.append(f"{AGENT_B}: {b_out}")
 
             last = b_out
+
     except KeyboardInterrupt:
         print("\n⏹️ Stopped by user, saving podcast...")
-        # save files
         with open("podcast.txt", "w", encoding="utf-8") as f:
             f.write("🎙️ Podcast Transcript\n\n")
             f.write("\n".join(transcript))
@@ -360,6 +208,6 @@ async def run_with_saver():
             wf.writeframes(pcm)
         print("✅ Saved podcast.wav and podcast.txt")
 
+# ---------- Main ----------
 if __name__ == "__main__":
-    # run the wrapper that guarantees saving on Ctrl+C
     asyncio.run(run_with_saver())
