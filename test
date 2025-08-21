@@ -1,56 +1,115 @@
-# ---- NEW: TTS fallback via Agent3 (returns bytes) ----
-async def _tts_fallback_bytes(text: str, voice: str, session_id: str) -> bytes:
-    """If an agent returns text without audio, synthesize it using Agent3 and return WAV bytes."""
-    if not text:
-        return b""
+# agent2_demo_livekit_local.py
+# pip install livekit-rtc azure-cognitiveservices-speech openai python-dotenv
+import os, asyncio
+from dotenv import load_dotenv; load_dotenv()
+
+# --- Azure OpenAI (brain) ---
+from openai import AzureOpenAI
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")  # e.g. https://<your>.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")  # your deployment name
+oai = AzureOpenAI(api_key=AZURE_OPENAI_API_KEY, azure_endpoint=AZURE_OPENAI_ENDPOINT)
+
+# --- Azure Speech (STT + TTS) ---
+import azure.cognitiveservices.speech as speechsdk
+SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY")
+SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
+speech_cfg = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
+speech_cfg.speech_recognition_language = os.getenv("STT_LANGUAGE", "en-US")
+# TTS will output raw PCM we can feed to LiveKit track:
+TTS_FORMAT = speechsdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm
+
+# --- LiveKit client SDK (demo/local mode) ---
+from livekit import rtc
+SAMPLE_RATE, CHANNELS, FRAME_MS = 24000, 1, 20
+SAMPLES_PER_CH = SAMPLE_RATE * FRAME_MS // 1000
+BYTES_PER_FRAME = SAMPLES_PER_CH * CHANNELS * 2
+
+async def publish_pcm_as_track(room: rtc.Room, identity: str, pcm: bytes):
+    """Publish PCM bytes into a LocalAudioTrack and also play them locally."""
+    source = rtc.AudioSource(sample_rate=SAMPLE_RATE, num_channels=CHANNELS)
+    track  = rtc.LocalAudioTrack.create_audio_track(f"{identity}-voice", source)
+    await room.local_participant.publish_track(track)
+
+    # also attach a local player to hear it in demo mode
+    player = rtc.AudioFramePlayer()
+    track.add_sink(player)
+
+    for i in range(0, len(pcm), BYTES_PER_FRAME):
+        chunk = pcm[i:i+BYTES_PER_FRAME]
+        if len(chunk) < BYTES_PER_FRAME: break
+        frame = rtc.AudioFrame(chunk, SAMPLE_RATE, CHANNELS, SAMPLES_PER_CH)
+        await source.capture_frame(frame)
+        await asyncio.sleep(FRAME_MS / 1000)
+
+async def main():
+    # 1) Create a local-only "room" (no server, no keys)
+    room = rtc.Room()
+
+    # 2) Agent1 mic track (so you can talk)
+    mic = rtc.AudioSource.capture_microphone()
+    talker = rtc.LocalAudioTrack.create_audio_track("agent1-mic", mic)
+    await room.local_participant.publish_track(talker)
+
+    # Also play back mic locally so you know it’s capturing
+    mic_player = rtc.AudioFramePlayer()
+    talker.add_sink(mic_player)
+    print("🎙 Agent1 mic active. Speak a sentence, I’ll reply.")
+
+    # 3) Azure STT recognizer (uses system mic)
+    rec_audio = speechsdk.audio.AudioConfig(use_default_microphone=True)
+    recognizer = speechsdk.SpeechRecognizer(speech_config=speech_cfg, audio_config=rec_audio)
+
+    # 4) On recognized text → call Azure OpenAI → synthesize TTS → publish via LiveKit track
+    def on_recognized(evt):
+        if evt.result.reason != speechsdk.ResultReason.RecognizedSpeech:
+            return
+        user_text = evt.result.text.strip()
+        if not user_text:
+            return
+        print(f"👂 Agent1 said: {user_text}")
+
+        # Generate a short reply (Azure OpenAI)
+        try:
+            resp = oai.chat.completions.create(
+                model=AZURE_OPENAI_DEPLOYMENT,
+                messages=[
+                    {"role": "system", "content": "You are a concise helpful panelist."},
+                    {"role": "user", "content": user_text}
+                ],
+                max_tokens=80, temperature=0.7,
+            )
+            reply = (resp.choices[0].message.content or "").strip()
+        except Exception as e:
+            reply = "Sorry, I had an issue thinking about that."
+            print("OpenAI error:", e)
+
+        print(f"🧠 Agent2 reply: {reply}")
+
+        # Synthesize reply → PCM
+        try:
+            tts_cfg = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
+            tts_cfg.set_speech_synthesis_output_format(TTS_FORMAT)
+            tts_syn = speechsdk.SpeechSynthesizer(speech_config=tts_cfg, audio_config=None)
+            tts_res = tts_syn.speak_text_async(reply).get()
+            if tts_res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+                print("TTS failed:", tts_res.reason); return
+            pcm = tts_res.audio_data
+        except Exception as e:
+            print("Azure TTS error:", e); return
+
+        # Publish reply as a LiveKit local track (and play it)
+        asyncio.create_task(publish_pcm_as_track(room, "agent2", pcm))
+
+    recognizer.recognized.connect(on_recognized)
+    recognizer.start_continuous_recognition()
+    print("🎧 Listening... (Ctrl+C to stop)")
+
+    # Keep running
     try:
-        a3_base = (REGISTRY.get("agent3", {}) or {}).get("url") or settings.AGENT3_URL
-        a3_base = str(a3_base).rstrip("/")
-        url = f"{a3_base}/generate-audio"
-        payload = {"text": text, "voice": voice, "session_id": session_id, "speed": 1.0, "pitch": 1.0}
+        await asyncio.Future()
+    except KeyboardInterrupt:
+        pass
 
-        async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
-            r = await c.post(url, json=payload)
-        if r.status_code != 200:
-            logger.warning(f"tts_fallback agent3 non-200: {r.status_code}")
-            return b""
-
-        data = r.json() or {}
-
-        # 1) Prefer inline hex
-        hex_data = (data.get("audio_hex") or "")
-        if isinstance(hex_data, str) and hex_data:
-            try:
-                return bytes.fromhex(hex_data)
-            except Exception as e:
-                logger.warning(f"tts_fallback hex decode failed: {e}")
-
-        # 2) Fetch by path/URL
-        ap = data.get("audio_path")
-        if isinstance(ap, str) and ap:
-            try:
-                # normalize for Windows-style paths
-                ap_norm = ap.replace("\\", "/")
-
-                # Absolute URL
-                if ap_norm.startswith(("http://", "https://")):
-                    async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
-                        r2 = await c.get(ap_norm)
-                    if r2.status_code == 200 and r2.content:
-                        return r2.content
-
-                # Relative path (serve-from-agent)
-                fetch_url = f"{a3_base}/{ap_norm.lstrip('/')}"
-                async with httpx.AsyncClient(timeout=settings.AGENT_TIMEOUT) as c:
-                    r3 = await c.get(fetch_url)
-                if r3.status_code == 200 and r3.content:
-                    return r3.content
-                else:
-                    logger.warning(f"tts_fallback fetch failed {fetch_url} -> {r3.status_code}")
-            except Exception as e:
-                logger.warning(f"tts_fallback fetch exception for {ap}: {e}")
-
-    except Exception as e:
-        logger.warning(f"tts_fallback error: {e}")
-
-    return b""
+if __name__ == "__main__":
+    asyncio.run(main())
