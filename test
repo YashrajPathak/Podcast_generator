@@ -1,9 +1,10 @@
-# agent2_full_livekit_demo.py
-# pip install livekit azure-cognitiveservices-speech azure-identity openai httpx python-dotenv
-import os, asyncio, json
+# two_agents_livekit.py (updated full version)
+# pip install -U livekit azure-cognitiveservices-speech azure-identity openai python-dotenv soundfile
+
+import os, sys, asyncio, json, uuid
 from dotenv import load_dotenv; load_dotenv()
 
-# -------- Azure OpenAI (brain) --------
+# ---- Azure OpenAI (LLM) ----
 from openai import AzureOpenAI
 AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
@@ -11,227 +12,173 @@ AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 OPENAI_API_VERSION      = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
 oai = AzureOpenAI(api_key=AZURE_OPENAI_KEY, azure_endpoint=AZURE_OPENAI_ENDPOINT, api_version=OPENAI_API_VERSION)
 
-# -------- Azure Speech (STT+TTS) via AAD (matches agent3) --------
+# ---- Azure Speech (AAD) ----
 import azure.cognitiveservices.speech as speechsdk
 from azure.identity import ClientSecretCredential
 TENANT_ID     = os.getenv("TENANT_ID")
 CLIENT_ID     = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-SPEECH_REGION = os.getenv("SPEECH_REGION")
-RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional; used in aad#{RESOURCE_ID}#{token}
-STT_LANGUAGE  = os.getenv("STT_LANGUAGE", "en-US")
-VOICE_NAME    = os.getenv("VOICE_NAME", "en-US-AriaNeural")  # default voice
+SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
+RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional
 COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
-if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
-    raise RuntimeError("Missing one of: TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION")
+if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION, AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT]):
+    raise RuntimeError("Missing required env vars")
+
 cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
-def get_cog_token_str() -> str:
+def cog_token_str() -> str:
     raw = cred.get_token(COG_SCOPE).token
     return f"aad#{RESOURCE_ID}#{raw}" if RESOURCE_ID else raw
 
-# -------- LiveKit (client SDK) --------
+# ---- LiveKit (client SDK, local tracks) ----
 from livekit import rtc
-LIVEKIT_WS     = os.getenv("LIVEKIT_WS")       # optional; if set we connect to a server
-LIVEKIT_TOKEN  = os.getenv("LIVEKIT_TOKEN")    # pre-minted elsewhere (we won't call LK API)
+import soundfile as sf   ### NEW for saving podcast.wav
+
+SESSION_ID = os.getenv("SESSION_ID", "demo-session")
+AGENT_A    = os.getenv("AGENT_A", "agentA")
+AGENT_B    = os.getenv("AGENT_B", "agentB")
+VOICE_A    = os.getenv("VOICE_A", "en-US-GuyNeural")
+VOICE_B    = os.getenv("VOICE_B", "en-US-AriaNeural")
+
+LIVEKIT_WS    = os.getenv("LIVEKIT_WS")
+LIVEKIT_TOKEN = os.getenv("LIVEKIT_TOKEN")
 DEMO_LOCAL_ONLY = not (LIVEKIT_WS and LIVEKIT_TOKEN)
 
-# Session + routing
-SESSION_ID   = os.getenv("SESSION_ID", "demo-session")
-AGENT_NAME   = os.getenv("AGENT_NAME", "agent2")
-
-# Orchestrator mute integration (optional)
-ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:8008")
-MUTE_ON_ERROR    = False
-
-# ---- helpers for LK ----
 SAMPLE_RATE, CHANNELS, FRAME_MS = 24000, 1, 20
 SAMPLES_PER_CH  = SAMPLE_RATE * FRAME_MS // 1000
 BYTES_PER_FRAME = SAMPLES_PER_CH * CHANNELS * 2
 
+def track_name(agent: str) -> str:
+    return f"{SESSION_ID}-{agent}-voice"
+
 async def lk_connect(room: rtc.Room):
-    """Connect only if LIVEKIT_WS+TOKEN are provided; else stay local-only."""
     if DEMO_LOCAL_ONLY:
-        print("🔌 LiveKit: DEMO local-only (no server connection).")
+        print("🔌 LiveKit: local-only mode (no server).")
         return
     await room.connect(LIVEKIT_WS, LIVEKIT_TOKEN)
-    print(f"🔌 LiveKit: connected to {LIVEKIT_WS} as {AGENT_NAME}")
+    print(f"🔌 LiveKit: connected to {LIVEKIT_WS}")
 
-def lk_track_name(kind="voice"):
-    return f"{SESSION_ID}-{AGENT_NAME}-{kind}"
-
-async def publish_pcm_stream(room: rtc.Room, pcm: bytes):
-    """Publish PCM to a LiveKit LocalAudioTrack and also play locally."""
+async def publish_pcm_streaming(room: rtc.Room, agent: str, stream: speechsdk.AudioDataStream, buffer_list: list):
+    """Stream Azure TTS PCM to a LiveKit track and play locally; also append to buffer_list for final WAV"""
     source = rtc.AudioSource(sample_rate=SAMPLE_RATE, num_channels=CHANNELS)
-    track  = rtc.LocalAudioTrack.create_audio_track(lk_track_name("voice"), source)
+    track  = rtc.LocalAudioTrack.create_audio_track(track_name(agent), source)
     await room.local_participant.publish_track(track)
-    player = rtc.AudioFramePlayer()
-    track.add_sink(player)
-    for i in range(0, len(pcm), BYTES_PER_FRAME):
-        chunk = pcm[i:i+BYTES_PER_FRAME]
-        if len(chunk) < BYTES_PER_FRAME: break
-        frame = rtc.AudioFrame(chunk, SAMPLE_RATE, CHANNELS, SAMPLES_PER_CH)
-        await source.capture_frame(frame)
-        await asyncio.sleep(FRAME_MS/1000)
+    monitor = rtc.AudioFramePlayer()
+    track.add_sink(monitor)
 
-async def publish_pcm_streaming(room: rtc.Room, stream: speechsdk.AudioDataStream):
-    """Stream TTS audio to LiveKit as it is synthesized."""
-    source = rtc.AudioSource(sample_rate=SAMPLE_RATE, num_channels=CHANNELS)
-    track  = rtc.LocalAudioTrack.create_audio_track(lk_track_name("voice"), source)
-    await room.local_participant.publish_track(track)
-    player = rtc.AudioFramePlayer()
-    track.add_sink(player)
-
-    buf = bytearray(BYTES_PER_FRAME)  # ~20ms at 24kHz mono 16-bit
+    buf = bytearray(BYTES_PER_FRAME * 5)
     while True:
         n = stream.read_data(buf)
         if n == 0:
             break
-        # ensure frame-sized chunks (pad or skip small tail)
-        push = bytes(buf[:n])
-        # split to BYTES_PER_FRAME chunks
-        for j in range(0, len(push), BYTES_PER_FRAME):
-            seg = push[j:j+BYTES_PER_FRAME]
+        chunk = bytes(buf[:n])
+        buffer_list.append(chunk)   ### NEW collect for podcast.wav
+        for i in range(0, len(chunk), BYTES_PER_FRAME):
+            seg = chunk[i:i+BYTES_PER_FRAME]
             if len(seg) < BYTES_PER_FRAME:
                 continue
             frame = rtc.AudioFrame(seg, SAMPLE_RATE, CHANNELS, SAMPLES_PER_CH)
             await source.capture_frame(frame)
             await asyncio.sleep(FRAME_MS/1000)
 
-# ---- DataChannel helpers (turn-taking / captions) ----
-async def send_evt(room: rtc.Room, evt: str, payload: dict=None):
-    if DEMO_LOCAL_ONLY:
-        # No remote peers; just print
-        print(f"📡 DC (local): {evt} {payload or {}}")
-        return
-    data = json.dumps({"evt": evt, "session_id": SESSION_ID, "agent": AGENT_NAME, "data": payload or {}})
-    await room.local_participant.publish_data(data.encode(), reliable=True)
-
-# ---- Mute status (compat with agent3 style) ----
-import httpx
-async def is_muted(session_id: str) -> bool:
-    # try orchestrator if provided
-    url = f"{ORCHESTRATOR_URL.rstrip('/')}/session/{session_id}/mute-status"
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(url, params={"agent": AGENT_NAME})
-            if r.status_code == 200:
-                return bool(r.json().get("muted", False))
-            return False
-    except Exception:
-        return MUTE_ON_ERROR
-
-# ---- Main pipeline pieces ----
-async def llm_reply(user_text: str) -> str:
-    try:
-        resp = oai.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
-            messages=[
-                {"role":"system","content":"You are a concise, helpful panelist in a 3-person podcast. Keep to 2–3 sentences."},
-                {"role":"user","content":user_text}
-            ],
-            max_tokens=120, temperature=0.7,
-        )
-        return (resp.choices[0].message.content or "").strip()
-    except Exception as e:
-        print("OpenAI error:", e)
-        return "Sorry, I had trouble thinking about that."
-
-async def tts_to_livekit(room: rtc.Room, text: str, voice: str):
-    if await is_muted(SESSION_ID):
-        print("🔇 Muted — skipping TTS publish.")
-        await send_evt(room, "MUTED", {"text": text})
-        return
-
-    # Build cfg with token (constructor)
-    tts_cfg = speechsdk.SpeechConfig(auth_token=get_cog_token_str(), region=SPEECH_REGION)
-    tts_cfg.speech_synthesis_voice_name = voice
-    tts_cfg.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm)
-    tts_syn = speechsdk.SpeechSynthesizer(speech_config=tts_cfg, audio_config=None)
-
-    # Stream synth + publish as it arrives
-    res = tts_syn.speak_text_async(text).get()
+async def tts_stream_to_livekit(room: rtc.Room, agent: str, text: str, voice: str, buffer_list: list):
+    cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
+    cfg.speech_synthesis_voice_name = voice
+    cfg.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm)
+    synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=None)
+    res = await asyncio.to_thread(lambda: synth.speak_text_async(text).get())
     if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
-        print("TTS failed:", res.reason)
-        await send_evt(room, "TTS_FAILED", {"reason": str(res.reason)})
-        return
+        print(f"❌ TTS failed ({agent}): {res.reason}"); return
     stream = speechsdk.AudioDataStream(res)
-    await publish_pcm_streaming(room, stream)
-    await send_evt(room, "SPOKEN", {"text": text, "voice": voice})
+    await publish_pcm_streaming(room, agent, stream, buffer_list)
 
-async def run():
-    # 0) Prepare LiveKit room
+# ---- Debate logic ----
+SYSTEM_A = "You are Agent A, a friendly analyst. Speak 2–3 short sentences; reference context; occasionally ask a probing question."
+SYSTEM_B = "You are Agent B, a pragmatic strategist. Speak 2–3 short sentences; build on or challenge A; give next-steps."
+
+async def llm(panel_prompt: str, msg: str) -> str:
+    r = await asyncio.to_thread(lambda: oai.chat.completions.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        messages=[{"role":"system","content":panel_prompt},
+                  {"role":"user","content":msg}],
+        max_tokens=220, temperature=0.8))
+    return (r.choices[0].message.content or "").strip()
+
+interrupt_q: asyncio.Queue[str] = asyncio.Queue()
+
+async def read_interrupts():
+    print("⏸  Type an interruption line anytime and press Enter to cut in.")
+    while True:
+        try:
+            line = await asyncio.to_thread(sys.stdin.readline)
+            if not line:
+                await asyncio.sleep(0.1); continue
+            text = line.strip()
+            if text:
+                await interrupt_q.put(text)
+        except Exception:
+            await asyncio.sleep(0.2)
+
+async def debate(room: rtc.Room, context: str, script_path="podcast_script.txt"):
+    """Alternate A/B turns; speak; allow console interrupts; log transcript; run until Ctrl+C"""
+    buffers = []   ### NEW store PCM chunks for WAV
+    with open(script_path, "w", encoding="utf-8") as f:
+        f.write("🎙️ Podcast Transcript\n\n")
+
+    last = f"Context to discuss:\n{context}"
+    turn = 0
+    while True:   ### NEW no limit, manual stop with Ctrl+C
+        turn += 1
+        intr = None
+        try: intr = interrupt_q.get_nowait()
+        except asyncio.QueueEmpty: pass
+        if intr: last = f"User interruption: {intr}"
+
+        a_in  = last
+        a_out = await llm(SYSTEM_A, a_in)
+        print(f"\n🟦 A: {a_out}\n")
+        await tts_stream_to_livekit(room, AGENT_A, a_out, VOICE_A, buffers)
+        with open(script_path, "a", encoding="utf-8") as f: f.write(f"A: {a_out}\n")
+
+        intr = None
+        try: intr = interrupt_q.get_nowait()
+        except asyncio.QueueEmpty: pass
+        b_in = f"Agent A said: {a_out}\nOriginal context:\n{context[:1500]}"
+        if intr: b_in += f"\nUser interruption: {intr}"
+        b_out = await llm(SYSTEM_B, b_in)
+        print(f"\n🟩 B: {b_out}\n")
+        await tts_stream_to_livekit(room, AGENT_B, b_out, VOICE_B, buffers)
+        with open(script_path, "a", encoding="utf-8") as f: f.write(f"B: {b_out}\n")
+
+        last = b_out
+
+    # never reaches here unless stopped, then save podcast.wav
+    pcm = b''.join(buffers)
+    sf.write("podcast.wav", pcm, SAMPLE_RATE, "PCM_16")
+
+async def main():
+    ctx_file = os.getenv("CONTEXT_FILE", "").strip()
+    if ctx_file and os.path.exists(ctx_file):
+        with open(ctx_file, "r", encoding="utf-8", errors="ignore") as f: context = f.read()
+    else:
+        context = os.getenv("CONTEXT_TEXT", "Sample context about your topic.")
+
     room = rtc.Room()
     await lk_connect(room)
 
-    # If we’re connected to a server, set up DataChannel listener
     if not DEMO_LOCAL_ONLY:
         @room.on("dataReceived")
-        def _on_data(dp: rtc.DataPacket):
-            try:
-                msg = json.loads(dp.data.decode())
-            except Exception:
-                msg = {"raw": dp.data.decode(errors="ignore")}
+        def _on_data(pkt: rtc.DataPacket):
+            try: msg = json.loads(pkt.data.decode())
+            except Exception: msg = {"raw": pkt.data.decode(errors="ignore")}
             print("📥 DC in:", msg)
 
-    # 1) STT recognizer (mic → text), with partial captions
-    stt_cfg = speechsdk.SpeechConfig(auth_token=get_cog_token_str(), region=SPEECH_REGION)
-    stt_cfg.speech_recognition_language = STT_LANGUAGE
-    rec_audio = speechsdk.audio.AudioConfig(use_default_microphone=True)
-    recognizer = speechsdk.SpeechRecognizer(speech_config=stt_cfg, audio_config=rec_audio)
-
-    loop = asyncio.get_running_loop()
-
-    def on_recognizing(evt):
-        partial = (evt.result.text or "").strip()
-        if partial:
-            # live captions
-            loop.create_task(send_evt(room, "CAPTION_PARTIAL", {"text": partial}))
-
-    def on_recognized(evt):
-        if evt.result.reason != speechsdk.ResultReason.RecognizedSpeech:
-            return
-        user_text = (evt.result.text or "").strip()
-        if not user_text:
-            return
-        print(f"👂 You said: {user_text}")
-        loop.create_task(send_evt(room, "USER_UTTERANCE", {"text": user_text}))
-        # turn-taking: announce speaking, think, speak
-        async def _respond():
-            await send_evt(room, "TURN_START", {"agent": AGENT_NAME})
-            reply = await llm_reply(user_text)
-            await send_evt(room, "LLM_REPLY", {"text": reply})
-            await tts_to_livekit(room, reply, VOICE_NAME)
-            await send_evt(room, "TURN_END", {"agent": AGENT_NAME})
-        loop.create_task(_respond())
-
-    recognizer.recognizing.connect(on_recognizing)
-    recognizer.recognized.connect(on_recognized)
-    recognizer.start_continuous_recognition()
-    print("🎧 Listening… speak a sentence (Ctrl+C to stop).")
-    if DEMO_LOCAL_ONLY:
-        print("🧪 Mode: DEMO local-only (tracks play locally). Set LIVEKIT_WS + LIVEKIT_TOKEN to enable server mode.")
-
-    # 2) Token refresh loop (avoid expiry)
-    async def refresh_tokens():
-        while True:
-            try:
-                recognizer.authorization_token = get_cog_token_str()
-            except Exception as e:
-                print("⚠️ Token refresh failed:", e)
-            await asyncio.sleep(9 * 60)
-    asyncio.create_task(refresh_tokens())
-
+    asyncio.create_task(read_interrupts())
+    print("\n▶️  Starting two-agent podcast (Ctrl+C to stop)...")
     try:
-        await asyncio.Future()
+        await debate(room, context)
     except KeyboardInterrupt:
-        pass
-    finally:
-        recognizer.stop_continuous_recognition_async()
+        print("\n⏹️ Stopped by user, saving podcast.wav")
+        # debate() saves transcript; audio already in buffers
 
 if __name__ == "__main__":
-    # Required env (aligned with agent3):
-    #  TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION, [RESOURCE_ID optional]
-    #  AZURE_OPENAI_KEY (or OPENAI_API_KEY), AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OPENAI_API_VERSION
-    # Optional for richer LK features:
-    #  LIVEKIT_WS, LIVEKIT_TOKEN, SESSION_ID, AGENT_NAME, VOICE_NAME, ORCHESTRATOR_URL
-    asyncio.run(run())
+    asyncio.run(main())
