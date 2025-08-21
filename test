@@ -1,13 +1,12 @@
-# two_agents_livekit_local.py — full, self-contained
-# No LiveKit server/keys. No Speech key. AAD + Azure OpenAI + LiveKit local audio.
+# two_agents_livekit_local.py — self-contained
+# Azure OpenAI + Azure Speech (AAD) + LiveKit local audio
 # pip install -U livekit azure-cognitiveservices-speech azure-identity openai python-dotenv
 
 import os, sys, asyncio, wave
 from dotenv import load_dotenv; load_dotenv()
 
-# ---------- Azure OpenAI (LLM) ----------
+# ---------- Azure OpenAI ----------
 from openai import AzureOpenAI
-
 AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
@@ -22,7 +21,7 @@ oai = AzureOpenAI(
     api_version=OPENAI_API_VERSION,
 )
 
-# ---------- Azure Speech (AAD, no speech key) ----------
+# ---------- Azure Speech (AAD) ----------
 import azure.cognitiveservices.speech as speechsdk
 from azure.identity import ClientSecretCredential
 
@@ -30,7 +29,7 @@ TENANT_ID     = os.getenv("TENANT_ID")
 CLIENT_ID     = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
-RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional
+RESOURCE_ID   = os.getenv("RESOURCE_ID")
 COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
 
 if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
@@ -46,18 +45,18 @@ def cog_token_str() -> str:
     raw = cred.get_token(COG_SCOPE).token
     return f"aad#{RESOURCE_ID}#{raw}" if RESOURCE_ID else raw
 
-# ---------- LiveKit local ----------
+# ---------- LiveKit local-only ----------
 from livekit import rtc
 
-SESSION_ID = os.getenv("SESSION_ID", "demo-session")
-AGENT_A    = os.getenv("AGENT_A", "Agent A")
-AGENT_B    = os.getenv("AGENT_B", "Agent B")
-VOICE_A    = os.getenv("VOICE_A", "en-US-GuyNeural")
-VOICE_B    = os.getenv("VOICE_B", "en-US-AriaNeural")
+SESSION_ID = "demo-session"
+AGENT_A    = "Agent A"
+AGENT_B    = "Agent B"
+VOICE_A    = "en-US-GuyNeural"
+VOICE_B    = "en-US-AriaNeural"
 
 SAMPLE_RATE, CHANNELS, FRAME_MS = 24000, 1, 20
 SAMPLES_PER_CH  = SAMPLE_RATE * FRAME_MS // 1000
-BYTES_PER_FRAME = SAMPLES_PER_CH * CHANNELS * 2
+BYTES_PER_FRAME = SAMPLES_PER_CH * CHANNELS * 2  # 16-bit mono
 
 def track_name(agent: str) -> str:
     return f"{SESSION_ID}-{agent}-voice"
@@ -70,9 +69,7 @@ async def publish_pcm_streaming(room: rtc.Room, agent_label: str,
                                 stream: speechsdk.AudioDataStream, buffers: list):
     source = rtc.AudioSource(sample_rate=SAMPLE_RATE, num_channels=CHANNELS)
     track  = rtc.LocalAudioTrack.create_audio_track(track_name(agent_label), source)
-    await room.local_participant.publish_track(track)
-
-    # play live
+    # just for local playback
     monitor = rtc.AudioFramePlayer()
     track.add_sink(monitor)
 
@@ -83,6 +80,7 @@ async def publish_pcm_streaming(room: rtc.Room, agent_label: str,
             break
         chunk = bytes(buf[:n])
         buffers.append(chunk)
+
         for i in range(0, len(chunk), BYTES_PER_FRAME):
             seg = chunk[i:i+BYTES_PER_FRAME]
             if len(seg) < BYTES_PER_FRAME:
@@ -91,7 +89,10 @@ async def publish_pcm_streaming(room: rtc.Room, agent_label: str,
             await source.capture_frame(frame)
             await asyncio.sleep(FRAME_MS / 1000)
 
-async def tts_stream(room: rtc.Room, agent_label: str, text: str, voice: str, buffers: list):
+    await room.local_participant.publish_track(track)
+
+async def tts_stream(room: rtc.Room, agent_label: str,
+                     text: str, voice: str, buffers: list):
     cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
     cfg.speech_synthesis_voice_name = voice
     cfg.set_speech_synthesis_output_format(
@@ -107,87 +108,87 @@ async def tts_stream(room: rtc.Room, agent_label: str, text: str, voice: str, bu
 
 # ---------- Debate prompts ----------
 SYSTEM_A = ("You are Agent A, a friendly analyst. "
-            "Speak 2–3 short sentences; reference the given context; ask a probing question when helpful.")
+            "Speak 2–3 short sentences; reference the context; ask a probing question.")
 SYSTEM_B = ("You are Agent B, a pragmatic strategist. "
-            "Speak 2–3 short sentences; build on or challenge A respectfully; propose next steps.")
+            "Speak 2–3 short sentences; build on/challenge A respectfully; propose next steps.")
 
 async def llm(panel_prompt: str, msg: str) -> str:
-    r = await asyncio.to_thread(lambda: oai.chat.completions.create(
-        model=AZURE_OPENAI_DEPLOYMENT,
-        messages=[{"role": "system", "content": panel_prompt},
-                  {"role": "user",   "content": msg}],
-        max_tokens=220, temperature=0.8
-    ))
+    r = await asyncio.to_thread(lambda:
+        oai.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=[{"role": "system", "content": panel_prompt},
+                      {"role": "user", "content": msg}],
+            max_tokens=220,
+            temperature=0.8
+        )
+    )
     return (r.choices[0].message.content or "").strip()
 
-# ---------- Interrupts ----------
+# ---------- Interrupt handling ----------
 interrupt_q: asyncio.Queue[str] = asyncio.Queue()
 
 async def read_interrupts():
-    print("⏸  Type an interruption anytime and press Enter to cut in.")
+    print("⏸  Type an interruption anytime and press Enter.")
     while True:
         try:
             line = await asyncio.to_thread(sys.stdin.readline)
             if not line:
-                await asyncio.sleep(0.1)
-                continue
+                await asyncio.sleep(0.1); continue
             text = line.strip()
             if text:
                 await interrupt_q.put(text)
         except Exception:
             await asyncio.sleep(0.2)
 
-# ---------- Debate ----------
+# ---------- Debate loop ----------
 async def run_with_saver():
-    room = rtc.Room()
-    await lk_connect(room)
-
     buffers: list[bytes] = []
     transcript: list[str] = []
 
-    # Greeting (spoken)
+    room = rtc.Room()
+    await lk_connect(room)
+    asyncio.create_task(read_interrupts())
+
+    # Greeting
     greet = "Hi Yashraj, how are you? Ready to listen to a debate on any topic or data? Just paste it below."
     print(f"\n🟦 {AGENT_A} (greeting): {greet}\n")
     await tts_stream(room, AGENT_A, greet, VOICE_A, buffers)
-    transcript.append(f"{AGENT_A} (greeting): {greet}")
+    transcript.append(f"{AGENT_A}: {greet}")
 
-    # Context (blocking, BEFORE we start interrupts)
-    print("📥 Please paste your context (end with Enter).")
+    # Context
+    print("📥 Paste your context and press Enter:")
     context = sys.stdin.readline().strip()
     if not context:
         context = "Sample context about your topic."
     print("📚 Context captured. Starting debate...\n")
 
-    # Now start reading interrupts
-    asyncio.create_task(read_interrupts())
-
     warm = await llm(SYSTEM_B, "Agent A greeted the user; reply briefly and warmly, then mention you're ready.")
-    print(f"🟩 {AGENT_B} (warm-up): {warm}\n")
+    print(f"🟩 {AGENT_B}: {warm}\n")
     await tts_stream(room, AGENT_B, warm, VOICE_B, buffers)
-    transcript.append(f"{AGENT_B} (warm-up): {warm}")
+    transcript.append(f"{AGENT_B}: {warm}")
 
-    last = f"Context to discuss:\n{context}"
+    last = f"Context:\n{context}"
+
     try:
         while True:
-            # A
+            # Agent A
             intr = None
             try: intr = interrupt_q.get_nowait()
             except asyncio.QueueEmpty: pass
-            if intr:
-                last = f"User interruption: {intr}"
+            if intr: last = f"User interruption: {intr}"
 
             a_out = await llm(SYSTEM_A, last)
             print(f"\n🟦 {AGENT_A}: {a_out}\n")
             await tts_stream(room, AGENT_A, a_out, VOICE_A, buffers)
             transcript.append(f"{AGENT_A}: {a_out}")
 
-            # B
+            # Agent B
             intr = None
             try: intr = interrupt_q.get_nowait()
             except asyncio.QueueEmpty: pass
             b_in = f"{AGENT_A} said: {a_out}\nOriginal context:\n{context[:1500]}"
-            if intr:
-                b_in += f"\nUser interruption: {intr}"
+            if intr: b_in += f"\nUser interruption: {intr}"
+
             b_out = await llm(SYSTEM_B, b_in)
             print(f"\n🟩 {AGENT_B}: {b_out}\n")
             await tts_stream(room, AGENT_B, b_out, VOICE_B, buffers)
@@ -196,16 +197,21 @@ async def run_with_saver():
             last = b_out
 
     except KeyboardInterrupt:
-        print("\n⏹️ Stopped by user, saving podcast...")
+        print("\n⏹️ Debate stopped, saving podcast...")
+
+        # Save transcript
         with open("podcast.txt", "w", encoding="utf-8") as f:
             f.write("🎙️ Podcast Transcript\n\n")
             f.write("\n".join(transcript))
+
+        # Save audio
         pcm = b"".join(buffers)
         with wave.open("podcast.wav", "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
             wf.setframerate(SAMPLE_RATE)
             wf.writeframes(pcm)
+
         print("✅ Saved podcast.wav and podcast.txt")
 
 # ---------- Main ----------
