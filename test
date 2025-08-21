@@ -1,16 +1,25 @@
-# two_agents_livekit_local.py — self-contained (works without LiveKit server/keys)
-# Azure OpenAI (LLM) + Azure Speech (AAD, no speech key) + local audio playback
-# pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
+# two_agents_livekit_local.py — self-contained
+# Azure OpenAI + Azure Speech (AAD) + LiveKit local audio
 
-import os, sys, asyncio, wave, tempfile, time
-from dotenv import load_dotenv; load_dotenv()
+# pip install -U livekit azure-cognitiveservices-speech azure-identity openai python-dotenv pyaudio
+
+import os
+import sys
+import asyncio
+import wave
+import pyaudio
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ---------- Azure OpenAI ----------
+
 from openai import AzureOpenAI
-AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
-AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
+
+AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
-OPENAI_API_VERSION      = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
+OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
 
 if not all([AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OPENAI_API_VERSION]):
     raise RuntimeError("Missing Azure OpenAI env vars")
@@ -22,51 +31,107 @@ oai = AzureOpenAI(
 )
 
 # ---------- Azure Speech (AAD) ----------
+
 import azure.cognitiveservices.speech as speechsdk
 from azure.identity import ClientSecretCredential
 
-TENANT_ID     = os.getenv("TENANT_ID")
-CLIENT_ID     = os.getenv("CLIENT_ID")
+TENANT_ID = os.getenv("TENANT_ID")
+CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
-RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional
-COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
+RESOURCE_ID = os.getenv("RESOURCE_ID")
+COG_SCOPE = "https://cognitiveservices.azure.com/.default"
 
 if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
-    raise RuntimeError("Missing AAD Speech env vars (TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION)")
+    raise RuntimeError("Missing AAD Speech env vars")
 
-cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+cred = ClientSecretCredential(
+    tenant_id=TENANT_ID,
+    client_id=CLIENT_ID,
+    client_secret=CLIENT_SECRET
+)
+
 def cog_token_str() -> str:
     raw = cred.get_token(COG_SCOPE).token
     return f"aad#{RESOURCE_ID}#{raw}" if RESOURCE_ID else raw
 
-# ---------- LiveKit (import only; no server needed) ----------
-try:
-    from livekit import rtc
-    print("🔌 LiveKit: local-only mode (no server connection).")
-except Exception:
-    rtc = None
-    print("ℹ️ LiveKit import skipped (not required for local playback).")
+# ---------- LiveKit local-only ----------
 
-# ---------- Playback (Windows) ----------
-import platform
-if platform.system().lower() != "windows":
-    print("⚠️ This script uses winsound for playback (Windows). On Linux/macOS, replace with simpleaudio/pyaudio.")
-import winsound
+from livekit import rtc
+import threading
 
-# ---------- Globals ----------
 SESSION_ID = "demo-session"
-AGENT_A    = "Agent A"
-AGENT_B    = "Agent B"
-VOICE_A    = "en-US-GuyNeural"
-VOICE_B    = "en-US-AriaNeural"
+AGENT_A = "Agent A"
+AGENT_B = "Agent B"
+VOICE_A = "en-US-GuyNeural"
+VOICE_B = "en-US-AriaNeural"
 
-# We will synthesize to RIFF 24kHz/16-bit mono to keep one consistent podcast.wav
-WAV_RATE   = 24000
-WAV_CH     = 1
-WAV_SW     = 2  # 16-bit
+SAMPLE_RATE, CHANNELS, FRAME_MS = 24000, 1, 20
+SAMPLES_PER_CH = SAMPLE_RATE * FRAME_MS // 1000
+BYTES_PER_FRAME = SAMPLES_PER_CH * CHANNELS * 2  # 16-bit mono
 
-# ---------- LLM prompts ----------
+def track_name(agent: str) -> str:
+    return f"{SESSION_ID}-{agent}-voice"
+
+async def lk_connect(room: rtc.Room):
+    print("🔌 LiveKit: local-only mode (no server connection).")
+    return
+
+# PyAudio setup for local audio playback
+p = pyaudio.PyAudio()
+audio_stream = p.open(format=pyaudio.paInt16,
+                      channels=CHANNELS,
+                      rate=SAMPLE_RATE,
+                      output=True)
+
+async def publish_pcm_streaming(room: rtc.Room, agent_label: str,
+                                stream: speechsdk.AudioDataStream, buffers: list):
+    source = rtc.AudioSource(sample_rate=SAMPLE_RATE, num_channels=CHANNELS)
+    track = rtc.LocalAudioTrack.create_audio_track(track_name(agent_label), source)
+
+    # Use bytes instead of bytearray to fix the Azure Speech SDK error
+    buf_size = BYTES_PER_FRAME * 5
+    while True:
+        # Create a new bytes object each time
+        buf = bytes(buf_size)
+        n = stream.read_data(buf)
+        if n == 0:
+            break
+        
+        # Get the actual data that was read
+        chunk = buf[:n]
+        buffers.append(chunk)
+        
+        # Play audio directly through PyAudio
+        audio_stream.write(chunk)
+        
+        for i in range(0, len(chunk), BYTES_PER_FRAME):
+            seg = chunk[i:i+BYTES_PER_FRAME]
+            if len(seg) < BYTES_PER_FRAME:
+                continue
+            frame = rtc.AudioFrame(seg, SAMPLE_RATE, CHANNELS, SAMPLES_PER_CH)
+            await source.capture_frame(frame)
+        await asyncio.sleep(FRAME_MS / 1000)
+    
+    await room.local_participant.publish_track(track)
+
+async def tts_stream(room: rtc.Room, agent_label: str,
+                     text: str, voice: str, buffers: list):
+    cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
+    cfg.speech_synthesis_voice_name = voice
+    cfg.set_speech_synthesis_output_format(
+        speechsdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm
+    )
+    synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=None)
+    res = await asyncio.to_thread(lambda: synth.speak_text_async(text).get())
+    if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+        print(f"❌ TTS failed ({agent_label}): {res.reason}")
+        return
+    stream = speechsdk.AudioDataStream(res)
+    await publish_pcm_streaming(room, agent_label, stream, buffers)
+
+# ---------- Debate prompts ----------
+
 SYSTEM_A = ("You are Agent A, a friendly analyst. "
             "Speak 2–3 short sentences; reference the context; ask a probing question.")
 SYSTEM_B = ("You are Agent B, a pragmatic strategist. "
@@ -77,175 +142,120 @@ async def llm(panel_prompt: str, msg: str) -> str:
         oai.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[{"role": "system", "content": panel_prompt},
-                      {"role": "user", "content": msg}],
+                     {"role": "user", "content": msg}],
             max_tokens=220,
             temperature=0.8
         )
     )
     return (r.choices[0].message.content or "").strip()
 
-# ---------- TTS helpers ----------
-def tts_to_temp_wav(text: str, voice: str) -> str:
-    """
-    Synthesize to a RIFF WAV temp file (24kHz, 16-bit mono) using AAD auth token.
-    Returns the tempfile path.
-    """
-    cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
-    cfg.speech_synthesis_voice_name = voice
-    cfg.set_speech_synthesis_output_format(
-        speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
-    )
-
-    # temp WAV path
-    fd, tmp_path = tempfile.mkstemp(prefix="agent_tts_", suffix=".wav")
-    os.close(fd)  # we only need the path
-    audio_cfg = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
-
-    synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=audio_cfg)
-    res = synth.speak_text_async(text).get()
-    if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-        raise RuntimeError(f"TTS failed: {res.reason}")
-    return tmp_path
-
-def play_wav_blocking(path: str):
-    """
-    Play a WAV file synchronously on Windows.
-    """
-    winsound.PlaySound(path, winsound.SND_FILENAME)
-
-def append_wav_into_master(src_path: str, master_wf: wave.Wave_write):
-    """
-    Append frames from src WAV into an already opened master WAV (24k/16-bit/mono).
-    """
-    with wave.open(src_path, "rb") as r:
-        # If the source isn't exactly 24k/16-bit/mono, this will still try to append raw frames.
-        # Azure RIFF24Khz16BitMonoPcm matches our target settings.
-        frames = r.readframes(r.getnframes())
-        master_wf.writeframes(frames)
-
 # ---------- Interrupt handling ----------
+
 interrupt_q: asyncio.Queue[str] = asyncio.Queue()
 
 async def read_interrupts():
-    """
-    Background: read a line from stdin at any time and enqueue as interruption text.
-    This starts AFTER the initial context paste to avoid swallowing that line.
-    """
-    print("⏸  Type an interruption anytime and press Enter.")
+    print("⏸ Type an interruption anytime and press Enter.")
     while True:
         try:
             line = await asyncio.to_thread(sys.stdin.readline)
             if not line:
-                await asyncio.sleep(0.1); continue
+                await asyncio.sleep(0.1)
+                continue
             text = line.strip()
             if text:
                 await interrupt_q.put(text)
         except Exception:
             await asyncio.sleep(0.2)
 
-# ---------- Main debate ----------
+# ---------- Debate loop ----------
+
 async def run_with_saver():
+    buffers: list[bytes] = []
     transcript: list[str] = []
 
-    # Prepare final podcast.wav
-    with wave.open("podcast.wav", "wb") as master_wf:
-        master_wf.setnchannels(WAV_CH)
-        master_wf.setsampwidth(WAV_SW)
-        master_wf.setframerate(WAV_RATE)
-
-        # 1) Spoken greeting (A)
-        greeting = "Hi Yashraj, how are you? Ready to listen to a debate on any topic or data? Just paste it below."
-        print(f"\n🟦 {AGENT_A} (greeting): {greeting}\n")
-        wav_path = tts_to_temp_wav(greeting, VOICE_A)
-        try:
-            play_wav_blocking(wav_path)
-            append_wav_into_master(wav_path, master_wf)
-        finally:
-            try: os.remove(wav_path)
-            except Exception: pass
-        transcript.append(f"{AGENT_A}: {greeting}")
-
-        # 2) Capture context ONCE (blocking), then start interrupts reader
-        print("📥 Paste your context and press Enter:")
-        context = sys.stdin.readline().strip()
-        if not context:
-            context = "Sample context about your topic."
-        print("📚 Context captured. Starting debate...\n")
-        asyncio.create_task(read_interrupts())
-
-        # 2b) Warm-up reply (B)
-        warm = await llm(SYSTEM_B, "Agent A greeted the user; reply briefly and warmly, then mention you're ready.")
-        print(f"🟩 {AGENT_B}: {warm}\n")
-        wav_path = tts_to_temp_wav(warm, VOICE_B)
-        try:
-            play_wav_blocking(wav_path)
-            append_wav_into_master(wav_path, master_wf)
-        finally:
-            try: os.remove(wav_path)
-            except Exception: pass
-        transcript.append(f"{AGENT_B}: {warm}")
-
-        # 3) Continuous round-robin with interrupts (Ctrl+C to stop)
-        last = f"Context to discuss:\n{context}"
-
+    room = rtc.Room()
+    await lk_connect(room)
+    asyncio.create_task(read_interrupts())
+    
+    # Greeting
+    greet = "Hi Yashraj, how are you? Ready to listen to a debate on any topic or data? Just paste it below."
+    print(f"\n🟦 {AGENT_A} (greeting): {greet}\n")
+    await tts_stream(room, AGENT_A, greet, VOICE_A, buffers)
+    transcript.append(f"{AGENT_A}: {greet}")
+    
+    # Context
+    print("📥 Paste your context and press Enter:")
+    context = await asyncio.to_thread(sys.stdin.readline)
+    context = context.strip()
+    if not context:
+        context = "Sample context about your topic."
+    print("📚 Context captured. Starting debate...\n")
+    
+    warm = await llm(SYSTEM_B, "Agent A greeted the user; reply briefly and warmly, then mention you're ready.")
+    print(f"🟩 {AGENT_B}: {warm}\n")
+    await tts_stream(room, AGENT_B, warm, VOICE_B, buffers)
+    transcript.append(f"{AGENT_B}: {warm}")
+    
+    last = f"Context:\n{context}"
+    
+    try:
         while True:
             # Agent A
+            intr = None
             try:
                 intr = interrupt_q.get_nowait()
-                last = f"User interruption: {intr}"
             except asyncio.QueueEmpty:
                 pass
-
+                
+            if intr:
+                last = f"User interruption: {intr}"
+                
             a_out = await llm(SYSTEM_A, last)
             print(f"\n🟦 {AGENT_A}: {a_out}\n")
-            wav_path = tts_to_temp_wav(a_out, VOICE_A)
-            try:
-                play_wav_blocking(wav_path)
-                append_wav_into_master(wav_path, master_wf)
-            finally:
-                try: os.remove(wav_path)
-                except Exception: pass
+            await tts_stream(room, AGENT_A, a_out, VOICE_A, buffers)
             transcript.append(f"{AGENT_A}: {a_out}")
-
+            
             # Agent B
+            intr = None
             try:
                 intr = interrupt_q.get_nowait()
             except asyncio.QueueEmpty:
-                intr = None
-
+                pass
+                
             b_in = f"{AGENT_A} said: {a_out}\nOriginal context:\n{context[:1500]}"
             if intr:
                 b_in += f"\nUser interruption: {intr}"
-
+                
             b_out = await llm(SYSTEM_B, b_in)
             print(f"\n🟩 {AGENT_B}: {b_out}\n")
-            wav_path = tts_to_temp_wav(b_out, VOICE_B)
-            try:
-                play_wav_blocking(wav_path)
-                append_wav_into_master(wav_path, master_wf)
-            finally:
-                try: os.remove(wav_path)
-                except Exception: pass
+            await tts_stream(room, AGENT_B, b_out, VOICE_B, buffers)
             transcript.append(f"{AGENT_B}: {b_out}")
-
             last = b_out
-            # tiny pause to avoid tight loop when replies are super short
-            await asyncio.sleep(0.05)
-
-    # save transcript
-    with open("podcast.txt", "w", encoding="utf-8") as f:
-        f.write("🎙️ Podcast Transcript\n\n")
-        f.write("\n".join(transcript))
-    print("✅ Saved podcast.wav and podcast.txt")
-
-# ---------- Entry ----------
-if __name__ == "__main__":
-    try:
-        asyncio.run(run_with_saver())
+            
     except KeyboardInterrupt:
-        # Files are already flushed progressively; nothing else to do.
-        print("\n⏹️ Stopped.")
+        print("\n⏹️ Debate stopped, saving podcast...")
+        
+        # Save transcript
+        with open("podcast.txt", "w", encoding="utf-8") as f:
+            f.write("🎙️ Podcast Transcript\n\n")
+            f.write("\n".join(transcript))
+            
+        # Save audio
+        pcm = b"".join(buffers)
+        with wave.open("podcast.wav", "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(pcm)
+            
+        print("✅ Saved podcast.wav and podcast.txt")
+    
+    # Clean up
+    audio_stream.stop_stream()
+    audio_stream.close()
+    p.terminate()
+
+# ---------- Main ----------
+
+if __name__ == "__main__":
+    asyncio.run(run_with_saver())
