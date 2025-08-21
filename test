@@ -1,11 +1,12 @@
-# two_agents_livekit_local.py — self-contained (Windows terminal)
-# Azure OpenAI (LLM) + Azure Speech (AAD, no speech key) + local audio playback + hotkey voice interrupt
-# pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
+# two_agents_interrupt_tools.py — AAD Azure Speech + Azure OpenAI + async playback + hotkey voice interrupt + tools
+# pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv simpleaudio
 
-import os, sys, asyncio, wave, tempfile, time, platform
+import os, sys, re, asyncio, wave, io, platform, tempfile, time
+from dataclasses import dataclass, field
+from typing import List, Tuple
 from dotenv import load_dotenv; load_dotenv()
 
-# ---------- Azure OpenAI ----------
+# ---------------- Azure OpenAI ----------------
 from openai import AzureOpenAI
 AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
@@ -15,14 +16,14 @@ if not all([AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OP
     raise RuntimeError("Missing Azure OpenAI env vars")
 oai = AzureOpenAI(api_key=AZURE_OPENAI_KEY, azure_endpoint=AZURE_OPENAI_ENDPOINT, api_version=OPENAI_API_VERSION)
 
-# ---------- Azure Speech (AAD) ----------
+# ---------------- Azure Speech (AAD, no speech key) ----------------
 import azure.cognitiveservices.speech as speechsdk
 from azure.identity import ClientSecretCredential
 TENANT_ID     = os.getenv("TENANT_ID")
 CLIENT_ID     = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
-RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional
+RESOURCE_ID   = os.getenv("RESOURCE_ID")   # optional
 COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
 if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
     raise RuntimeError("Missing AAD Speech env vars (TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION)")
@@ -32,244 +33,361 @@ def cog_token_str() -> str:
     raw = cred.get_token(COG_SCOPE).token
     return f"aad#{RESOURCE_ID}#{raw}" if RESOURCE_ID else raw
 
-STT_LANGUAGE = os.getenv("STT_LANGUAGE", "en-US")  # e.g., "en-IN" for Indian English
+STT_LANGUAGE = os.getenv("STT_LANGUAGE", "en-US")
 
-# ---------- LiveKit (import only; no server used) ----------
-try:
-    from livekit import rtc
-    print("🔌 LiveKit: local-only (no server).")
-except Exception:
-    rtc = None
-    print("ℹ️ LiveKit import skipped (not required for local playback).")
+# ---------------- Async, stoppable audio playback ----------------
+# We avoid LiveKit sinks and use simpleaudio for non-blocking local playback we can stop.
+import simpleaudio as sa
+WAV_RATE = 24000
+WAV_CH   = 1
+WAV_SW   = 2  # 16-bit
 
-# ---------- Playback (Windows) ----------
-if platform.system().lower() != "windows":
-    raise RuntimeError("This script uses winsound (Windows only). For macOS/Linux, replace winsound playback with simpleaudio/pyaudio.")
-import winsound
+current_play_obj: sa.PlayObject | None = None
+current_play_lock = asyncio.Lock()
 
-# ---------- Globals ----------
-SESSION_ID = "demo-session"
-AGENT_A    = "Agent A"
-AGENT_B    = "Agent B"
-VOICE_A    = "en-US-GuyNeural"
-VOICE_B    = "en-US-AriaNeural"
+async def stop_playback_immediately():
+    global current_play_obj
+    async with current_play_lock:
+        if current_play_obj is not None and current_play_obj.is_playing():
+            current_play_obj.stop()
+        current_play_obj = None
 
-WAV_RATE   = 24000
-WAV_CH     = 1
-WAV_SW     = 2  # 16-bit
+def pcm_to_wav_bytes(pcm: bytes, rate=WAV_RATE, ch=WAV_CH, sw=WAV_SW) -> bytes:
+    bio = io.BytesIO()
+    with wave.open(bio, "wb") as wf:
+        wf.setnchannels(ch)
+        wf.setsampwidth(sw)
+        wf.setframerate(rate)
+        wf.writeframes(pcm)
+    return bio.getvalue()
 
-# Debate style
+async def play_pcm_async(pcm: bytes):
+    """Play 16-bit mono 24kHz PCM asynchronously, stoppable."""
+    global current_play_obj
+    wav_bytes = pcm_to_wav_bytes(pcm)
+    # simpleaudio wants raw PCM, not WAV; but we can also play WAV bytes with wave module + sa.WaveObject.from_wave_read
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        frames = wf.readframes(wf.getnframes())
+    async with current_play_lock:
+        current_play_obj = sa.play_buffer(frames, WAV_CH, WAV_SW, WAV_RATE)
+
+# ---------------- TTS (get PCM bytes) ----------------
+async def tts_pcm(text: str, voice: str) -> bytes:
+    cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
+    cfg.speech_synthesis_voice_name = voice
+    cfg.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm)
+    synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=None)
+    res = await asyncio.to_thread(lambda: synth.speak_text_async(text).get())
+    if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+        raise RuntimeError(f"TTS failed: {res.reason}")
+    return res.audio_data  # raw PCM
+
+# ---------------- LLM helpers ----------------
 SYSTEM_A = ("You are Agent A, a friendly analyst. "
             "Speak 2–3 short sentences; reference the context; ask a probing question.")
 SYSTEM_B = ("You are Agent B, a pragmatic strategist. "
             "Speak 2–3 short sentences; build on/challenge A respectfully; propose next steps.")
 
-async def llm(panel_prompt: str, msg: str) -> str:
+async def llm(prompt: str, msg: str) -> str:
     r = await asyncio.to_thread(lambda:
         oai.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
-            messages=[{"role": "system", "content": panel_prompt},
-                      {"role": "user", "content": msg}],
-            max_tokens=220,
-            temperature=0.8
+            messages=[{"role":"system","content":prompt},
+                      {"role":"user","content":msg}],
+            max_tokens=220, temperature=0.8
         )
     )
     return (r.choices[0].message.content or "").strip()
 
-# ---------- TTS helpers ----------
-def tts_to_temp_wav(text: str, voice: str) -> str:
-    cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
-    cfg.speech_synthesis_voice_name = voice
-    cfg.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm)
-    fd, tmp_path = tempfile.mkstemp(prefix="agent_tts_", suffix=".wav")
-    os.close(fd)
-    synth = speechsdk.SpeechSynthesizer(
-        speech_config=cfg,
-        audio_config=speechsdk.audio.AudioOutputConfig(filename=tmp_path)
-    )
-    res = synth.speak_text_async(text).get()
-    if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
-        try: os.remove(tmp_path)
-        except Exception: pass
-        raise RuntimeError(f"TTS failed: {res.reason}")
-    return tmp_path
+# ---------------- Context & Tools (NotebookLM-style) ----------------
+@dataclass
+class ContextState:
+    raw_text: str
+    lines: List[str] = field(default_factory=list)
+    marks: List[Tuple[str, int, int]] = field(default_factory=list)  # (label, start_line, end_line)
+    notes: List[str] = field(default_factory=list)
 
-def play_wav_blocking(path: str):
-    winsound.PlaySound(path, winsound.SND_FILENAME)
+    @classmethod
+    def from_text(cls, text: str) -> "ContextState":
+        lines = text.splitlines()
+        return cls(raw_text=text, lines=lines, marks=[], notes=[])
 
-def append_wav_into_master(src_path: str, master_wf: wave.Wave_write):
-    with wave.open(src_path, "rb") as r:
-        frames = r.readframes(r.getnframes())
-        master_wf.writeframes(frames)
+    def reload(self, text: str):
+        self.raw_text = text
+        self.lines = text.splitlines()
 
-# ---------- Interrupt machinery ----------
-interrupt_q: asyncio.Queue[str] = asyncio.Queue()
-mic_lock = asyncio.Lock()        # ensure only one mic capture at a time
-stop_for_interrupt = asyncio.Event()  # signal main loop to pause at turn boundaries
+    def find(self, pattern: str, max_hits=20) -> List[Tuple[int,str]]:
+        rx = re.compile(pattern, re.IGNORECASE)
+        hits = []
+        for i, ln in enumerate(self.lines, start=1):
+            if rx.search(ln):
+                hits.append((i, ln.strip()))
+                if len(hits) >= max_hits:
+                    break
+        return hits
 
-# Hotkey watcher (Windows console): press 'i' to capture one utterance from mic
-async def hotkey_watcher():
-    import msvcrt  # Windows-only
-    print("⏯  Press 'i' any time to interrupt and speak. Press Ctrl+C to stop the podcast.")
+    def mark(self, label: str, start_line: int, end_line: int):
+        s, e = sorted((start_line, end_line))
+        s = max(1, s); e = min(len(self.lines), e)
+        self.marks.append((label, s, e))
+
+    def replace(self, start_line: int, end_line: int, text: str):
+        s, e = sorted((start_line, end_line))
+        s = max(1, s); e = min(len(self.lines), e)
+        new_lines = self.lines[:s-1] + text.splitlines() + self.lines[e:]
+        self.lines = new_lines
+        self.raw_text = "\n".join(self.lines)
+
+    def add_note(self, txt: str):
+        self.notes.append(txt)
+
+    def snapshot_for_prompt(self, max_chars=5000) -> str:
+        # Include marks and notes up top, then a truncated context
+        meta = []
+        if self.marks:
+            meta.append("Marks:\n" + "\n".join([f"- [{lbl}] {s}-{e}" for (lbl,s,e) in self.marks]))
+        if self.notes:
+            meta.append("Notes:\n" + "\n".join([f"- {n}" for n in self.notes]))
+        ctx_str = self.raw_text
+        if len(ctx_str) > max_chars:
+            ctx_str = ctx_str[:max_chars] + "..."
+        return ("\n\n".join(meta) + ("\n\n" if meta else "")) + ctx_str
+
+# Tool command parser (typed anytime in terminal)
+async def tool_command_loop(ctx: ContextState, inject_queue: asyncio.Queue[str]):
+    """
+    Type commands while podcast runs:
+      :ask <question>
+      :find <regex>
+      :mark <label> <start>-<end>
+      :note <text>
+      :replace <start>-<end> <text>
+      :reload <path>
+      :help
+    """
+    print("⌨️  Commands available: :ask, :find, :mark, :note, :replace, :reload, :help")
+    loop = asyncio.get_running_loop()
     while True:
-        await asyncio.sleep(0.03)
+        line = await asyncio.to_thread(sys.stdin.readline)
+        if not line:
+            await asyncio.sleep(0.05); continue
+        line = line.strip()
+        if not line.startswith(":"):
+            # Non-command text typed will be ignored here; voice interrupt uses hotkey 'i'
+            continue
+        try:
+            if line.startswith(":ask "):
+                q = line[5:].strip()
+                payload = f"User question (tool): {q}"
+                await inject_queue.put(payload)
+                print(f"🔎 Queued ask → {q}")
+
+            elif line.startswith(":find "):
+                pat = line[6:].strip()
+                hits = ctx.find(pat)
+                if not hits:
+                    print("🔍 No matches.")
+                else:
+                    print("🔍 Matches:")
+                    for i, (ln, txt) in enumerate(hits, 1):
+                        print(f"  {i:02d}. L{ln}: {txt}")
+
+            elif line.startswith(":mark "):
+                rest = line[6:].strip()
+                m = re.match(r'^(\S+)\s+(\d+)-(\d+)$', rest)
+                if not m: print("Usage: :mark <label> <start>-<end>"); continue
+                label, s, e = m.group(1), int(m.group(2)), int(m.group(3))
+                ctx.mark(label, s, e)
+                print(f"🏷  Marked [{label}] {s}-{e}")
+
+            elif line.startswith(":note "):
+                n = line[6:].strip()
+                ctx.add_note(n)
+                print("📝 Note added.")
+
+            elif line.startswith(":replace "):
+                m = re.match(r'^(\d+)-(\d+)\s+(.*)$', line[9:].strip())
+                if not m: print("Usage: :replace <start>-<end> <text>"); continue
+                s, e, txt = int(m.group(1)), int(m.group(2)), m.group(3)
+                ctx.replace(s, e, txt)
+                print(f"✏️ Replaced lines {s}-{e}.")
+
+            elif line.startswith(":reload "):
+                p = line[8:].strip().strip('"').strip("'")
+                if not os.path.exists(p):
+                    print("❌ File not found.")
+                else:
+                    with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                        ctx.reload(f.read())
+                    print(f"♻️ Reloaded context from {p}")
+
+            elif line == ":help":
+                print(
+"""Commands:
+  :ask <question>                 -> inject a user Q grounded in context
+  :find <regex>                   -> list matching lines
+  :mark <label> <start>-<end>     -> save a highlight range
+  :note <text>                    -> append a note
+  :replace <start>-<end> <text>   -> edit the context live
+  :reload <path>                  -> reload context file
+  :help                           -> this help"""
+                )
+        except Exception as e:
+            print(f"⚠️ Command error: {e}")
+
+# ---------------- Hotkey 'i' → one-shot mic capture ----------------
+stop_for_interrupt = asyncio.Event()
+mic_lock = asyncio.Lock()
+
+async def hotkey_watcher(inject_queue: asyncio.Queue[str]):
+    if platform.system().lower() != "windows":
+        print("ℹ️ Hotkey 'i' is Windows-only here. On macOS/Linux, type commands with :ask.")
+        return
+    import msvcrt
+    print("⏯  Press 'i' any time to interrupt and speak (push-to-talk).")
+    while True:
+        await asyncio.sleep(0.02)
         if msvcrt.kbhit():
             ch = msvcrt.getch()
-            if not ch:
-                continue
-            try:
-                c = ch.decode(errors="ignore").lower()
-            except Exception:
-                c = ""
+            if not ch: continue
+            try: c = ch.decode(errors="ignore").lower()
+            except Exception: c = ""
             if c == 'i':
-                # request immediate pause at next safe point
                 stop_for_interrupt.set()
-                # launch a mic capture (do not block this watcher)
-                asyncio.create_task(capture_one_utterance_and_enqueue())
+                asyncio.create_task(capture_one_utterance_and_enqueue(inject_queue))
 
-async def capture_one_utterance_and_enqueue():
+async def capture_one_utterance_and_enqueue(inject_queue: asyncio.Queue[str]):
     async with mic_lock:
         try:
-            print("\n🎙  Listening... (speak one sentence)\n")
+            print("\n🎙  Listening... (say one sentence)\n")
+            await stop_playback_immediately()  # hard stop current speech
             cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
             cfg.speech_recognition_language = STT_LANGUAGE
             audio = speechsdk.audio.AudioConfig(use_default_microphone=True)
             rec = speechsdk.SpeechRecognizer(speech_config=cfg, audio_config=audio)
-
-            # single-shot recognition
             res = await asyncio.to_thread(lambda: rec.recognize_once_async().get())
             if res.reason == speechsdk.ResultReason.RecognizedSpeech:
                 text = (res.text or "").strip()
                 if text:
                     print(f"👂 User: {text}")
-                    await interrupt_q.put(text)
+                    await inject_queue.put(text)
                 else:
-                    print("…heard silence.")
+                    print("…silence.")
             elif res.reason == speechsdk.ResultReason.NoMatch:
                 print("…couldn’t understand (NoMatch).")
             else:
-                # Canceled or error
-                try:
-                    print(f"…STT issue: {res.cancellation_details.reason}")
-                except Exception:
-                    print("…STT canceled.")
+                try: print(f"…STT canceled: {res.cancellation_details.reason}")
+                except Exception: print("…STT canceled.")
         finally:
-            # clear pause request so main loop can continue
             stop_for_interrupt.clear()
 
-# ---------- Main debate ----------
-async def run_with_saver():
-    transcript: list[str] = []
+# ---------------- Main podcast loop ----------------
+AGENT_A = "Agent A"
+AGENT_B = "Agent B"
+VOICE_A = "en-US-GuyNeural"
+VOICE_B = "en-US-AriaNeural"
 
-    with wave.open("podcast.wav", "wb") as master_wf:
-        master_wf.setnchannels(WAV_CH)
-        master_wf.setsampwidth(WAV_SW)
-        master_wf.setframerate(WAV_RATE)
+async def podcast():
+    # 0) Greeting (spoken)
+    greeting = "Hi Yashraj, how are you? Ready to listen to a debate on any topic or data? Just paste it below."
+    print(f"\n🟦 {AGENT_A}: {greeting}\n")
+    pcm = await tts_pcm(greeting, VOICE_A)
+    await play_pcm_async(pcm)
 
-        # Greeting (A)
-        greeting = "Hi Yashraj, how are you? Ready to listen to a debate on any topic or data? Just paste it below."
-        print(f"\n🟦 {AGENT_A} (greeting): {greeting}\n")
-        wav_path = tts_to_temp_wav(greeting, VOICE_A)
-        try:
-            play_wav_blocking(wav_path)
-            append_wav_into_master(wav_path, master_wf)
-        finally:
-            try: os.remove(wav_path)
-            except Exception: pass
-        transcript.append(f"{AGENT_A}: {greeting}")
+    # 1) Paste context once
+    print("📥 Paste your context and press Enter:")
+    context = (await asyncio.to_thread(sys.stdin.readline)).strip()
+    if not context:
+        context = "Sample context about your topic."
+    ctx = ContextState.from_text(context)
+    print("📚 Context captured. Starting debate...\n")
 
-        # Context once (blocking)
-        print("📥 Paste your context and press Enter:")
-        context = sys.stdin.readline().strip()
-        if not context:
-            context = "Sample context about your topic."
-        print("📚 Context captured. Starting debate...\n")
+    # 2) Start parallel loops: hotkey watcher + tool command reader
+    inject_queue: asyncio.Queue[str] = asyncio.Queue()
+    asyncio.create_task(hotkey_watcher(inject_queue))
+    asyncio.create_task(tool_command_loop(ctx, inject_queue))
 
-        # Start hotkey watcher AFTER context is pasted (so it doesn’t eat that line)
-        asyncio.create_task(hotkey_watcher())
+    # 3) Warm-up (B)
+    warm = await llm(SYSTEM_B, "Agent A greeted the user; reply briefly and warmly, then mention you're ready.")
+    print(f"🟩 {AGENT_B}: {warm}\n")
+    pcm = await tts_pcm(warm, VOICE_B)
+    await play_pcm_async(pcm)
 
-        # Warm-up (B)
-        warm = await llm(SYSTEM_B, "Agent A greeted the user; reply briefly and warmly, then mention you're ready.")
-        print(f"🟩 {AGENT_B}: {warm}\n")
-        wav_path = tts_to_temp_wav(warm, VOICE_B)
-        try:
-            play_wav_blocking(wav_path)
-            append_wav_into_master(wav_path, master_wf)
-        finally:
-            try: os.remove(wav_path)
-            except Exception: pass
-        transcript.append(f"{AGENT_B}: {warm}")
+    transcript: List[str] = []
+    pcm_master = bytearray()
+    pcm_master += pcm  # include warmup
 
-        # Debate loop
-        last = f"Context to discuss:\n{context}"
+    # Helper to speak + capture to master
+    async def speak(agent_name: str, text: str, voice: str):
+        nonlocal pcm_master
+        p = await tts_pcm(text, voice)
+        await play_pcm_async(p)
+        pcm_master += p
+        transcript.append(f"{agent_name}: {text}")
 
+    last = f"Context to discuss:\n{ctx.snapshot_for_prompt()}"
+    try:
         while True:
-            # If user pressed 'i', pause here and capture mic (task handles it)
+            # pause point for immediate interrupt
             if stop_for_interrupt.is_set():
-                # wait until mic capture finishes and queue is filled (or cleared)
-                while stop_for_interrupt.is_set():
-                    await asyncio.sleep(0.02)
+                await asyncio.sleep(0.01)
+                continue
 
-            # Drain any pending interrupt text (if user already spoke)
+            # drain injected items (voice or tool)
             try:
                 while True:
-                    intr = interrupt_q.get_nowait()
-                    last = f"User interruption: {intr}"
+                    intr = inject_queue.get_nowait()
                     transcript.append(f"User: {intr}")
+                    last = f"User interruption: {intr}\n\nContext (snapshot):\n{ctx.snapshot_for_prompt()}"
             except asyncio.QueueEmpty:
                 pass
 
-            # Agent A
+            # Agent A turn
             a_out = await llm(SYSTEM_A, last)
             print(f"\n🟦 {AGENT_A}: {a_out}\n")
-            wav_path = tts_to_temp_wav(a_out, VOICE_A)
-            try:
-                play_wav_blocking(wav_path)
-                append_wav_into_master(wav_path, master_wf)
-            finally:
-                try: os.remove(wav_path)
-                except Exception: pass
-            transcript.append(f"{AGENT_A}: {a_out}")
+            await speak(AGENT_A, a_out, VOICE_A)
 
-            # Pause point again for immediate new interrupt
-            if stop_for_interrupt.is_set():
-                while stop_for_interrupt.is_set():
-                    await asyncio.sleep(0.02)
+            # quick window for interrupt after A
+            await asyncio.sleep(0.03)
+
+            # drain new injected
             try:
                 while True:
-                    intr = interrupt_q.get_nowait()
-                    last = f"User interruption: {intr}"
+                    intr = inject_queue.get_nowait()
                     transcript.append(f"User: {intr}")
+                    last = f"User interruption: {intr}\n\nContext (snapshot):\n{ctx.snapshot_for_prompt()}"
             except asyncio.QueueEmpty:
                 pass
 
-            # Agent B
-            b_in = f"{AGENT_A} said: {a_out}\nOriginal context:\n{context[:1500]}"
+            # Agent B turn
+            b_in = f"{AGENT_A} said: {a_out}\nOriginal context:\n{ctx.snapshot_for_prompt()}"
             if last.startswith("User interruption:"):
                 b_in += f"\n{last}"
             b_out = await llm(SYSTEM_B, b_in)
             print(f"\n🟩 {AGENT_B}: {b_out}\n")
-            wav_path = tts_to_temp_wav(b_out, VOICE_B)
-            try:
-                play_wav_blocking(wav_path)
-                append_wav_into_master(wav_path, master_wf)
-            finally:
-                try: os.remove(wav_path)
-                except Exception: pass
-            transcript.append(f"{AGENT_B}: {b_out}")
+            await speak(AGENT_B, b_out, VOICE_B)
 
             last = b_out
             await asyncio.sleep(0.03)
 
-    # Save transcript after loop ends (Ctrl+C)
-    with open("podcast.txt", "w", encoding="utf-8") as f:
-        f.write("🎙️ Podcast Transcript\n\n")
-        f.write("\n".join(transcript))
-    print("✅ Saved podcast.wav and podcast.txt")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Save transcript
+        with open("podcast.txt", "w", encoding="utf-8") as f:
+            f.write("🎙️ Podcast Transcript\n\n")
+            f.write("\n".join(transcript))
+        # Save WAV
+        with wave.open("podcast.wav", "wb") as wf:
+            wf.setnchannels(WAV_CH)
+            wf.setsampwidth(WAV_SW)
+            wf.setframerate(WAV_RATE)
+            wf.writeframes(bytes(pcm_master))
+        print("✅ Saved podcast.wav and podcast.txt")
 
-# ---------- Entry ----------
+# ---------------- Entry ----------------
 if __name__ == "__main__":
     try:
-        asyncio.run(run_with_saver())
+        asyncio.run(podcast())
     except KeyboardInterrupt:
         print("\n⏹️ Stopped.")
