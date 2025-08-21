@@ -1,27 +1,27 @@
-# two_agents_livekit_client.py
-# Client-side only:
-# - If LIVEKIT_URL & LIVEKIT_TOKEN are set: connects, publishes audio frames.
-# - If not set: runs fully local and plays audio without LiveKit.
-#
-# Voice: Azure Speech (AAD token, no speech key)
-# Brain: Azure OpenAI
-# Features: spoken greeting, paste context, A/B round-robin, parallel "i" interrupt,
-#           transcript + WAV export on Ctrl+C
+# two_agents_livekit_local.py — full, self-contained
+# Azure OpenAI (LLM) + Azure Speech (AAD) + LiveKit client (optional)
+# Hear greeting and debate locally even without LiveKit server.
+# pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv livekit
 
-import os, sys, asyncio, wave, io
+import os, sys, asyncio, wave, threading, queue
 from dotenv import load_dotenv; load_dotenv()
 
-# ---------------- Azure OpenAI (LLM) ----------------
+# ---------- Azure OpenAI (LLM) ----------
 from openai import AzureOpenAI
 AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 OPENAI_API_VERSION      = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
 if not all([AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OPENAI_API_VERSION]):
-    raise RuntimeError("Missing Azure OpenAI env vars")
-oai = AzureOpenAI(api_key=AZURE_OPENAI_KEY, azure_endpoint=AZURE_OPENAI_ENDPOINT, api_version=OPENAI_API_VERSION)
+    raise RuntimeError("Missing Azure OpenAI env vars: AZURE_OPENAI_KEY/OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OPENAI_API_VERSION")
 
-# ---------------- Azure Speech (AAD, no speech key) ----------------
+oai = AzureOpenAI(
+    api_key=AZURE_OPENAI_KEY,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_version=OPENAI_API_VERSION,
+)
+
+# ---------- Azure Speech (AAD, no Speech key) ----------
 import azure.cognitiveservices.speech as speechsdk
 from azure.identity import ClientSecretCredential
 
@@ -31,83 +31,71 @@ CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
 RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional
 COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
+
 if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
     raise RuntimeError("Missing AAD Speech env vars (TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION)")
+
 cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+
 def cog_token_str() -> str:
     raw = cred.get_token(COG_SCOPE).token
     return f"aad#{RESOURCE_ID}#{raw}" if RESOURCE_ID else raw
 
-# ---------------- LiveKit Client SDK (optional) ----------------
+# ---------- LiveKit (optional) ----------
+# If LIVEKIT_WS + LIVEKIT_TOKEN are provided, publish tracks to the room.
+# If not provided, we still speak locally via Azure (so you hear everything).
 from livekit import rtc
-LIVEKIT_URL   = os.getenv("LIVEKIT_URL", "").strip()
+
+LIVEKIT_WS    = os.getenv("LIVEKIT_WS", "").strip()
 LIVEKIT_TOKEN = os.getenv("LIVEKIT_TOKEN", "").strip()
-USE_LIVEKIT   = bool(LIVEKIT_URL and LIVEKIT_TOKEN)
+USE_LIVEKIT   = bool(LIVEKIT_WS and LIVEKIT_TOKEN)
 
-# ---------------- Local audio playback (no server) ----------------
-# pydub + simpleaudio for simple playback of our 24kHz mono PCM
-from pydub import AudioSegment
-from pydub.playback import play
-
-# ---------------- Session / Agent config ----------------
 SESSION_ID = os.getenv("SESSION_ID", "demo-session")
 AGENT_A    = os.getenv("AGENT_A", "Agent A")
 AGENT_B    = os.getenv("AGENT_B", "Agent B")
 VOICE_A    = os.getenv("VOICE_A", "en-US-GuyNeural")
 VOICE_B    = os.getenv("VOICE_B", "en-US-AriaNeural")
 
-SAMPLE_RATE, CHANNELS, FRAME_MS = 24000, 1, 20
+# Audio format for saving/publishing
+SAMPLE_RATE, CHANNELS = 24000, 1  # 24kHz 16-bit mono PCM
+SAMPLE_WIDTH = 2                  # bytes
+FRAME_MS     = 20
 SAMPLES_PER_CH  = SAMPLE_RATE * FRAME_MS // 1000
-BYTES_PER_FRAME = SAMPLES_PER_CH * CHANNELS * 2  # 16-bit mono
+BYTES_PER_FRAME = SAMPLES_PER_CH * CHANNELS * SAMPLE_WIDTH
 
 def track_name(agent: str) -> str:
     return f"{SESSION_ID}-{agent}-voice"
 
-# ---------------- LLM prompts ----------------
-SYSTEM_A = ("You are Agent A, a friendly analyst. "
-            "Speak 2–3 short sentences; reference the context; ask a probing question.")
-SYSTEM_B = ("You are Agent B, a pragmatic strategist. "
-            "Speak 2–3 short sentences; build on/challenge A respectfully; propose next steps.")
-
-async def llm(panel_prompt: str, msg: str) -> str:
-    r = await asyncio.to_thread(lambda: oai.chat.completions.create(
-        model=AZURE_OPENAI_DEPLOYMENT,
-        messages=[{"role": "system", "content": panel_prompt},
-                  {"role": "user",   "content": msg}],
-        max_tokens=220, temperature=0.8
-    ))
-    return (r.choices[0].message.content or "").strip()
-
-# ---------------- LiveKit helpers ----------------
-async def lk_connect(room: rtc.Room):
+async def lk_connect(room: rtc.Room) -> bool:
     if not USE_LIVEKIT:
         print("🔌 LiveKit: local-only mode (no server connection).")
         return False
-    await room.connect(LIVEKIT_URL, LIVEKIT_TOKEN)
-    print(f"🔌 LiveKit: connected to {LIVEKIT_URL}")
+    await room.connect(LIVEKIT_WS, LIVEKIT_TOKEN)
+    print(f"🔌 LiveKit: connected to {LIVEKIT_WS}")
     return True
 
 async def publish_pcm_livekit(room: rtc.Room, agent_label: str, pcm: bytes):
     """
-    Publish raw PCM (24kHz, 16-bit mono) as frames into a LiveKit LocalAudioTrack.
-    Only call this when actually connected to a LiveKit room.
+    Publish raw PCM (24kHz 16-bit mono) as a LiveKit LocalAudioTrack.
+    Only call this when connected to a server.
     """
     source = rtc.AudioSource(sample_rate=SAMPLE_RATE, num_channels=CHANNELS)
     track  = rtc.LocalAudioTrack.create_audio_track(track_name(agent_label), source)
     await room.local_participant.publish_track(track)
 
+    # Stream frames into the track
     for i in range(0, len(pcm), BYTES_PER_FRAME):
         seg = pcm[i:i+BYTES_PER_FRAME]
         if len(seg) < BYTES_PER_FRAME:
-            continue
+            break
         frame = rtc.AudioFrame(seg, SAMPLE_RATE, CHANNELS, SAMPLES_PER_CH)
         await source.capture_frame(frame)
         await asyncio.sleep(FRAME_MS / 1000)
 
-# ---------------- TTS: stream -> collect PCM -> (LiveKit or local playback) ----------------
-async def tts_get_pcm(text: str, voice: str) -> bytes:
+# ---------- TTS helpers ----------
+def tts_get_pcm(text: str, voice: str) -> bytes:
     """
-    Synthesizes text with Azure TTS to raw PCM (24kHz 16-bit mono), returns bytes.
+    Synthesize text to raw PCM bytes using Azure Speech (AAD token).
     """
     cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
     cfg.speech_synthesis_voice_name = voice
@@ -115,113 +103,137 @@ async def tts_get_pcm(text: str, voice: str) -> bytes:
         speechsdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm
     )
     synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=None)
-    res = await asyncio.to_thread(lambda: synth.speak_text_async(text).get())
+    res = synth.speak_text_async(text).get()
     if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
         raise RuntimeError(f"TTS failed: {res.reason}")
-    stream = speechsdk.AudioDataStream(res)
+    return res.audio_data  # raw PCM
 
-    # Read the whole stream to bytes (buffered)
-    chunks = []
-    buf = bytearray(BYTES_PER_FRAME * 20)
-    while True:
-        n = stream.read_data(buf)
-        if n == 0:
-            break
-        chunks.append(bytes(buf[:n]))
-    return b"".join(chunks)
+def local_speak(text: str, voice: str):
+    """
+    Speak out loud via default system speaker (no extra libs).
+    """
+    cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
+    cfg.speech_synthesis_voice_name = voice
+    out = speechsdk.audio.AudioOutputConfig(use_default_speaker=True)
+    syn = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=out)
+    r = syn.speak_text_async(text).get()
+    if r.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+        print("⚠️ Local speak failed:", r.reason)
 
-def local_play_pcm(pcm: bytes):
-    """
-    Local playback for 24kHz 16-bit mono PCM using pydub + simpleaudio.
-    """
-    seg = AudioSegment(
-        data=pcm,
-        sample_width=2,
-        frame_rate=SAMPLE_RATE,
-        channels=1,
+# ---------- LLM prompts ----------
+SYSTEM_A = (
+    "You are Agent A, a friendly analyst. "
+    "Speak 2–3 short sentences; reference the context; ask a probing question when helpful."
+)
+SYSTEM_B = (
+    "You are Agent B, a pragmatic strategist. "
+    "Speak 2–3 short sentences; build on or challenge A respectfully; propose next steps."
+)
+
+def llm_sync(panel_prompt: str, msg: str) -> str:
+    r = oai.chat.completions.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        messages=[
+            {"role": "system", "content": panel_prompt},
+            {"role": "user", "content": msg}
+        ],
+        max_tokens=220,
+        temperature=0.8
     )
-    play(seg)
+    return (r.choices[0].message.content or "").strip()
 
-# ---------------- Interrupts ----------------
+async def llm(panel_prompt: str, msg: str) -> str:
+    # Run sync call in thread to avoid blocking loop
+    return await asyncio.to_thread(llm_sync, panel_prompt, msg)
+
+# ---------- Interrupt handling (parallel, smooth) ----------
+# Dedicated thread reads stdin continuously and pushes lines to a thread-safe Queue.
+# An asyncio task polls that queue and forwards into an asyncio.Queue for the loop.
+
+_input_queue = queue.Queue()
 interrupt_q: asyncio.Queue[str] = asyncio.Queue()
-stop_listening = asyncio.Event()
 
-async def read_interrupts():
-    """
-    Non-blocking keyboard interrupt system:
-    - Press a single 'i' + Enter to enter interrupt mode (mic ON simulation).
-    - Then type your question/statement and press Enter to submit.
-    - It enqueues the text and resumes the debate.
-    """
-    print("⏸  Tip: type 'i' + Enter to interrupt, then type your question and press Enter.")
-    loop = asyncio.get_running_loop()
-    while not stop_listening.is_set():
+def _stdin_reader():
+    while True:
         try:
-            line = await asyncio.to_thread(sys.stdin.readline)
+            line = sys.stdin.readline()
             if not line:
-                await asyncio.sleep(0.05)
-                continue
-            first = line.strip()
-            if first.lower() == "i":
-                # prompt for the actual content
-                print("🎙️  Speak/type your interruption, then Enter:")
-                content = await asyncio.to_thread(sys.stdin.readline)
-                content = (content or "").strip()
-                if content:
-                    await interrupt_q.put(content)
-                    print("➡️  Interruption captured.")
-            else:
-                # ignore random enters while debate is running
-                pass
+                break
+            text = line.strip()
+            if text:
+                _input_queue.put(text)
         except Exception:
+            break
+
+async def pump_interrupts():
+    while True:
+        try:
+            text = _input_queue.get_nowait()
+            await interrupt_q.put(text)
+        except queue.Empty:
             await asyncio.sleep(0.05)
 
-# ---------------- Debate runner (round-robin + parallel interrupts) ----------------
-async def run_podcast():
-    transcript: list[str] = []
-    audio_accum: list[bytes] = []
+# ---------- Debate loop with saving ----------
+async def run_with_saver():
+    buffers: list[bytes] = []   # raw PCM segments for podcast.wav
+    transcript: list[str] = []  # text transcript
 
-    # LiveKit room (maybe connect)
+    # Start stdin reader thread & pump task
+    threading.Thread(target=_stdin_reader, daemon=True).start()
+    asyncio.create_task(pump_interrupts())
+
+    # LiveKit setup (optional)
     room = rtc.Room()
     connected = await lk_connect(room)
 
-    # Background interrupt watcher
-    asyncio.create_task(read_interrupts())
-
-    # 1) Spoken greeting
+    # 1) Greeting (spoken)
     greet = "Hi Yashraj, how are you? Ready to listen to a debate on any topic or data? Just paste it below."
     print(f"\n🟦 {AGENT_A} (greeting): {greet}\n")
-    pcm = await tts_get_pcm(greet, VOICE_A)
-    audio_accum.append(pcm)
-    if connected:
-        await publish_pcm_livekit(room, AGENT_A, pcm)
-    else:
-        local_play_pcm(pcm)
-    transcript.append(f"{AGENT_A} (greeting): {greet}")
 
-    # 2) Paste context once
+    # Speak locally so you hear it even without LK; also capture PCM for saving/publishing
+    local_speak(greet, VOICE_A)
+    try:
+        pcm = tts_get_pcm(greet, VOICE_A)
+        buffers.append(pcm)
+        if connected:
+            await publish_pcm_livekit(room, AGENT_A, pcm)
+    except Exception as e:
+        print("⚠️ Greeting TTS error:", e)
+
+    transcript.append(f"{AGENT_A}: {greet}")
+
+    # 2) Ask for context (blocking once)
     print("📥 Paste your context and press Enter:")
-    context = sys.stdin.readline().strip()
+    # Wait for the next line that is NOT the one we already consumed for greeting
+    context_line = None
+    while context_line is None:
+        try:
+            context_line = _input_queue.get(timeout=3600)
+        except queue.Empty:
+            pass
+    context = context_line.strip()
     if not context:
         context = "Sample context about your topic."
     print("📚 Context captured. Starting debate...\n")
 
-    # Warm-up (B)
+    # Warm-up (spoken)
     warm = await llm(SYSTEM_B, "Agent A greeted the user; reply briefly and warmly, then say you're ready.")
-    print(f"🟩 {AGENT_B} (warm-up): {warm}\n")
-    pcm = await tts_get_pcm(warm, VOICE_B)
-    audio_accum.append(pcm)
-    if connected:
-        await publish_pcm_livekit(room, AGENT_B, pcm)
-    else:
-        local_play_pcm(pcm)
-    transcript.append(f"{AGENT_B} (warm-up): {warm}")
+    print(f"🟩 {AGENT_B}: {warm}\n")
+    local_speak(warm, VOICE_B)
+    try:
+        pcm = tts_get_pcm(warm, VOICE_B)
+        buffers.append(pcm)
+        if connected:
+            await publish_pcm_livekit(room, AGENT_B, pcm)
+    except Exception as e:
+        print("⚠️ Warm-up TTS error:", e)
+    transcript.append(f"{AGENT_B}: {warm}")
 
-    last = f"Context:\n{context}"
-
+    # 3) Continuous round-robin; consume any interrupts smoothly
+    last = f"Context to discuss:\n{context}"
     try:
         while True:
-            # Check interrupt immediately before A speaks
+            # Drain one interrupt if present
             intr = None
             try:
                 intr = interrupt_q.get_nowait()
@@ -229,60 +241,72 @@ async def run_podcast():
                 pass
             if intr:
                 last = f"User interruption: {intr}"
+                print(f"🧑‍💬 You: {intr}")
 
-            # A turn
+            # Agent A turn
             a_out = await llm(SYSTEM_A, last)
             print(f"\n🟦 {AGENT_A}: {a_out}\n")
-            pcm = await tts_get_pcm(a_out, VOICE_A)
-            audio_accum.append(pcm)
-            if connected:
-                await publish_pcm_livekit(room, AGENT_A, pcm)
-            else:
-                local_play_pcm(pcm)
+            local_speak(a_out, VOICE_A)
+            try:
+                pcm = tts_get_pcm(a_out, VOICE_A)
+                buffers.append(pcm)
+                if connected:
+                    await publish_pcm_livekit(room, AGENT_A, pcm)
+            except Exception as e:
+                print("⚠️ TTS A error:", e)
             transcript.append(f"{AGENT_A}: {a_out}")
 
-            # Check interrupt again before B replies
+            # Check interrupt again before B
             intr = None
             try:
                 intr = interrupt_q.get_nowait()
             except asyncio.QueueEmpty:
                 pass
-            b_in = f"{AGENT_A} said: {a_out}\nOriginal context:\n{context[:1500]}"
+
+            b_in = f"{AGENT_A} said: {a_out}\nOriginal context (for reference):\n{context[:1500]}"
             if intr:
                 b_in += f"\nUser interruption: {intr}"
 
-            # B turn
+            # Agent B turn
             b_out = await llm(SYSTEM_B, b_in)
             print(f"\n🟩 {AGENT_B}: {b_out}\n")
-            pcm = await tts_get_pcm(b_out, VOICE_B)
-            audio_accum.append(pcm)
-            if connected:
-                await publish_pcm_livekit(room, AGENT_B, pcm)
-            else:
-                local_play_pcm(pcm)
+            local_speak(b_out, VOICE_B)
+            try:
+                pcm = tts_get_pcm(b_out, VOICE_B)
+                buffers.append(pcm)
+                if connected:
+                    await publish_pcm_livekit(room, AGENT_B, pcm)
+            except Exception as e:
+                print("⚠️ TTS B error:", e)
             transcript.append(f"{AGENT_B}: {b_out}")
 
+            # Next loop uses B's output as the base
             last = b_out
 
     except KeyboardInterrupt:
-        pass
-    finally:
-        stop_listening.set()
+        print("\n⏹️ Debate stopped, saving podcast...")
+
         # Save transcript
         with open("podcast.txt", "w", encoding="utf-8") as f:
             f.write("🎙️ Podcast Transcript\n\n")
             f.write("\n".join(transcript))
-        # Save WAV
-        pcm_all = b"".join(audio_accum)
+
+        # Save audio WAV
+        pcm_all = b"".join(buffers)
         with wave.open("podcast.wav", "wb") as wf:
             wf.setnchannels(1)
-            wf.setsampwidth(2)
+            wf.setsampwidth(SAMPLE_WIDTH)
             wf.setframerate(SAMPLE_RATE)
             wf.writeframes(pcm_all)
-        if USE_LIVEKIT:
-            await room.disconnect()
+
         print("✅ Saved podcast.wav and podcast.txt")
 
-# ---------------- Main ----------------
+        try:
+            if connected:
+                await room.disconnect()
+        except Exception:
+            pass
+
+# ---------- Main ----------
 if __name__ == "__main__":
-    asyncio.run(run_podcast())
+    asyncio.run(run_with_saver())
