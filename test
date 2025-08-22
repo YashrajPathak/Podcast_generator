@@ -1,11 +1,10 @@
-# two_agents_livekit_local.py — interrupt-immediate + push-to-talk + background inbox (additive)
+# two_agents_livekit_local.py — interrupt-immediate + push-to-talk + background inbox + file-pick (additive)
 # Azure OpenAI (LLM) + Azure Speech (AAD) + optional LiveKit
 # pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv livekit
 
-import os, sys, asyncio, wave, threading, queue, time, shutil, glob, datetime
-from dotenv import load_dotenv; load_dotenv()
+import os, sys, asyncio, wave, threading, queue, time, shutil, glob, datetime, difflib
 from pathlib import Path
-import difflib
+from dotenv import load_dotenv; load_dotenv()
 
 # ---------- Azure OpenAI ----------
 from openai import AzureOpenAI
@@ -43,7 +42,7 @@ CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
 RESOURCE_ID   = os.getenv("RESOURCE_ID")
 COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
-STT_LANGUAGE  = os.getenv("STT_LANGUAGE", "en-US")  # NEW
+STT_LANGUAGE  = os.getenv("STT_LANGUAGE", "en-US")
 
 if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
     raise RuntimeError("Missing AAD Speech env vars")
@@ -125,14 +124,11 @@ SYSTEM_B = ("You are Agent B, a pragmatic strategist. "
 # - Thread reads stdin continuously.
 # - Supports:
 #    * `i your question here`  -> inject immediately
-#    * `i` (alone) -> NEW: starts Push-To-Talk STT, AND also arms typed next-line fallback
+#    * `i` (alone) -> Push-To-Talk STT AND also arms typed next-line fallback
 #    * `r` -> refresh background inbox immediately
-# - The loop checks for high-priority interrupts before each agent speaks and
-#   again between A and B (skips B if an interrupt arrives during A).
-
 _input_queue = queue.Queue()          # raw stdin lines
 interrupt_q: asyncio.Queue[str] = asyncio.Queue()  # async queue for loop
-admin_q: asyncio.Queue[str] = asyncio.Queue()      # NEW: admin signals like REFRESH
+admin_q: asyncio.Queue[str] = asyncio.Queue()      # admin signals like REFRESH
 awaiting_inline = False               # arm for "i" then next line
 INT_PREFIX = ("i ", "I ")
 
@@ -152,7 +148,7 @@ def _stdin_reader():
                 if msg:
                     _input_queue.put(("INT", msg))
                 continue
-            # arming: just "i" or "I" (now also triggers PTT)
+            # arming: just "i" or "I" (triggers PTT)
             if text.lower() == "i":
                 _input_queue.put(("ARM", None))
                 continue
@@ -166,11 +162,11 @@ def _stdin_reader():
             break
 
 async def _ptt_capture_once() -> str | None:
-    """Push-to-talk one-shot capture with verbose diagnostics."""
+    """Push-to-talk one-shot capture with verbose diagnostics (non-blocking)."""
     try:
         cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
         cfg.speech_recognition_language = STT_LANGUAGE
-        # tighter timeouts for snappier barge-in
+        # snappy timeouts for barge-in
         cfg.set_property(speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, "2000")
         cfg.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "500")
         audio = speechsdk.audio.AudioConfig(use_default_microphone=True)
@@ -193,20 +189,31 @@ async def _ptt_capture_once() -> str | None:
         rec.canceled.connect(_on_canceled)
 
         print("🎙️ Listening… (speak now)")
-        rec.start_continuous_recognition_async().get()
+        await asyncio.to_thread(rec.start_continuous_recognition_async().get)
 
-        # wait up to 12s for a final
+        # wait up to 12s for a final (non-blocking)
         t0 = time.time()
         while time.time() - t0 < 12:
             if final_text["t"]:
                 break
-            time.sleep(0.05)
+            await asyncio.sleep(0.05)
 
-        rec.stop_continuous_recognition_async().get()
+        await asyncio.to_thread(rec.stop_continuous_recognition_async().get)
         return final_text["t"]
     except Exception as e:
         print("⚠️ STT error:", e)
         return None
+
+async def _ptt_and_enqueue():
+    text = await _ptt_capture_once()
+    if text:
+        if len(text) < 2:
+            print("🫥 Ignored very short audio.")
+            return
+        await interrupt_q.put(text)
+        print(f"⏸️  Interrupt (voice) queued: {text}")
+    else:
+        print("🫤 No speech recognized (timeout or silence).")
 
 async def pump_interrupts():
     armed = False
@@ -214,11 +221,9 @@ async def pump_interrupts():
         try:
             typ, payload = _input_queue.get_nowait()
             if typ == "INT":
-                # immediate interrupt
                 await interrupt_q.put(payload)
                 print(f"⏸️  Interrupt queued: {payload}")
             elif typ == "ARM":
-                # start push-to-talk AND arm typed fallback
                 armed = True
                 print("🎙️  Interrupt mode armed. Speak now (PTT) or type your question…")
                 asyncio.create_task(_ptt_and_enqueue())
@@ -231,52 +236,33 @@ async def pump_interrupts():
                     await interrupt_q.put(payload)
                     print(f"⏸️  Interrupt queued: {payload}")
                 else:
-                    # normal text (used for initial context if not set yet)
                     await interrupt_q.put(("CTX:", payload))
-            # small yield
             await asyncio.sleep(0)
         except queue.Empty:
             await asyncio.sleep(0.03)
 
-async def _ptt_and_enqueue():
-    text = await _ptt_capture_once()
-    if text:
-        # tiny heuristic: ignore very short/noisy fragments
-        if len(text) < 2:
-            print("🫥 Ignored very short audio.")
-            return
-        await interrupt_q.put(text)
-        print(f"⏸️  Interrupt (voice) queued: {text}")
-    else:
-        print("🫤 No speech recognized (timeout or silence).")
-
 async def next_interrupt_nowait():
-    """Fetch one interrupt (that isn't a CTX or admin sentinel), if present."""
+    """Fetch one interrupt (that isn't a CTX/admin sentinel), if present."""
     try:
         item = interrupt_q.get_nowait()
-        # If it's tagged context ("CTX:", text), return a sentinel to the caller
         if isinstance(item, tuple) and item[0] == "CTX:":
-            # push back for context waiter to catch
             await interrupt_q.put(item)
             return None
         if isinstance(item, tuple):
-            # ignore unexpected tuples
             return None
         return item
     except asyncio.QueueEmpty:
         return None
 
 async def wait_for_context_blocking():
-    """Return the first context text available.
-    Accept either ('CTX:', text) or any plain str (e.g., PTT result) as context.
-    """
+    """Return the first context text available (typed or PTT)."""
     # Drain queue first
     while True:
         try:
             item = interrupt_q.get_nowait()
             if isinstance(item, tuple) and item[0] == "CTX:":
                 return item[1]
-            if isinstance(item, str):          # <— NEW: accept PTT/typed as context
+            if isinstance(item, str):
                 return item
         except asyncio.QueueEmpty:
             break
@@ -285,7 +271,7 @@ async def wait_for_context_blocking():
         item = await interrupt_q.get()
         if isinstance(item, tuple) and item[0] == "CTX:":
             return item[1]
-        if isinstance(item, str):              # <— NEW: accept PTT/typed as context
+        if isinstance(item, str):
             return item
 
 # ---------- Background inbox (deterministic, no watcher) ----------
@@ -324,9 +310,7 @@ def ingest_background(bg_chunks: list[str]) -> list[str]:
             ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             chunk = f"\n\n[Background file: {os.path.basename(fp)} @ {ts}]\n{content}\n"
             bg_chunks.append(chunk)
-            # move file to _processed
             dest = os.path.join(BACKGROUND_DIR, PROCESSED_SUB, os.path.basename(fp))
-            # if destination exists, add suffix
             if os.path.exists(dest):
                 base, ext = os.path.splitext(dest)
                 n = 1
@@ -338,7 +322,8 @@ def ingest_background(bg_chunks: list[str]) -> list[str]:
         except Exception as e:
             print(f"⚠️ Failed to ingest {fp}: {e}")
     return processed_names
-# ---------- File picker (ADD) ----------
+
+# ---------- File picker ----------
 ALLOWED_EXTS = {".txt", ".md", ".json", ".csv", ".yaml", ".yml"}
 
 def _list_candidate_files(base_dir: Path) -> list[Path]:
@@ -349,14 +334,12 @@ def _list_candidate_files(base_dir: Path) -> list[Path]:
     return files
 
 def _speak_menu(files: list[Path]) -> str:
-    # Build a short, speakable menu like: "1: data.txt; 2: notes.md; 3: report.json"
     items = [f"{idx+1}: {f.name}" for idx, f in enumerate(files[:10])]
     menu_line = "; ".join(items) if items else "No files found."
     return f"I found {len(files)} files. {menu_line}. Say the name or the number."
 
-async def _read_choice_from_user(timeout_sec: float = 15.0) -> str | None:
-    """Wait for a typed line OR a PTT interrupt string."""
-    # Prefer immediate PTT if already queued
+async def _read_choice_from_user(timeout_sec: float = 20.0) -> str | None:
+    # Prefer immediate queued items
     try:
         item = interrupt_q.get_nowait()
         if isinstance(item, tuple) and item[0] == "CTX:":
@@ -365,11 +348,8 @@ async def _read_choice_from_user(timeout_sec: float = 15.0) -> str | None:
             return item
     except asyncio.QueueEmpty:
         pass
-
-    # Then wait up to timeout for something
     end = time.time() + timeout_sec
     while time.time() < end:
-        # check PTT queue first
         try:
             item = interrupt_q.get_nowait()
             if isinstance(item, tuple) and item[0] == "CTX:":
@@ -378,7 +358,6 @@ async def _read_choice_from_user(timeout_sec: float = 15.0) -> str | None:
                 return item
         except asyncio.QueueEmpty:
             pass
-        # also check stdin without blocking (use the same input thread path)
         await asyncio.sleep(0.1)
     return None
 
@@ -386,17 +365,14 @@ def _best_file_match(spoken_or_typed: str, files: list[Path]) -> Path | None:
     s = spoken_or_typed.strip().lower()
     if not s or not files:
         return None
-    # 1) accept numbers: "1", "2", ...
     if s.isdigit():
         i = int(s) - 1
         if 0 <= i < len(files):
             return files[i]
-    # 2) try direct contains on filename (ignore extension)
     names = [f.stem.lower() for f in files]
     for f, stem in zip(files, names):
         if s in stem or s == f.name.lower():
             return f
-    # 3) fuzzy top match
     candidates = [f.name for f in files]
     got = difflib.get_close_matches(spoken_or_typed, candidates, n=1, cutoff=0.4)
     if got:
@@ -407,35 +383,25 @@ def _best_file_match(spoken_or_typed: str, files: list[Path]) -> Path | None:
     return None
 
 async def pick_file_context_or_none(base_dir: Path) -> tuple[str | None, Path | None]:
-    """
-    Enumerate files in base_dir; ask user to pick by voice (PTT 'i') or by typing.
-    Return (context_text, chosen_path) or (None, None) if nothing selected.
-    """
     files = _list_candidate_files(base_dir)
     if not files:
         print("📂 No candidate files in folder (txt/md/json/csv/yaml).")
         return None, None
-
-    # Speak & print the menu
     menu_line = _speak_menu(files)
-    print(f"📂 Files:\n  " + "\n  ".join(f"{i+1}. {p.name}" for i, p in enumerate(files)))
+    print("📂 Files:\n  " + "\n  ".join(f"{i+1}. {p.name}" for i, p in enumerate(files)))
     print("🎙️  Say the name/number with PTT (press 'i' then speak), or type it and press Enter.")
     try:
         local_speak(menu_line, VOICE_A)
     except Exception:
         pass
-
-    # Wait for choice
     choice = await _read_choice_from_user(timeout_sec=20.0)
     if not choice:
         print("⏳ No choice heard/typed. Skipping file pick.")
         return None, None
-
     picked = _best_file_match(choice, files)
     if not picked:
         print(f"❓ Couldn't match '{choice}' to a file. Skipping file pick.")
         return None, None
-
     try:
         text = picked.read_text(encoding="utf-8", errors="ignore")
         print(f"✅ Using file: {picked.name}  ({len(text)} chars)")
@@ -443,11 +409,12 @@ async def pick_file_context_or_none(base_dir: Path) -> tuple[str | None, Path | 
     except Exception as e:
         print(f"⚠️ Failed to read {picked}: {e}")
         return None, None
+
 # ---------- Main debate ----------
 async def run_with_saver():
     buffers: list[bytes] = []
     transcript: list[str] = []
-    bg_chunks: list[str] = []  # NEW: accumulated background context
+    bg_chunks: list[str] = []
 
     threading.Thread(target=_stdin_reader, daemon=True).start()
     asyncio.create_task(pump_interrupts())
@@ -467,27 +434,19 @@ async def run_with_saver():
     except Exception as e:
         print("⚠️ Greeting TTS error:", e)
     transcript.append(f"{AGENT_A}: {greet}")
-# === NEW: Offer file-pick first (voice or typed) ===
+
+    # === Context selection (file -> else paste/PTT) ===
     base_dir = Path(".").resolve()
     file_ctx, file_path = await pick_file_context_or_none(base_dir)
-
-    # If a file was chosen, use it as the starting context
     if file_ctx:
-        context = file_ctx
+        context_base = file_ctx
         print("📚 Context taken from file. Starting debate...\n")
     else:
-        # Fall back to your existing “paste or PTT” context flow
         print("📥 Paste your context and press Enter (or press 'i' then speak):")
-        context = await wait_for_context_blocking()
-        if not context:
-            context = "Sample context about your topic."
+        context_base = await wait_for_context_blocking()
+        if not context_base:
+            context_base = "Sample context about your topic."
         print("📚 Context captured. Starting debate...\n")
-    # Ask for context (blocking once)
-    print("📥 Paste your context and press Enter (or type normally without 'i'):")
-    context_base = await wait_for_context_blocking()
-    if not context_base:
-        context_base = "Sample context about your topic."
-    print("📚 Context captured. Starting debate...\n")
 
     # Warm-up
     warm = await llm(SYSTEM_B, "Agent A greeted the user; reply briefly and warmly, then say you're ready.")
@@ -502,7 +461,6 @@ async def run_with_saver():
         print("⚠️ Warm-up TTS error:", e)
     transcript.append(f"{AGENT_B}: {warm}")
 
-    # initial context (last user/context message)
     last = f"Context to discuss:\n{context_base}"
 
     try:
@@ -520,13 +478,13 @@ async def run_with_saver():
             except asyncio.QueueEmpty:
                 pass
 
-            # Also auto-ingest at A-turn boundary (deterministic, no watcher)
+            # Auto-ingest at A-turn boundary (deterministic)
             processed = ingest_background(bg_chunks)
             if processed:
                 print(f"📥 Ingested {len(processed)} background file(s): {processed}")
                 transcript.append(f"[Background ingested: {', '.join(processed)}]")
 
-            # Build a compact tail of background context (last 3 chunks, capped)
+            # Build compact tail of background context (last 3 chunks, capped)
             ctx_tail = ""
             if bg_chunks:
                 tail = "".join(bg_chunks[-3:])
@@ -605,3 +563,4 @@ async def run_with_saver():
 # ---------- Entry ----------
 if __name__ == "__main__":
     asyncio.run(run_with_saver())
+```0
