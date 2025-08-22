@@ -1,105 +1,15 @@
-# ---------- File picker (ADD) ----------
-ALLOWED_EXTS = {".txt", ".md", ".json", ".csv", ".yaml", ".yml"}
+# === NEW: Offer file-pick first (voice or typed) ===
+    base_dir = Path(".").resolve()
+    file_ctx, file_path = await pick_file_context_or_none(base_dir)
 
-def _list_candidate_files(base_dir: Path) -> list[Path]:
-    files = []
-    for p in sorted(base_dir.iterdir(), key=lambda x: x.name.lower()):
-        if p.is_file() and p.suffix.lower() in ALLOWED_EXTS:
-            files.append(p)
-    return files
-
-def _speak_menu(files: list[Path]) -> str:
-    # Build a short, speakable menu like: "1: data.txt; 2: notes.md; 3: report.json"
-    items = [f"{idx+1}: {f.name}" for idx, f in enumerate(files[:10])]
-    menu_line = "; ".join(items) if items else "No files found."
-    return f"I found {len(files)} files. {menu_line}. Say the name or the number."
-
-async def _read_choice_from_user(timeout_sec: float = 15.0) -> str | None:
-    """Wait for a typed line OR a PTT interrupt string."""
-    # Prefer immediate PTT if already queued
-    try:
-        item = interrupt_q.get_nowait()
-        if isinstance(item, tuple) and item[0] == "CTX:":
-            return item[1]
-        if isinstance(item, str):
-            return item
-    except asyncio.QueueEmpty:
-        pass
-
-    # Then wait up to timeout for something
-    end = time.time() + timeout_sec
-    while time.time() < end:
-        # check PTT queue first
-        try:
-            item = interrupt_q.get_nowait()
-            if isinstance(item, tuple) and item[0] == "CTX:":
-                return item[1]
-            if isinstance(item, str):
-                return item
-        except asyncio.QueueEmpty:
-            pass
-        # also check stdin without blocking (use the same input thread path)
-        await asyncio.sleep(0.1)
-    return None
-
-def _best_file_match(spoken_or_typed: str, files: list[Path]) -> Path | None:
-    s = spoken_or_typed.strip().lower()
-    if not s or not files:
-        return None
-    # 1) accept numbers: "1", "2", ...
-    if s.isdigit():
-        i = int(s) - 1
-        if 0 <= i < len(files):
-            return files[i]
-    # 2) try direct contains on filename (ignore extension)
-    names = [f.stem.lower() for f in files]
-    for f, stem in zip(files, names):
-        if s in stem or s == f.name.lower():
-            return f
-    # 3) fuzzy top match
-    candidates = [f.name for f in files]
-    got = difflib.get_close_matches(spoken_or_typed, candidates, n=1, cutoff=0.4)
-    if got:
-        name = got[0]
-        for f in files:
-            if f.name == name:
-                return f
-    return None
-
-async def pick_file_context_or_none(base_dir: Path) -> tuple[str | None, Path | None]:
-    """
-    Enumerate files in base_dir; ask user to pick by voice (PTT 'i') or by typing.
-    Return (context_text, chosen_path) or (None, None) if nothing selected.
-    """
-    files = _list_candidate_files(base_dir)
-    if not files:
-        print("📂 No candidate files in folder (txt/md/json/csv/yaml).")
-        return None, None
-
-    # Speak & print the menu
-    menu_line = _speak_menu(files)
-    print(f"📂 Files:\n  " + "\n  ".join(f"{i+1}. {p.name}" for i, p in enumerate(files)))
-    print("🎙️  Say the name/number with PTT (press 'i' then speak), or type it and press Enter.")
-    try:
-        local_speak(menu_line, VOICE_A)
-    except Exception:
-        pass
-
-    # Wait for choice
-    choice = await _read_choice_from_user(timeout_sec=20.0)
-    if not choice:
-        print("⏳ No choice heard/typed. Skipping file pick.")
-        return None, None
-
-    picked = _best_file_match(choice, files)
-    if not picked:
-        print(f"❓ Couldn't match '{choice}' to a file. Skipping file pick.")
-        return None, None
-
-    try:
-        text = picked.read_text(encoding="utf-8", errors="ignore")
-        print(f"✅ Using file: {picked.name}  ({len(text)} chars)")
-        return text, picked
-    except Exception as e:
-        print(f"⚠️ Failed to read {picked}: {e}")
-        return None, None
+    # If a file was chosen, use it as the starting context
+    if file_ctx:
+        context = file_ctx
+        print("📚 Context taken from file. Starting debate...\n")
+    else:
+        # Fall back to your existing “paste or PTT” context flow
+        print("📥 Paste your context and press Enter (or press 'i' then speak):")
+        context = await wait_for_context_blocking()
+        if not context:
+            context = "Sample context about your topic."
+        print("📚 Context captured. Starting debate...\n")
