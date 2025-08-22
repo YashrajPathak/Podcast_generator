@@ -1,8 +1,8 @@
-# two_agents_livekit_local.py — interrupt-immediate + push-to-talk + background inbox + file-pick (additive)
+# two_agents_livekit_local.py — interrupt-immediate + PTT + tools+RAG + diarized + barge-in cancel (ADDITIVE)
 # Azure OpenAI (LLM) + Azure Speech (AAD) + optional LiveKit
 # pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv livekit
 
-import os, sys, asyncio, wave, threading, queue, time, shutil, glob, datetime, difflib
+import os, sys, asyncio, wave, threading, queue, time, shutil, glob, datetime, json, difflib
 from pathlib import Path
 from dotenv import load_dotenv; load_dotenv()
 
@@ -42,7 +42,7 @@ CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
 RESOURCE_ID   = os.getenv("RESOURCE_ID")
 COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
-STT_LANGUAGE  = os.getenv("STT_LANGUAGE", "en-US")
+STT_LANGUAGE  = os.getenv("STT_LANGUAGE", "en-US")  # NEW
 
 if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
     raise RuntimeError("Missing AAD Speech env vars")
@@ -65,14 +65,32 @@ def tts_get_pcm(text: str, voice: str) -> bytes:
         raise RuntimeError(f"TTS failed: {res.reason}")
     return res.audio_data
 
+# === NEW: local speak with cancel support (barge-in) ===
+_current_synth_lock = threading.Lock()
+_current_synth: speechsdk.SpeechSynthesizer | None = None
+
 def local_speak(text: str, voice: str):
+    global _current_synth
     cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
     cfg.speech_synthesis_voice_name = voice
     out = speechsdk.audio.AudioOutputConfig(use_default_speaker=True)
     syn = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=out)
+    with _current_synth_lock:
+        _current_synth = syn
     res = syn.speak_text_async(text).get()
+    with _current_synth_lock:
+        _current_synth = None
     if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
         print("⚠️ Local speak failed:", res.reason)
+
+def cancel_speaking():
+    global _current_synth
+    with _current_synth_lock:
+        if _current_synth is not None:
+            try:
+                _current_synth.stop_speaking_async().get()
+            except Exception:
+                pass
 
 # ---------- Optional LiveKit ----------
 from livekit import rtc
@@ -124,12 +142,13 @@ SYSTEM_B = ("You are Agent B, a pragmatic strategist. "
 # - Thread reads stdin continuously.
 # - Supports:
 #    * `i your question here`  -> inject immediately
-#    * `i` (alone) -> Push-To-Talk STT AND also arms typed next-line fallback
+#    * `i` (alone) then speak (PTT) OR type next line (fallback)
 #    * `r` -> refresh background inbox immediately
+
 _input_queue = queue.Queue()          # raw stdin lines
-interrupt_q: asyncio.Queue[str] = asyncio.Queue()  # async queue for loop
+interrupt_q: asyncio.Queue[str] = asyncio.Queue()  # async user interrupts
 admin_q: asyncio.Queue[str] = asyncio.Queue()      # admin signals like REFRESH
-awaiting_inline = False               # arm for "i" then next line
+awaiting_inline = False
 INT_PREFIX = ("i ", "I ")
 
 def _stdin_reader():
@@ -142,31 +161,25 @@ def _stdin_reader():
             text = line.strip()
             if not text:
                 continue
-            # inline: "i your message..."
             if text.startswith(INT_PREFIX):
                 msg = text[2:].strip()
                 if msg:
                     _input_queue.put(("INT", msg))
                 continue
-            # arming: just "i" or "I" (triggers PTT)
             if text.lower() == "i":
                 _input_queue.put(("ARM", None))
                 continue
-            # refresh
             if text.lower() == "r":
                 _input_queue.put(("REFRESH", None))
                 continue
-            # normal line
             _input_queue.put(("TXT", text))
         except Exception:
             break
 
 async def _ptt_capture_once() -> str | None:
-    """Push-to-talk one-shot capture with verbose diagnostics (non-blocking)."""
     try:
         cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
         cfg.speech_recognition_language = STT_LANGUAGE
-        # snappy timeouts for barge-in
         cfg.set_property(speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, "2000")
         cfg.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "500")
         audio = speechsdk.audio.AudioConfig(use_default_microphone=True)
@@ -189,16 +202,15 @@ async def _ptt_capture_once() -> str | None:
         rec.canceled.connect(_on_canceled)
 
         print("🎙️ Listening… (speak now)")
-        await asyncio.to_thread(rec.start_continuous_recognition_async().get)
+        rec.start_continuous_recognition_async().get()
 
-        # wait up to 12s for a final (non-blocking)
         t0 = time.time()
         while time.time() - t0 < 12:
             if final_text["t"]:
                 break
-            await asyncio.sleep(0.05)
+            time.sleep(0.05)
 
-        await asyncio.to_thread(rec.stop_continuous_recognition_async().get)
+        rec.stop_continuous_recognition_async().get()
         return final_text["t"]
     except Exception as e:
         print("⚠️ STT error:", e)
@@ -221,9 +233,11 @@ async def pump_interrupts():
         try:
             typ, payload = _input_queue.get_nowait()
             if typ == "INT":
+                cancel_speaking()  # NEW: barge-in cancel
                 await interrupt_q.put(payload)
                 print(f"⏸️  Interrupt queued: {payload}")
             elif typ == "ARM":
+                cancel_speaking()  # NEW: barge-in cancel
                 armed = True
                 print("🎙️  Interrupt mode armed. Speak now (PTT) or type your question…")
                 asyncio.create_task(_ptt_and_enqueue())
@@ -233,6 +247,7 @@ async def pump_interrupts():
             elif typ == "TXT":
                 if armed:
                     armed = False
+                    cancel_speaking()  # NEW: barge-in cancel
                     await interrupt_q.put(payload)
                     print(f"⏸️  Interrupt queued: {payload}")
                 else:
@@ -242,7 +257,6 @@ async def pump_interrupts():
             await asyncio.sleep(0.03)
 
 async def next_interrupt_nowait():
-    """Fetch one interrupt (that isn't a CTX/admin sentinel), if present."""
     try:
         item = interrupt_q.get_nowait()
         if isinstance(item, tuple) and item[0] == "CTX:":
@@ -255,8 +269,6 @@ async def next_interrupt_nowait():
         return None
 
 async def wait_for_context_blocking():
-    """Return the first context text available (typed or PTT)."""
-    # Drain queue first
     while True:
         try:
             item = interrupt_q.get_nowait()
@@ -266,7 +278,6 @@ async def wait_for_context_blocking():
                 return item
         except asyncio.QueueEmpty:
             break
-    # Wait for next
     while True:
         item = await interrupt_q.get()
         if isinstance(item, tuple) and item[0] == "CTX:":
@@ -286,11 +297,6 @@ def _ensure_dirs():
         print("⚠️ Could not create background dirs:", e)
 
 def ingest_background(bg_chunks: list[str]) -> list[str]:
-    """
-    Scan BACKGROUND_DIR for new .txt/.md/.json files, append contents to bg_chunks,
-    and move files into _processed/.
-    Returns list of filenames ingested (for logging).
-    """
     _ensure_dirs()
     patterns = [os.path.join(BACKGROUND_DIR, "*.txt"),
                 os.path.join(BACKGROUND_DIR, "*.md"),
@@ -301,7 +307,6 @@ def ingest_background(bg_chunks: list[str]) -> list[str]:
     files = [f for f in files if os.path.isfile(f)]
     if not files:
         return []
-
     processed_names = []
     for fp in sorted(files):
         try:
@@ -312,8 +317,7 @@ def ingest_background(bg_chunks: list[str]) -> list[str]:
             bg_chunks.append(chunk)
             dest = os.path.join(BACKGROUND_DIR, PROCESSED_SUB, os.path.basename(fp))
             if os.path.exists(dest):
-                base, ext = os.path.splitext(dest)
-                n = 1
+                base, ext = os.path.splitext(dest); n = 1
                 while os.path.exists(f"{base}_{n}{ext}"):
                     n += 1
                 dest = f"{base}_{n}{ext}"
@@ -323,7 +327,7 @@ def ingest_background(bg_chunks: list[str]) -> list[str]:
             print(f"⚠️ Failed to ingest {fp}: {e}")
     return processed_names
 
-# ---------- File picker ----------
+# ---------- File picker (voice/typed) ----------
 ALLOWED_EXTS = {".txt", ".md", ".json", ".csv", ".yaml", ".yml"}
 
 def _list_candidate_files(base_dir: Path) -> list[Path]:
@@ -339,7 +343,6 @@ def _speak_menu(files: list[Path]) -> str:
     return f"I found {len(files)} files. {menu_line}. Say the name or the number."
 
 async def _read_choice_from_user(timeout_sec: float = 20.0) -> str | None:
-    # Prefer immediate queued items
     try:
         item = interrupt_q.get_nowait()
         if isinstance(item, tuple) and item[0] == "CTX:":
@@ -388,7 +391,7 @@ async def pick_file_context_or_none(base_dir: Path) -> tuple[str | None, Path | 
         print("📂 No candidate files in folder (txt/md/json/csv/yaml).")
         return None, None
     menu_line = _speak_menu(files)
-    print("📂 Files:\n  " + "\n  ".join(f"{i+1}. {p.name}" for i, p in enumerate(files)))
+    print(f"📂 Files:\n  " + "\n  ".join(f"{i+1}. {p.name}" for i, p in enumerate(files)))
     print("🎙️  Say the name/number with PTT (press 'i' then speak), or type it and press Enter.")
     try:
         local_speak(menu_line, VOICE_A)
@@ -410,6 +413,219 @@ async def pick_file_context_or_none(base_dir: Path) -> tuple[str | None, Path | 
         print(f"⚠️ Failed to read {picked}: {e}")
         return None, None
 
+# ---------- RAG index (very simple keyword scoring; no extra deps) ----------
+RAG_DIR = Path(os.getenv("RAG_DIR", "rag")).resolve()
+RAG_MAX_FILES = int(os.getenv("RAG_MAX_FILES", "200"))
+RAG_SNIPPET_CHARS = 280
+
+def _load_rag_corpus() -> list[tuple[Path, str]]:
+    corpus = []
+    if not RAG_DIR.exists():
+        return corpus
+    for p in sorted(RAG_DIR.rglob("*")):
+        if len(corpus) >= RAG_MAX_FILES: break
+        if p.is_file() and p.suffix.lower() in {".txt",".md",".json",".csv",".yaml",".yml"}:
+            try:
+                corpus.append((p, p.read_text(encoding="utf-8", errors="ignore")))
+            except Exception:
+                pass
+    return corpus
+
+def _score_doc(text: str, query: str) -> int:
+    # dumb bag-of-words intersection score
+    q = [w.lower() for w in query.split() if len(w) > 2]
+    t = text.lower()
+    return sum(t.count(w) for w in q)
+
+def rag_search(query: str, top_k: int = 4) -> list[dict]:
+    corpus = _load_rag_corpus()
+    scored = []
+    for p, txt in corpus:
+        s = _score_doc(txt, query)
+        if s > 0:
+            scored.append((s, p, txt))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    out = []
+    for s, p, txt in scored[:top_k]:
+        # take first matching window
+        q = query.split()
+        idx = 0
+        for w in q:
+            pos = txt.lower().find(w.lower())
+            if pos >= 0:
+                idx = pos; break
+        start = max(0, idx - RAG_SNIPPET_CHARS//2)
+        end   = min(len(txt), start + RAG_SNIPPET_CHARS)
+        snippet = txt[start:end].replace("\n"," ").strip()
+        out.append({"path": str(p), "score": int(s), "snippet": snippet})
+    return out
+
+# ---------- Tool registry + function-calling ----------
+# We keep your llm() untouched; these are new helpers for tool-aware replies when needed.
+
+NOTES_FILE = Path(os.getenv("NOTES_FILE", "notes.txt")).resolve()
+
+def tool_search_docs(query: str) -> dict:
+    results = rag_search(query, top_k=5)
+    return {"results": results}
+
+def tool_mark_in_data(query: str) -> dict:
+    # Scan RAG corpus and return file + line numbers where query occurs
+    hits = []
+    corpus = _load_rag_corpus()
+    ql = query.lower()
+    for p, txt in corpus:
+        lines = txt.splitlines()
+        for i, line in enumerate(lines, start=1):
+            if ql in line.lower():
+                hits.append({"path": str(p), "line": i, "text": line.strip()})
+    return {"matches": hits[:100]}
+
+def tool_append_note(text: str) -> dict:
+    try:
+        ts = datetime.datetime.now().isoformat()
+        with NOTES_FILE.open("a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {text}\n")
+        return {"ok": True, "path": str(NOTES_FILE)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def safe_calc(expr: str) -> dict:
+    # extremely restricted eval (numbers + +-*/().)
+    allowed = set("0123456789+-*/(). %")
+    if not set(expr) <= allowed:
+        return {"error": "disallowed characters"}
+    try:
+        val = eval(expr, {"__builtins__": {}}, {})
+        return {"result": val}
+    except Exception as e:
+        return {"error": str(e)}
+
+TOOLS_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_docs",
+            "description": "Search local document corpus for relevant snippets.",
+            "parameters": {
+                "type": "object",
+                "properties": { "query": {"type":"string"} },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mark_in_data",
+            "description": "Find exact lines in local corpus that contain the query.",
+            "parameters": {
+                "type": "object",
+                "properties": { "query": {"type":"string"} },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "append_note",
+            "description": "Append a note to a local notes.txt file.",
+            "parameters": {
+                "type": "object",
+                "properties": { "text": {"type":"string"} },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "math_calc",
+            "description": "Do a quick arithmetic calculation.",
+            "parameters": {
+                "type": "object",
+                "properties": { "expr": {"type":"string"} },
+                "required": ["expr"]
+            }
+        }
+    },
+]
+
+def _call_tool(name: str, args: dict) -> dict:
+    if name == "search_docs":
+        return tool_search_docs(args.get("query",""))
+    if name == "mark_in_data":
+        return tool_mark_in_data(args.get("query",""))
+    if name == "append_note":
+        return tool_append_note(args.get("text",""))
+    if name == "math_calc":
+        return safe_calc(args.get("expr",""))
+    return {"error": f"unknown tool {name}"}
+
+def llm_tool_sync(panel_prompt: str, msg: str) -> str:
+    # 1st call: allow tools
+    r = oai.chat.completions.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        messages=[{"role":"system","content":panel_prompt},
+                  {"role":"user","content":msg}],
+        tools=TOOLS_SCHEMA,
+        tool_choice="auto",
+        max_tokens=300, temperature=0.7
+    )
+    choice = r.choices[0]
+    tool_calls = getattr(choice.message, "tool_calls", None)
+    if tool_calls:
+        outputs = []
+        for tc in tool_calls:
+            fn = tc.function
+            name = fn.name
+            try:
+                args = json.loads(fn.arguments or "{}")
+            except Exception:
+                args = {}
+            result = _call_tool(name, args)
+            outputs.append({
+                "tool_call_id": tc.id,
+                "name": name,
+                "content": json.dumps(result, ensure_ascii=False)
+            })
+        # 2nd call: return assistant reasoning with tool results
+        msgs = [
+            {"role":"system","content":panel_prompt},
+            {"role":"user","content":msg},
+        ]
+        for out in outputs:
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": out["tool_call_id"],
+                "name": out["name"],
+                "content": out["content"]
+            })
+        r2 = oai.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=msgs,
+            max_tokens=350, temperature=0.7
+        )
+        return (r2.choices[0].message.content or "").strip()
+    else:
+        return (choice.message.content or "").strip()
+
+async def llm_tool(panel_prompt: str, msg: str) -> str:
+    return await asyncio.to_thread(llm_tool_sync, panel_prompt, msg)
+
+# ---------- Diarized transcript helpers ----------
+TRANSCRIPT_JSONL = Path("podcast.jsonl").resolve()
+
+def _log_entry(role: str, text: str):
+    entry = {
+        "ts": datetime.datetime.now().isoformat(),
+        "role": role,
+        "text": text
+    }
+    with open(TRANSCRIPT_JSONL, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
 # ---------- Main debate ----------
 async def run_with_saver():
     buffers: list[bytes] = []
@@ -425,6 +641,7 @@ async def run_with_saver():
     # Greeting (spoken immediately)
     greet = "Hi Yashraj, how are you? Ready to listen to a debate on any topic or data? Just paste it below."
     print(f"\n🟦 {AGENT_A} (greeting): {greet}\n")
+    _log_entry(AGENT_A, greet)
     local_speak(greet, VOICE_A)
     try:
         pcm = tts_get_pcm(greet, VOICE_A)
@@ -435,7 +652,7 @@ async def run_with_saver():
         print("⚠️ Greeting TTS error:", e)
     transcript.append(f"{AGENT_A}: {greet}")
 
-    # === Context selection (file -> else paste/PTT) ===
+    # Offer file-pick first
     base_dir = Path(".").resolve()
     file_ctx, file_path = await pick_file_context_or_none(base_dir)
     if file_ctx:
@@ -451,6 +668,7 @@ async def run_with_saver():
     # Warm-up
     warm = await llm(SYSTEM_B, "Agent A greeted the user; reply briefly and warmly, then say you're ready.")
     print(f"🟩 {AGENT_B}: {warm}\n")
+    _log_entry(AGENT_B, warm)
     local_speak(warm, VOICE_B)
     try:
         pcm = tts_get_pcm(warm, VOICE_B)
@@ -473,35 +691,37 @@ async def run_with_saver():
                     if processed:
                         print(f"📥 Ingested {len(processed)} background file(s): {processed}")
                         transcript.append(f"[Background ingested: {', '.join(processed)}]")
+                        _log_entry("system", f"background_ingested: {processed}")
                     else:
                         print("📭 No new background files found.")
             except asyncio.QueueEmpty:
                 pass
 
-            # Auto-ingest at A-turn boundary (deterministic)
+            # Auto-ingest at A-turn boundary
             processed = ingest_background(bg_chunks)
             if processed:
                 print(f"📥 Ingested {len(processed)} background file(s): {processed}")
                 transcript.append(f"[Background ingested: {', '.join(processed)}]")
+                _log_entry("system", f"background_ingested: {processed}")
 
-            # Build compact tail of background context (last 3 chunks, capped)
+            # Build compact tail of background context
             ctx_tail = ""
             if bg_chunks:
                 tail = "".join(bg_chunks[-3:])
                 ctx_tail = tail[-2000:] if len(tail) > 2000 else tail
 
-            # Priority: apply interrupt before A speaks
+            # Priority: apply interrupt before A
             intr = await next_interrupt_nowait()
             if intr:
                 print(f"🧑‍💬 You: {intr}")
+                _log_entry("User", intr)
                 last = f"User interruption: {intr}"
 
-            # A speaks
-            a_in = last
-            if ctx_tail:
-                a_in = f"{a_in}\n\n(Reference docs)\n{ctx_tail}"
-            a_out = await llm(SYSTEM_A, a_in)
+            # Agent A (tool-aware)
+            a_in = last + (f"\n\n(Reference docs)\n{ctx_tail}" if ctx_tail else "")
+            a_out = await llm_tool(SYSTEM_A, a_in)
             print(f"\n🟦 {AGENT_A}: {a_out}\n")
+            _log_entry(AGENT_A, a_out)
             local_speak(a_out, VOICE_A)
             try:
                 pcm = tts_get_pcm(a_out, VOICE_A)
@@ -512,19 +732,21 @@ async def run_with_saver():
                 print("⚠️ TTS A error:", e)
             transcript.append(f"{AGENT_A}: {a_out}")
 
-            # Check interrupt again BEFORE B; if present, skip B and handle immediately next loop
+            # Check interrupt again BEFORE B; if present, skip B
             intr = await next_interrupt_nowait()
             if intr:
                 print(f"🧑‍💬 You: {intr}")
+                _log_entry("User", intr)
                 last = f"User interruption: {intr}"
                 continue
 
-            # B speaks
+            # Agent B (tool-aware)
             b_in = f"{AGENT_A} said: {a_out}\nOriginal context (for reference):\n{context_base[:1500]}"
             if ctx_tail:
                 b_in += f"\n\n(Reference docs)\n{ctx_tail}"
-            b_out = await llm(SYSTEM_B, b_in)
+            b_out = await llm_tool(SYSTEM_B, b_in)
             print(f"\n🟩 {AGENT_B}: {b_out}\n")
+            _log_entry(AGENT_B, b_out)
             local_speak(b_out, VOICE_B)
             try:
                 pcm = tts_get_pcm(b_out, VOICE_B)
@@ -540,12 +762,10 @@ async def run_with_saver():
     except KeyboardInterrupt:
         print("\n⏹️ Debate stopped, saving podcast...")
 
-        # Save transcript
         with open("podcast.txt", "w", encoding="utf-8") as f:
             f.write("🎙️ Podcast Transcript\n\n")
             f.write("\n".join(transcript))
 
-        # Save audio
         pcm_all = b"".join(buffers)
         with wave.open("podcast.wav", "wb") as wf:
             wf.setnchannels(1)
@@ -553,7 +773,7 @@ async def run_with_saver():
             wf.setframerate(SAMPLE_RATE)
             wf.writeframes(pcm_all)
 
-        print("✅ Saved podcast.wav and podcast.txt")
+        print("✅ Saved podcast.wav, podcast.txt, and podcast.jsonl")
         try:
             if connected:
                 await room.disconnect()
@@ -563,4 +783,3 @@ async def run_with_saver():
 # ---------- Entry ----------
 if __name__ == "__main__":
     asyncio.run(run_with_saver())
-```0
