@@ -1,75 +1,79 @@
-def llm_tool_sync(panel_prompt: str, msg: str) -> str:
-    # 1) First call: allow tools
-    r = oai.chat.completions.create(
-        model=AZURE_OPENAI_DEPLOYMENT,
-        messages=[
-            {"role": "system", "content": panel_prompt},
-            {"role": "user",   "content": msg},
-        ],
-        tools=TOOLS_SCHEMA,
-        tool_choice="auto",
-        max_tokens=300,
-        temperature=0.7,
-    )
+ LiveKit: local-only mode (no server connection).
 
-    choice = r.choices[0]
-    assistant_msg = choice.message
-    tool_calls = getattr(assistant_msg, "tool_calls", None)
+🟦 Agent A (greeting): Hi Yashraj, how are you? Ready to listen to a debate on any topic or data? Ju st paste it below.
 
-    # If the assistant decided to use tools
-    if tool_calls:
-        # 1a) Execute each tool
-        tool_outputs = []
-        for tc in tool_calls:
-            fn = tc.function
-            name = fn.name
-            try:
-                args = json.loads(fn.arguments or "{}")
-            except Exception:
-                args = {}
-            result = _call_tool(name, args)
-            tool_outputs.append((tc.id, name, result, fn.arguments))
+📂 Files:
+  1. data.json
+  2. podcast_script.txt
+  3. requirements.txt  
+🎙️  Say the name/number with PTT (press 'i' then speak), or type it and press Enter.
+i
+🎙️  Interrupt mode armed. Speak now (PTT) or type your question…
+🎙️ Listening… (speak now)
+✅ final: 
+🎧 partial: data
+✅ final: Data.
+⏸️  Interrupt (voice) queued: Data.
+✅ Using file: data.json  (2314 chars)
+📚 Context taken from file. Starting debate...
 
-        # 1b) Build the follow-up message list in the **required order**:
-        # system, user, assistant(with tool_calls), tool, tool, ...
-        msgs = [
-            {"role": "system", "content": panel_prompt},
-            {"role": "user",   "content": msg},
-            {
-                "role": "assistant",
-                "content": assistant_msg.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments or "{}",
-                        },
-                    }
-                    for tc in tool_calls
-                ],
-            },
-        ]
+🟩 Agent B: Hello there! It's great to have you with us. I'm ready to dive in whenever you are.
 
-        for tool_call_id, name, result, _raw_args in tool_outputs:
-            msgs.append({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "name": name,
-                "content": json.dumps(result, ensure_ascii=False),
-            })
 
-        # 2) Second call: resolve with tool results (no new tool calls needed here)
-        r2 = oai.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
-            messages=msgs,
-            max_tokens=350,
-            temperature=0.7,
-            # Optional: explicitly forbid new tools now
-            tool_choice="none",
-        )
-        return (r2.choices[0].message.content or "").strip()
+🟦 Agent A: The data provides an overview of statistics from 2022 to 2025, with a focus on weekly da ta points. In 2025, the year-to-date sum is notably lower co
+mpared to 2024, indicating a decrease in activity or values. The month-over-month change shows a significant drop of 42.6%.
 
-    # No tools used—return the assistant content from the first call
-    return (assistant_msg.content or "").strip()
+What factors might be contributing to the declining values from 2024 to 2025, particularly in February?
+
+i
+🎙️  Interrupt mode armed. Speak now (PTT) or type your question…
+🎙️ Listening… (speak now)
+✅ final: 
+🎧 partial: mark
+🎧 partial: mark data latency
+✅ final: Mark data latency.
+⏸️  Interrupt (voice) queued: Mark data latency.
+
+🟩 Agent B: Several factors could be contributing to the decline from 2024 to 2025, particularly in  February. The reduction in year-to-date values and the signi
+ficant month-over-month drop suggest external influences, such as economic downturns, policy changes, or seasonal variations. To gain a clearer understanding, we should investigate external events or changes that occurred during this period. Let's start by searching for notable events or policy changes between 2024 and 2025 that might have impacted these values.
+
+🧑‍💬 You: Mark data latency.
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\lk3.py", line 813, in <module>
+    asyncio.run(run_with_saver())
+  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\lk3.py", line 750, in run_with_saver
+    a_out = await llm_tool(SYSTEM_A, a_in)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\lk3.py", line 643, in llm_tool
+    return await asyncio.to_thread(llm_tool_sync, panel_prompt, msg)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python311\Lib\asyncio\threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python311\Lib\concurrent\futures\thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\lk3.py", line 629, in llm_tool_sync
+    r2 = oai.chat.completions.create(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\openai\_utils\_utils.py", line 287, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\openai\resources\chat\completions\completions.py", line 1150, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\openai\_base_client.py", line 1259, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\openai\_base_client.py", line 1047, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'message': "Invalid value for 'tool_choice': 'tool_choice' is only allowed when 'tools' are specified.", 'type': 'invalid_request_error', 'param': 'tool_choice', 'code': None}}
