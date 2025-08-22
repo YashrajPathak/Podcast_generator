@@ -41,6 +41,7 @@ CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
 RESOURCE_ID   = os.getenv("RESOURCE_ID")
 COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
+STT_LANGUAGE  = os.getenv("STT_LANGUAGE", "en-US")  # <-- NEW (optional)
 
 if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
     raise RuntimeError("Missing AAD Speech env vars")
@@ -216,6 +217,83 @@ async def wait_for_context_blocking():
         if isinstance(item, str):
             await interrupt_q.put(item)
 
+# ================== NEW: Mic STT (Azure) ==================
+# Continuous recognition using AAD (no speech key)
+_stt_recognizer = None
+
+def _start_mic_stt():
+    global _stt_recognizer
+    try:
+        cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
+        cfg.speech_recognition_language = STT_LANGUAGE
+        audio = speechsdk.audio.AudioConfig(use_default_microphone=True)
+        rec = speechsdk.SpeechRecognizer(speech_config=cfg, audio_config=audio)
+        _stt_recognizer = rec
+
+        def _on_recognized(evt):
+            try:
+                if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
+                    text = (evt.result.text or "").strip()
+                    if text:
+                        # push as immediate interrupt
+                        asyncio.run_coroutine_threadsafe(interrupt_q.put(text), asyncio.get_event_loop())
+                        print(f"🎤 Mic interrupt: {text}")
+            except Exception:
+                pass
+
+        rec.recognized.connect(_on_recognized)
+        rec.start_continuous_recognition()
+
+        # Token refresh loop in background
+        def _refresh_loop():
+            while True:
+                try:
+                    tok = cog_token_str()
+                    rec.authorization_token = tok
+                except Exception as e:
+                    print("⚠️ STT token refresh failed:", e)
+                time.sleep(9 * 60)  # refresh about every 9 minutes
+
+        threading.Thread(target=_refresh_loop, daemon=True).start()
+        print(f"🎧 Azure STT mic running (lang={STT_LANGUAGE})")
+    except Exception as e:
+        print("⚠️ Could not start Azure STT mic:", e)
+
+# ================== NEW: Simple folder watcher (./inputs) ==================
+_inputs_seen = {}
+INPUT_DIR = os.getenv("INPUT_DIR", "inputs")
+
+def _start_folder_watcher():
+    os.makedirs(INPUT_DIR, exist_ok=True)
+    def _loop():
+        while True:
+            try:
+                for name in os.listdir(INPUT_DIR):
+                    if not name.lower().endswith(".txt"):
+                        continue
+                    path = os.path.join(INPUT_DIR, name)
+                    try:
+                        mtime = os.path.getmtime(path)
+                    except Exception:
+                        continue
+                    prev = _inputs_seen.get(path)
+                    if prev is None or mtime > prev:
+                        _inputs_seen[path] = mtime
+                        # read content
+                        try:
+                            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                                content = f.read().strip()
+                            if content:
+                                asyncio.run_coroutine_threadsafe(interrupt_q.put(content), asyncio.get_event_loop())
+                                print(f"📄 File interrupt from {name}: {content[:80]}{'...' if len(content)>80 else ''}")
+                        except Exception as e:
+                            print("⚠️ File read error:", e)
+                time.sleep(1.0)
+            except Exception:
+                time.sleep(1.0)
+    threading.Thread(target=_loop, daemon=True).start()
+    print(f"📂 Watching folder: ./{INPUT_DIR} for *.txt")
+
 # ---------- Main debate ----------
 async def run_with_saver():
     buffers: list[bytes] = []
@@ -223,6 +301,10 @@ async def run_with_saver():
 
     threading.Thread(target=_stdin_reader, daemon=True).start()
     asyncio.create_task(pump_interrupts())
+
+    # NEW: start mic STT + folder watcher
+    _start_mic_stt()
+    _start_folder_watcher()
 
     room = rtc.Room()
     connected = await lk_connect(room)
