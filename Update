@@ -1,7 +1,7 @@
 # podcast_professional.py — Enhanced professional podcast with Azure OpenAI + Azure Speech
 # pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
 
-import os, sys, re, math, wave, json, tempfile, asyncio, datetime, shutil, atexit
+import os, sys, re, math, wave, json, tempfile, asyncio, datetime, shutil, atexit, random
 from pathlib import Path
 from dotenv import load_dotenv; load_dotenv()
 
@@ -232,35 +232,53 @@ def add_silence(duration_ms: int = 300) -> str:
         w.writeframes(b'\x00' * frames * 2)  # 16-bit samples
     return p
 
-def generate_theme_music(duration: float = 15.0) -> str:
-    """Generate simple theme music (in a real scenario, you'd use a pre-composed track)"""
-    # Create a more musical sequence than a simple tone
-    fd, p = tempfile.mkstemp(prefix="music_", suffix=".wav"); os.close(fd)
+def create_futuristic_sweep(duration: float = 3.0) -> str:
+    """Create a futuristic rising sweep sound for intro"""
+    import struct
+    fd, p = tempfile.mkstemp(prefix="sweep_", suffix=".wav"); os.close(fd)
     temp_files.append(p)
     
-    import struct
     rate = 24000
     n = int(duration * rate)
     frames = bytearray()
     
-    # Create a simple chord progression
     for i in range(n):
-        # Basic chord progression: C -> G -> Am -> F
+        # Exponential frequency rise from 100Hz to 1000Hz
         progress = i / n
-        if progress < 0.25:
-            freq = 262  # C
-        elif progress < 0.5:
-            freq = 392  # G
-        elif progress < 0.75:
-            freq = 440  # A
-        else:
-            freq = 349  # F
-            
-        # Add some harmonics for a richer sound
-        samp = int(0.08 * 32767.0 * (
-            math.sin(2 * math.pi * freq * (i / rate)) +
-            0.5 * math.sin(2 * math.pi * freq * 2 * (i / rate)) +
-            0.3 * math.sin(2 * math.pi * freq * 3 * (i / rate))
+        freq = 100 + 900 * (1 - math.exp(-5 * progress))
+        
+        # Add some modulation for a more interesting sound
+        mod = 0.7 * math.sin(2 * math.pi * 5 * progress)
+        samp = int(0.15 * 32767.0 * math.sin(2 * math.pi * freq * (i / rate) + mod))
+        frames += struct.pack('<h', samp)
+    
+    with wave.open(p, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes(frames)
+    
+    return p
+
+def create_data_pulse(duration: float = 2.5) -> str:
+    """Create a data transmission pulse sound for outro"""
+    import struct
+    fd, p = tempfile.mkstemp(prefix="pulse_", suffix=".wav"); os.close(fd)
+    temp_files.append(p)
+    
+    rate = 24000
+    n = int(duration * rate)
+    frames = bytearray()
+    
+    for i in range(n):
+        progress = i / n
+        # Create a pulsing effect with multiple frequencies
+        base_freq = 300
+        pulse = math.exp(-10 * (progress - 0.5)**2)  # Gaussian pulse shape
+        
+        # Multiple harmonics for a data transmission sound
+        samp = int(0.2 * 32767.0 * pulse * (
+            math.sin(2 * math.pi * base_freq * (i / rate)) +
+            0.6 * math.sin(2 * math.pi * base_freq * 1.5 * (i / rate)) +
+            0.3 * math.sin(2 * math.pi * base_freq * 2.5 * (i / rate))
         ))
         frames += struct.pack('<h', samp)
     
@@ -418,23 +436,48 @@ def setup_output_directory():
     return output_dir
 
 # ========== Enhanced Podcast Features ==========
-def create_professional_intro(title: str, theme: str) -> str:
-    """Generate a professional podcast introduction"""
-    return f"Welcome to {title}, where we {theme}. I'm your data analyst, and today we're joined by our strategy expert to break down the latest metrics."
-
-def create_professional_outro(title: str) -> str:
-    """Generate a professional podcast outro"""
-    return f"That concludes today's episode of {title}. For more insights, subscribe to our channel. Until next time, keep your data organized and your strategies sharp."
-
-def add_audio_effects(segments: list, intro_duration: float = 20.0, outro_duration: float = 25.0):
-    """Add professional audio effects to podcast"""
-    # Add intro music (fade in)
-    intro_music = generate_theme_music(intro_duration)
-    segments.insert(0, intro_music)
+def create_unique_intro_sequence() -> list:
+    """Create a unique intro sequence with futuristic sounds"""
+    segments = []
     
-    # Add outro music (fade out)
-    outro_music = generate_theme_music(outro_duration)
-    segments.append(outro_music)
+    # Futuristic rising sweep
+    sweep = create_futuristic_sweep(2.5)
+    segments.append(sweep)
+    
+    # Short pause
+    segments.append(add_silence(200))
+    
+    # Data transmission sound
+    data_sound = synth_tone(0.4, 800, 0.18)
+    segments.append(data_sound)
+    
+    # Another short pause
+    segments.append(add_silence(150))
+    
+    # Final transition tone
+    transition = synth_tone(0.3, 600, 0.2)
+    segments.append(transition)
+    
+    return segments
+
+def create_unique_outro_sequence() -> list:
+    """Create a unique outro sequence with data transmission sounds"""
+    segments = []
+    
+    # Data transmission pulse
+    pulse = create_data_pulse(2.0)
+    segments.append(pulse)
+    
+    # Short pause
+    segments.append(add_silence(250))
+    
+    # Descending tone
+    descend = synth_tone(0.5, 400, 0.15)
+    segments.append(descend)
+    
+    # Final closing tone
+    close_tone = synth_tone(0.4, 300, 0.12)
+    segments.append(close_tone)
     
     return segments
 
@@ -470,11 +513,12 @@ async def run_enhanced_podcast():
         with open(TRANS_JSON, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    # Professional intro with music
-    print("Creating professional introduction...")
-    intro_music = generate_theme_music(5.0)  # 5-second intro music
-    segments.append(intro_music)
-    elapsed += get_wav_duration_seconds(intro_music)
+    # Unique intro sequence
+    print("Creating unique introduction...")
+    intro_sounds = create_unique_intro_sequence()
+    segments.extend(intro_sounds)
+    for sound in intro_sounds:
+        elapsed += get_wav_duration_seconds(sound)
     
     # Host introduction
     intro_text = await llm(INTRO_HOST, f"Podcast title: {TITLE}. Theme: {THEME}", max_tokens=60, temperature=0.4)
@@ -483,8 +527,8 @@ async def run_enhanced_podcast():
     elapsed += get_wav_duration_seconds(intro_audio)
     log("Host", intro_text, elapsed)
     
-    # Brief musical transition
-    transition = synth_tone(0.8, 440, 0.15)
+    # Brief transition
+    transition = synth_tone(0.6, 520, 0.16)
     segments.append(transition)
     elapsed += get_wav_duration_seconds(transition)
     
@@ -544,18 +588,17 @@ async def run_enhanced_podcast():
     elapsed += get_wav_duration_seconds(outro_audio)
     log("Host", outro_text, elapsed)
     
-    # Outro music fade
-    outro_music = generate_theme_music(8.0)  # 8-second outro music
-    segments.append(outro_music)
-    elapsed += get_wav_duration_seconds(outro_music)
+    # Unique outro sequence
+    outro_sounds = create_unique_outro_sequence()
+    segments.extend(outro_sounds)
+    for sound in outro_sounds:
+        elapsed += get_wav_duration_seconds(sound)
 
-    print("Rendering final audio with professional effects...")
-    # Apply audio effects and render
-    enhanced_segments = add_audio_effects(segments)
-    out_written = render_master_wav(enhanced_segments, OUT_WAV)
+    print("Rendering final audio...")
+    out_written = render_master_wav(segments, OUT_WAV)
     
     # Cleanup
-    for p in segments + enhanced_segments:
+    for p in segments:
         try: 
             if os.path.exists(p) and p not in temp_files:
                 os.remove(p)
@@ -687,14 +730,4 @@ if __name__ == "__main__":
         print("2. Enhanced version (professional features)")
         choice = input("Enter 1 or 2: ").strip()
         
-        if choice == "2":
-            asyncio.run(run_enhanced_podcast())
-        else:
-            asyncio.run(run_podcast())
-            
-    except KeyboardInterrupt:
-        print("\nStopped.")
-    except Exception as e:
-        print(f"X Error: {e}")
-        import traceback
-        traceback.print_exc()
+        if choice
