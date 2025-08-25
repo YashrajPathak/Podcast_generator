@@ -1,5 +1,5 @@
-# podcast_offline_version1.py — 2-minute audio-only debate (A/B), SSML fixed + fallbacks
-# Azure OpenAI (LLM) + Azure Speech (AAD) — final WAV only
+# podcast_offline_version1.py — 2-minute audio-only debate (A/B), SSML fixed + fallbacks + transcript
+# Azure OpenAI (LLM) + Azure Speech (AAD) — final WAV + TXT transcript
 # pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
 
 import os, sys, asyncio, wave, tempfile, re
@@ -49,8 +49,6 @@ VOICE_A = os.getenv("VOICE_A", "en-US-GuyNeural")   # analyst
 VOICE_B = os.getenv("VOICE_B", "en-US-AriaNeural")  # strategist
 
 def ssml_wrapper(inner: str, voice: str, style: str | None, rate: str, pitch: str) -> str:
-    # Proper namespaces for SSML + mstts
-    # Note: mstts URL must be present; some docs show http, others https — http works reliably.
     if style:
         return f"""<speak version="1.0" xml:lang="en-US"
                  xmlns="http://www.w3.org/2001/10/synthesis"
@@ -92,10 +90,7 @@ def tts_ssml_to_wav_with_fallback(text: str, voice: str, style: str | None, rate
     cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
     cfg.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm)
 
-    # 1) SSML with style (if provided)
     try_styles = [style, None] if style else [None]
-
-    # final fallback: plain text
     fd, tmp_path = tempfile.mkstemp(prefix="agent_tts_", suffix=".wav"); os.close(fd)
 
     for sty in try_styles:
@@ -105,17 +100,14 @@ def tts_ssml_to_wav_with_fallback(text: str, voice: str, style: str | None, rate
         res = synth.speak_ssml_async(ssml).get()
         if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
             return tmp_path
-        # If canceled, try next fallback
-        # (Optional: inspect res.cancellation_details.error_details for debugging)
 
-    # 2) Plain text fallback
+    # Plain text fallback
     audio_cfg = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
     synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=audio_cfg)
     res = synth.speak_text_async(text).get()
     if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
         return tmp_path
 
-    # If we’re here, everything failed
     try: os.remove(tmp_path)
     except Exception: pass
     raise RuntimeError("TTS canceled even after SSML/style fallbacks")
@@ -176,15 +168,19 @@ def make_b_audio(text: str) -> str:
 
 # ========== Main ==========
 OUT_WAV = "podcast_offline_version1.wav"
+OUT_TXT = "podcast_offline_version1.txt"
 
 async def run_podcast():
     context = load_context()
+    transcript: list[str] = []
+
     with wave.open(OUT_WAV, "wb") as master_wf:
         master_wf.setnchannels(1); master_wf.setsampwidth(2); master_wf.setframerate(24000)
         elapsed = 0.0
 
-        # Short intro
+        # Short intro (A)
         intro = "Welcome to the quick data briefing—two voices, one dataset, and sharp takeaways in under two minutes."
+        transcript.append(f"Agent A: {strip_markup(intro)}")
         w = make_a_audio(intro); append_wav_into_master(w, master_wf); elapsed += get_wav_duration_seconds(w); os.remove(w)
 
         seed = f"Use these datasets as the sole factual source. Keep conversation style; no lists.\n{context[:9000]}"
@@ -194,23 +190,31 @@ async def run_podcast():
 
             # Agent A
             a_out = await llm(SYSTEM_A, seed, max_tokens=180, temperature=0.55)
+            transcript.append(f"Agent A: {strip_markup(a_out)}")
             wa = make_a_audio(a_out); append_wav_into_master(wa, master_wf); elapsed += get_wav_duration_seconds(wa); os.remove(wa)
             if elapsed >= TARGET_SECONDS: break
 
             # Agent B
             b_in = f"Agent A just said: {a_out}\nReference (do not read filenames):\n{context[:7000]}"
             b_out = await llm(SYSTEM_B, b_in, max_tokens=180, temperature=0.55)
+            transcript.append(f"Agent B: {strip_markup(b_out)}")
             wb = make_b_audio(b_out); append_wav_into_master(wb, master_wf); elapsed += get_wav_duration_seconds(wb); os.remove(wb)
 
-        # Optional closing if time remains
+        # Optional closing if time remains (B)
         if elapsed < TARGET_SECONDS - 1.2:
             closing = "That’s our briefing—clear signals, open questions, and concrete next steps. Thanks for listening."
+            transcript.append(f"Agent B: {strip_markup(closing)}")
             wc = make_b_audio(closing); append_wav_into_master(wc, master_wf); os.remove(wc)
 
-    print(f"✅ Saved {OUT_WAV}")
+    # Save transcript
+    with open(OUT_TXT, "w", encoding="utf-8") as f:
+        f.write("\n".join(transcript))
+
+    print(f"✅ Saved {OUT_WAV} and {OUT_TXT}")
 
 if __name__ == "__main__":
     try:
         asyncio.run(run_podcast())
     except Exception as e:
         print(f"❌ Error: {e}")
+```0
