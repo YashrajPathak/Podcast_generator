@@ -1,6 +1,6 @@
 # podcast_offline_version1.py — audio-only A/B debate (one sentence/turn, slower pace, 2–5 min)
-# Robust WAV writing (atomic temp -> rename) to avoid Wave_write/_file errors on Windows
-# Azure OpenAI (LLM) + Azure Speech (AAD) — asks which files to use, final WAV only
+# Fix: no nested asyncio.run inside event loop; pre-generate all speech, then write atomically
+# Azure OpenAI (LLM) + Azure Speech (AAD)
 
 import os, sys, re, math, wave, json, tempfile, asyncio, datetime, struct, calendar
 from pathlib import Path
@@ -147,16 +147,6 @@ def get_wav_duration_seconds(path: str) -> float:
         frames = r.getnframes(); rate = r.getframerate()
         return frames / float(rate) if rate else 0.0
 
-def append_wav_into_master(src_path: str, master_wf: wave.Wave_write):
-    with wave.open(src_path, "rb") as r:
-        frames = r.readframes(r.getnframes())
-        master_wf.writeframes(frames)
-
-def append_silence(master_wf: wave.Wave_write, ms: int = 120):
-    rate = 24000
-    samples = int(rate * (ms/1000.0))
-    master_wf.writeframes(b"\x00\x00" * samples)
-
 def micro_fade(wav_path: str, fade_ms: int = 8):
     try:
         with wave.open(wav_path, "rb") as r:
@@ -179,14 +169,14 @@ def micro_fade(wav_path: str, fade_ms: int = 8):
 # ===================== Prompts (one sentence; senior tone) =====================
 SYSTEM_A = (
 "You are Agent A, a senior data analyst debating live with Agent B. "
-"Return exactly one sentence (≈18–22 words). No lists, headings, hashtags, or filenames. "
-"Use both datasets: weekly aggregates (2022–2025) and monthly KPIs (ASA seconds, call duration minutes, claim time days, and any others present). "
-"In that single sentence, synthesize across all relevant metrics with concrete magnitudes and periods, explain the operational meaning, and end with a sharp question to Agent B."
+"Return exactly one sentence (about 18–22 words). No lists, headings, hashtags, or filenames. "
+"Use both datasets: weekly aggregates (2022–2025) and monthly KPIs (ASA seconds, call duration minutes, claim time days, and any others). "
+"In that single sentence, synthesize across all metrics with concrete magnitudes and periods, explain the operational meaning, and end with a sharp question to Agent B."
 )
 
 SYSTEM_B = (
 "You are Agent B, a senior strategist debating live with Agent A. "
-"Return exactly one sentence (≈18–22 words). No lists or headings. "
+"Return exactly one sentence (about 18–22 words). No lists or headings. "
 "Use both datasets to diagnose drivers for A’s point (seasonality, staffing, routing/SLA, backlog, demand mix), "
 "tie weekly aggregates to monthly KPIs across all metrics, challenge or refine A, and end with one concrete next step."
 )
@@ -194,9 +184,8 @@ SYSTEM_B = (
 # ===================== File selection =====================
 def ask_file_choice() -> str:
     base = Path(".").resolve()
-    jsons = [p for p in base.iterdir() if p.suffix.lower() == ".json"]
-    names = [p.name for p in jsons]
-    print("📂 JSON files in folder:", names)
+    jsons = [p.name for p in base.iterdir() if p.suffix.lower() == ".json"]
+    print("📂 JSON files in folder:", jsons)
     print("👉 Type one of: data.json, metric.json, metric_data.json, both (recommended), or an exact filename, then Enter:")
     choice = sys.stdin.readline().strip().lower()
     return choice or "both"
@@ -212,18 +201,15 @@ def load_context(choice: str) -> tuple[str, dict]:
         return ""
     if choice == "both":
         ctx += add_file("data.json")
-        if Path("metric_data.json").exists():
-            ctx += add_file("metric_data.json")
-        else:
-            ctx += add_file("metric.json")
+        ctx += add_file("metric_data.json") or add_file("metric.json")
     else:
         p = Path(choice)
         if p.exists() and p.suffix.lower()==".json":
             ctx += add_file(p.name)
         else:
-            if "data" in choice:   ctx += add_file("data.json")
-            if "metric_data" in choice: ctx += add_file("metric_data.json")
-            if "metric.json" in choice and not ctx: ctx += add_file("metric.json")
+            if "data" in choice:         ctx += add_file("data.json")
+            if "metric_data" in choice:  ctx += add_file("metric_data.json")
+            if "metric.json" in choice:  ctx += add_file("metric.json")
     if not ctx:
         if Path("data.json").exists():           ctx += add_file("data.json")
         if Path("metric_data.json").exists():    ctx += add_file("metric_data.json")
@@ -234,7 +220,7 @@ def load_context(choice: str) -> tuple[str, dict]:
 
 # ===================== Turn budgeting =====================
 def estimate_turns(target_seconds: int) -> int:
-    sec_per_exchange = 18.0   # one sentence A + one sentence B + silences
+    sec_per_exchange = 18.0   # A sentence + B sentence + pauses
     t = max(120, min(300, target_seconds))
     turns = max(4, int(t // sec_per_exchange))
     return min(turns, 16)
@@ -246,43 +232,65 @@ SHOW_NOTES= "podcast_shownotes.md"
 TRANS_JSON= "podcast_transcript.jsonl"
 TITLE     = "Ops Signals — Data Debate"
 
-# ===================== Build utterances =====================
+# ===================== Build sentence -> TTS helpers =====================
 def prepare_sentence_for_tts(text: str) -> str:
     clean = first_sentence(strip_markup(text))
     clean = speak_friendly(clean)
     return clean
 
-def make_a_audio(text: str) -> str:
+def make_a_audio_sync(text: str) -> str:
     sent = prepare_sentence_for_tts(text)
     p = tts_ssml_to_wav_with_fallback(sent, VOICE_A, style="professional", rate="-7%", pitch="+0%")
     micro_fade(p)
     return p
 
-def make_b_audio(text: str) -> str:
+def make_b_audio_sync(text: str) -> str:
     sent = prepare_sentence_for_tts(text)
     p = tts_ssml_to_wav_with_fallback(sent, VOICE_B, style="calm", rate="-6%", pitch="-1%")
     micro_fade(p)
     return p
 
+async def make_a_audio(text: str) -> str:
+    return await asyncio.to_thread(make_a_audio_sync, text)
+
+async def make_b_audio(text: str) -> str:
+    return await asyncio.to_thread(make_b_audio_sync, text)
+
 # ===================== Safe WAV writing (atomic) =====================
-def safe_write_podcast_wav(write_fn, final_path: str) -> float:
+def safe_write_podcast_wav(segments, final_path: str) -> float:
     """
-    Write WAV to a temp file in the same dir, then atomically replace final_path.
-    Returns total duration seconds.
-    Prevents Windows 'permission denied' / partial headers causing Wave_write.__del__ errors.
+    segments: list of dicts: {"type":"file","path":...} or {"type":"silence","ms":...}
+    Writes to temp then atomic replace. Returns total duration seconds.
     """
     out_dir = Path(final_path).resolve().parent
     out_dir.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(prefix="podcast_", suffix=".tmp.wav", dir=out_dir)
     os.close(fd)
-    total_duration = 0.0
+    total = 0.0
     master = None
     try:
         master = wave.open(tmp_path, "wb")
         master.setnchannels(1); master.setsampwidth(2); master.setframerate(24000)
-        total_duration = write_fn(master)  # caller writes frames and returns elapsed seconds
+
+        def append_silence(ms: int):
+            rate = 24000
+            samples = int(rate * (ms/1000.0))
+            master.writeframes(b"\x00\x00" * samples)
+            return ms/1000.0
+
+        def append_file(path: str):
+            with wave.open(path, "rb") as r:
+                frames = r.readframes(r.getnframes())
+                master.writeframes(frames)
+            return get_wav_duration_seconds(path)
+
+        for seg in segments:
+            if seg["type"] == "file":
+                total += append_file(seg["path"])
+            elif seg["type"] == "silence":
+                total += append_silence(seg["ms"])
+
         master.close(); master = None
-        # Replace existing file even if in use will fail on Windows; fall back to timestamp name
         try:
             os.replace(tmp_path, final_path)
         except PermissionError:
@@ -290,22 +298,27 @@ def safe_write_podcast_wav(write_fn, final_path: str) -> float:
             alt = str(Path(final_path).with_name(Path(final_path).stem + f"_{stamp}.wav"))
             os.replace(tmp_path, alt)
             print(f"⚠️ Could not overwrite {final_path} (in use?). Saved as {alt}")
-    except Exception as e:
+    except Exception:
         try:
-            if master is not None:
-                master.close()
+            if master is not None: master.close()
         except Exception:
             pass
         try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+            if os.path.exists(tmp_path): os.remove(tmp_path)
         except Exception:
             pass
         raise
-    return total_duration
+    finally:
+        # cleanup temp TTS files we created
+        for seg in segments:
+            if seg["type"] == "file":
+                try: os.remove(seg["path"])
+                except Exception: pass
+    return total
 
 # ===================== Main =====================
 async def run_podcast():
+    # 1) Ask files and duration
     choice = ask_file_choice()
     context, meta = load_context(choice)
 
@@ -329,83 +342,69 @@ async def run_podcast():
         with open(TRANS_JSON, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    def write_audio(master_wf: wave.Wave_write) -> float:
-        """All audio writing happens here; returns elapsed seconds."""
-        elapsed = 0.0
+    # 2) Build dialogue (LLM) and TTS **before** writing audio (no nested asyncio.run)
+    # Intro chime & narration
+    def synth_tone(duration_s=0.28, freq=520, vol=0.16, rate=24000) -> str:
+        n = int(duration_s * rate)
+        frames = bytearray()
+        for i in range(n):
+            samp = int(vol * 32767.0 * math.sin(2 * math.pi * freq * (i / rate)))
+            frames += struct.pack('<h', samp)
+        fd, p = tempfile.mkstemp(prefix="tone_", suffix=".wav"); os.close(fd)
+        with wave.open(p, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+            w.writeframes(frames)
+        return p
 
-        # helper fns
-        def synth_tone(duration_s=0.28, freq=520, vol=0.16, rate=24000) -> str:
-            n = int(duration_s * rate)
-            frames = bytearray()
-            for i in range(n):
-                samp = int(vol * 32767.0 * math.sin(2 * math.pi * freq * (i / rate)))
-                frames += struct.pack('<h', samp)
-            fd, p = tempfile.mkstemp(prefix="tone_", suffix=".wav"); os.close(fd)
-            with wave.open(p, "wb") as w:
-                w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
-                w.writeframes(frames)
-            return p
+    segments = []  # [{"type":"file","path":...} or {"type":"silence","ms":...}]
+    elapsed = 0.0   # estimated while logging
 
-        def add_file(path):
-            append_wav_into_master(path, master_wf)
-            d = get_wav_duration_seconds(path)
-            try: os.remove(path)
-            except Exception: pass
-            return d
+    # chime + intro
+    chime = synth_tone(0.28, 520, 0.16)
+    segments.append({"type":"file","path": chime})
+    segments.append({"type":"silence","ms": 140})
 
-        def silence(ms):
-            append_silence(master_wf, ms)
-            return ms/1000.0
+    intro = "Welcome to Ops Signals, where a senior analyst and strategist turn your metrics into decisions."
+    wi = await make_a_audio(intro)
+    segments.append({"type":"file","path": wi})
+    segments.append({"type":"silence","ms": 200})
+    log("Narration", first_sentence(intro), elapsed); elapsed += get_wav_duration_seconds(wi) + 0.34
 
-        # Intro sting + narration
-        chime = synth_tone(0.28, 520, 0.16)
-        elapsed += add_file(chime)
-        elapsed += silence(140)
+    # Debate generation
+    seed = f"Use these datasets as the only factual source. Keep conversation style; exactly one sentence per turn.\n{context[:12000]}"
+    last = seed
+    for _ in range(TURNS):
+        # A
+        a_out = await llm(SYSTEM_A, last, max_tokens=110, temperature=0.45)
+        wa = await make_a_audio(a_out)
+        segments.append({"type":"file","path": wa})
+        segments.append({"type":"silence","ms": 160})
+        log("Agent A", first_sentence(a_out), elapsed); elapsed += get_wav_duration_seconds(wa) + 0.16
 
-        intro = "Welcome to Ops Signals, where a senior analyst and strategist turn your metrics into decisions."
-        wi = make_a_audio(intro)
-        elapsed += add_file(wi)
-        elapsed += silence(200)
-        log("Narration", first_sentence(intro), elapsed)
+        # B
+        b_in = f"Agent A just said: {first_sentence(a_out)}\nReference (do not read filenames):\n{context[:9000]}"
+        b_out = await llm(SYSTEM_B, b_in, max_tokens=110, temperature=0.45)
+        wb = await make_b_audio(b_out)
+        segments.append({"type":"file","path": wb})
+        segments.append({"type":"silence","ms": 180})
+        log("Agent B", first_sentence(b_out), elapsed); elapsed += get_wav_duration_seconds(wb) + 0.18
 
-        seed = f"Use these datasets as the only factual source. Keep conversation style; exactly one sentence per turn.\n{context[:12000]}"
+        last = b_out
 
-        last = seed
-        for _ in range(TURNS):
-            if elapsed >= TARGET_SECONDS: break
+    # Closing
+    close = "That’s the brief; if you add more files, we’ll widen the lens and deepen the actions."
+    wc = await make_b_audio(close)
+    segments.append({"type":"file","path": wc})
+    segments.append({"type":"silence","ms": 160})
+    log("Narration", first_sentence(close), elapsed); elapsed += get_wav_duration_seconds(wc) + 0.16
 
-            a_out = asyncio.run(llm(SYSTEM_A, last, max_tokens=110, temperature=0.45))
-            wa = make_a_audio(a_out)
-            elapsed += add_file(wa)
-            elapsed += silence(160)
-            log("Agent A", first_sentence(a_out), elapsed)
-            if elapsed >= TARGET_SECONDS: break
+    out = synth_tone(0.25, 500, 0.16)
+    segments.append({"type":"file","path": out})
 
-            b_in = f"Agent A just said: {first_sentence(a_out)}\nReference (do not read filenames):\n{context[:9000]}"
-            b_out = asyncio.run(llm(SYSTEM_B, b_in, max_tokens=110, temperature=0.45))
-            wb = make_b_audio(b_out)
-            elapsed += add_file(wb)
-            elapsed += silence(180)
-            log("Agent B", first_sentence(b_out), elapsed)
+    # 3) SAFELY write podcast WAV (atomic)
+    total_sec = safe_write_podcast_wav(segments, OUT_WAV)
 
-            last = b_out
-
-        if elapsed < TARGET_SECONDS - 1.0:
-            close = "That’s the brief; if you add more files, we’ll widen the lens and deepen the actions."
-            wc = make_b_audio(close)
-            elapsed += add_file(wc)
-            elapsed += silence(160)
-            log("Narration", first_sentence(close), elapsed)
-
-        out = synth_tone(0.25, 500, 0.16)
-        elapsed += add_file(out)
-
-        return elapsed
-
-    # ---- SAFELY WRITE THE PODCAST WAV ----
-    total_sec = safe_write_podcast_wav(write_audio, OUT_WAV)
-
-    # Script + Show notes
+    # 4) Script + Show notes
     with open(SCRIPT_TXT, "w", encoding="utf-8") as f:
         f.write("\n".join(transcript))
 
