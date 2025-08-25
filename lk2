@@ -1,0 +1,565 @@
+# two_agents_livekit_local.py — interrupt-immediate + push-to-talk + background inbox + file-pick (additive)
+# Azure OpenAI (LLM) + Azure Speech (AAD) + optional LiveKit
+# pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv livekit
+
+import os, sys, asyncio, wave, threading, queue, time, shutil, glob, datetime, difflib
+from pathlib import Path
+from dotenv import load_dotenv; load_dotenv()
+
+# ---------- Azure OpenAI ----------
+from openai import AzureOpenAI
+AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+OPENAI_API_VERSION      = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
+if not all([AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OPENAI_API_VERSION]):
+    raise RuntimeError("Missing Azure OpenAI env vars")
+
+oai = AzureOpenAI(
+    api_key=AZURE_OPENAI_KEY,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_version=OPENAI_API_VERSION,
+)
+
+def llm_sync(panel_prompt: str, msg: str) -> str:
+    r = oai.chat.completions.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        messages=[{"role":"system","content":panel_prompt},
+                  {"role":"user","content":msg}],
+        max_tokens=220, temperature=0.8)
+    return (r.choices[0].message.content or "").strip()
+
+async def llm(panel_prompt: str, msg: str) -> str:
+    return await asyncio.to_thread(llm_sync, panel_prompt, msg)
+
+# ---------- Azure Speech (AAD) ----------
+import azure.cognitiveservices.speech as speechsdk
+from azure.identity import ClientSecretCredential
+
+TENANT_ID     = os.getenv("TENANT_ID")
+CLIENT_ID     = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
+RESOURCE_ID   = os.getenv("RESOURCE_ID")
+COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
+STT_LANGUAGE  = os.getenv("STT_LANGUAGE", "en-US")
+
+if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
+    raise RuntimeError("Missing AAD Speech env vars")
+
+cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+
+def cog_token_str() -> str:
+    raw = cred.get_token(COG_SCOPE).token
+    return f"aad#{RESOURCE_ID}#{raw}" if RESOURCE_ID else raw
+
+def tts_get_pcm(text: str, voice: str) -> bytes:
+    cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
+    cfg.speech_synthesis_voice_name = voice
+    cfg.set_speech_synthesis_output_format(
+        speechsdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm
+    )
+    synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=None)
+    res = synth.speak_text_async(text).get()
+    if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+        raise RuntimeError(f"TTS failed: {res.reason}")
+    return res.audio_data
+
+def local_speak(text: str, voice: str):
+    cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
+    cfg.speech_synthesis_voice_name = voice
+    out = speechsdk.audio.AudioOutputConfig(use_default_speaker=True)
+    syn = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=out)
+    res = syn.speak_text_async(text).get()
+    if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+        print("⚠️ Local speak failed:", res.reason)
+
+# ---------- Optional LiveKit ----------
+from livekit import rtc
+LIVEKIT_WS    = os.getenv("LIVEKIT_WS", "").strip()
+LIVEKIT_TOKEN = os.getenv("LIVEKIT_TOKEN", "").strip()
+USE_LIVEKIT   = bool(LIVEKIT_WS and LIVEKIT_TOKEN)
+
+SESSION_ID = os.getenv("SESSION_ID", "demo-session")
+AGENT_A, AGENT_B = "Agent A", "Agent B"
+VOICE_A, VOICE_B = "en-US-GuyNeural", "en-US-AriaNeural"
+
+SAMPLE_RATE, CHANNELS, SAMPLE_WIDTH = 24000, 1, 2
+FRAME_MS = 20
+SAMPLES_PER_CH  = SAMPLE_RATE * FRAME_MS // 1000
+BYTES_PER_FRAME = SAMPLES_PER_CH * CHANNELS * SAMPLE_WIDTH
+
+async def lk_connect(room: rtc.Room) -> bool:
+    if not USE_LIVEKIT:
+        print("🔌 LiveKit: local-only mode (no server connection).")
+        return False
+    await room.connect(LIVEKIT_WS, LIVEKIT_TOKEN)
+    print(f"🔌 LiveKit: connected to {LIVEKIT_WS}")
+    return True
+
+def track_name(agent: str) -> str:
+    return f"{SESSION_ID}-{agent}-voice"
+
+async def publish_pcm_livekit(room: rtc.Room, agent_label: str, pcm: bytes):
+    if not pcm:
+        return
+    source = rtc.AudioSource(sample_rate=SAMPLE_RATE, num_channels=CHANNELS)
+    track  = rtc.LocalAudioTrack.create_audio_track(track_name(agent_label), source)
+    await room.local_participant.publish_track(track)
+    for i in range(0, len(pcm), BYTES_PER_FRAME):
+        seg = pcm[i:i+BYTES_PER_FRAME]
+        if len(seg) < BYTES_PER_FRAME:
+            break
+        frame = rtc.AudioFrame(seg, SAMPLE_RATE, CHANNELS, SAMPLES_PER_CH)
+        await source.capture_frame(frame)
+        await asyncio.sleep(FRAME_MS/1000)
+
+# ---------- Prompts ----------
+SYSTEM_A = ("You are Agent A, a Python and Generative AI Developer. "
+            "Speak 2–3 short sentences; reference the context; ask a probing question when helpful.")
+SYSTEM_B = ("You are Agent B, a Machine Learning Engineer. "
+            "Speak 2–3 short sentences; build on/challenge A respectfully; propose next steps.")
+
+# ---------- Interrupt system (immediate) ----------
+# - Thread reads stdin continuously.
+# - Supports:
+#    * `i your question here`  -> inject immediately
+#    * `i` (alone) -> Push-To-Talk STT AND also arms typed next-line fallback
+#    * `r` -> refresh background inbox immediately
+_input_queue = queue.Queue()          # raw stdin lines
+interrupt_q: asyncio.Queue[str] = asyncio.Queue()  # async queue for loop
+admin_q: asyncio.Queue[str] = asyncio.Queue()      # admin signals like REFRESH
+awaiting_inline = False               # arm for "i" then next line
+INT_PREFIX = ("i ", "I ")
+
+def _stdin_reader():
+    global awaiting_inline
+    while True:
+        try:
+            line = sys.stdin.readline()
+            if not line:
+                break
+            text = line.strip()
+            if not text:
+                continue
+            # inline: "i your message..."
+            if text.startswith(INT_PREFIX):
+                msg = text[2:].strip()
+                if msg:
+                    _input_queue.put(("INT", msg))
+                continue
+            # arming: just "i" or "I" (triggers PTT)
+            if text.lower() == "i":
+                _input_queue.put(("ARM", None))
+                continue
+            # refresh
+            if text.lower() == "r":
+                _input_queue.put(("REFRESH", None))
+                continue
+            # normal line
+            _input_queue.put(("TXT", text))
+        except Exception:
+            break
+
+async def _ptt_capture_once() -> str | None:
+    """Push-to-talk one-shot capture with verbose diagnostics (non-blocking)."""
+    try:
+        cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
+        cfg.speech_recognition_language = STT_LANGUAGE
+        # snappy timeouts for barge-in
+        cfg.set_property(speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, "2000")
+        cfg.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "500")
+        audio = speechsdk.audio.AudioConfig(use_default_microphone=True)
+        rec  = speechsdk.SpeechRecognizer(speech_config=cfg, audio_config=audio)
+
+        final_text = {"t": None}
+        def _on_recognizing(evt):
+            txt = (evt.result.text or "").strip()
+            if txt:
+                print(f"🎧 partial: {txt[:80]}{'…' if len(txt)>80 else ''}")
+        def _on_recognized(evt):
+            if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
+                final_text["t"] = (evt.result.text or "").strip()
+                print(f"✅ final: {final_text['t']}")
+        def _on_canceled(evt):
+            print(f"⚠️ STT canceled: {evt.reason} {getattr(evt, 'error_details', '')}")
+
+        rec.recognizing.connect(_on_recognizing)
+        rec.recognized.connect(_on_recognized)
+        rec.canceled.connect(_on_canceled)
+
+        print("🎙️ Listening… (speak now)")
+        await asyncio.to_thread(rec.start_continuous_recognition_async().get)
+
+        # wait up to 12s for a final (non-blocking)
+        t0 = time.time()
+        while time.time() - t0 < 12:
+            if final_text["t"]:
+                break
+            await asyncio.sleep(0.05)
+
+        await asyncio.to_thread(rec.stop_continuous_recognition_async().get)
+        return final_text["t"]
+    except Exception as e:
+        print("⚠️ STT error:", e)
+        return None
+
+async def _ptt_and_enqueue():
+    text = await _ptt_capture_once()
+    if text:
+        if len(text) < 2:
+            print("🫥 Ignored very short audio.")
+            return
+        await interrupt_q.put(text)
+        print(f"⏸️  Interrupt (voice) queued: {text}")
+    else:
+        print("🫤 No speech recognized (timeout or silence).")
+
+async def pump_interrupts():
+    armed = False
+    while True:
+        try:
+            typ, payload = _input_queue.get_nowait()
+            if typ == "INT":
+                await interrupt_q.put(payload)
+                print(f"⏸️  Interrupt queued: {payload}")
+            elif typ == "ARM":
+                armed = True
+                print("🎙️  Interrupt mode armed. Speak now (PTT) or type your question…")
+                asyncio.create_task(_ptt_and_enqueue())
+            elif typ == "REFRESH":
+                await admin_q.put("REFRESH")
+                print("🔄 Background refresh requested.")
+            elif typ == "TXT":
+                if armed:
+                    armed = False
+                    await interrupt_q.put(payload)
+                    print(f"⏸️  Interrupt queued: {payload}")
+                else:
+                    await interrupt_q.put(("CTX:", payload))
+            await asyncio.sleep(0)
+        except queue.Empty:
+            await asyncio.sleep(0.03)
+
+async def next_interrupt_nowait():
+    """Fetch one interrupt (that isn't a CTX/admin sentinel), if present."""
+    try:
+        item = interrupt_q.get_nowait()
+        if isinstance(item, tuple) and item[0] == "CTX:":
+            await interrupt_q.put(item)
+            return None
+        if isinstance(item, tuple):
+            return None
+        return item
+    except asyncio.QueueEmpty:
+        return None
+
+async def wait_for_context_blocking():
+    """Return the first context text available (typed or PTT)."""
+    # Drain queue first
+    while True:
+        try:
+            item = interrupt_q.get_nowait()
+            if isinstance(item, tuple) and item[0] == "CTX:":
+                return item[1]
+            if isinstance(item, str):
+                return item
+        except asyncio.QueueEmpty:
+            break
+    # Wait for next
+    while True:
+        item = await interrupt_q.get()
+        if isinstance(item, tuple) and item[0] == "CTX:":
+            return item[1]
+        if isinstance(item, str):
+            return item
+
+# ---------- Background inbox (deterministic, no watcher) ----------
+BACKGROUND_DIR = os.getenv("BACKGROUND_DIR", "background")
+PROCESSED_SUB  = "_processed"
+
+def _ensure_dirs():
+    try:
+        os.makedirs(BACKGROUND_DIR, exist_ok=True)
+        os.makedirs(os.path.join(BACKGROUND_DIR, PROCESSED_SUB), exist_ok=True)
+    except Exception as e:
+        print("⚠️ Could not create background dirs:", e)
+
+def ingest_background(bg_chunks: list[str]) -> list[str]:
+    """
+    Scan BACKGROUND_DIR for new .txt/.md/.json files, append contents to bg_chunks,
+    and move files into _processed/.
+    Returns list of filenames ingested (for logging).
+    """
+    _ensure_dirs()
+    patterns = [os.path.join(BACKGROUND_DIR, "*.txt"),
+                os.path.join(BACKGROUND_DIR, "*.md"),
+                os.path.join(BACKGROUND_DIR, "*.json")]
+    files = []
+    for p in patterns:
+        files.extend(glob.glob(p))
+    files = [f for f in files if os.path.isfile(f)]
+    if not files:
+        return []
+
+    processed_names = []
+    for fp in sorted(files):
+        try:
+            with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read().strip()
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            chunk = f"\n\n[Background file: {os.path.basename(fp)} @ {ts}]\n{content}\n"
+            bg_chunks.append(chunk)
+            dest = os.path.join(BACKGROUND_DIR, PROCESSED_SUB, os.path.basename(fp))
+            if os.path.exists(dest):
+                base, ext = os.path.splitext(dest)
+                n = 1
+                while os.path.exists(f"{base}_{n}{ext}"):
+                    n += 1
+                dest = f"{base}_{n}{ext}"
+            shutil.move(fp, dest)
+            processed_names.append(os.path.basename(fp))
+        except Exception as e:
+            print(f"⚠️ Failed to ingest {fp}: {e}")
+    return processed_names
+
+# ---------- File picker ----------
+ALLOWED_EXTS = {".txt", ".md", ".json", ".csv", ".yaml", ".yml"}
+
+def _list_candidate_files(base_dir: Path) -> list[Path]:
+    files = []
+    for p in sorted(base_dir.iterdir(), key=lambda x: x.name.lower()):
+        if p.is_file() and p.suffix.lower() in ALLOWED_EXTS:
+            files.append(p)
+    return files
+
+def _speak_menu(files: list[Path]) -> str:
+    items = [f"{idx+1}: {f.name}" for idx, f in enumerate(files[:10])]
+    menu_line = "; ".join(items) if items else "No files found."
+    return f"I found {len(files)} files. {menu_line}. Say the name or the number."
+
+async def _read_choice_from_user(timeout_sec: float = 20.0) -> str | None:
+    # Prefer immediate queued items
+    try:
+        item = interrupt_q.get_nowait()
+        if isinstance(item, tuple) and item[0] == "CTX:":
+            return item[1]
+        if isinstance(item, str):
+            return item
+    except asyncio.QueueEmpty:
+        pass
+    end = time.time() + timeout_sec
+    while time.time() < end:
+        try:
+            item = interrupt_q.get_nowait()
+            if isinstance(item, tuple) and item[0] == "CTX:":
+                return item[1]
+            if isinstance(item, str):
+                return item
+        except asyncio.QueueEmpty:
+            pass
+        await asyncio.sleep(0.1)
+    return None
+
+def _best_file_match(spoken_or_typed: str, files: list[Path]) -> Path | None:
+    s = spoken_or_typed.strip().lower()
+    if not s or not files:
+        return None
+    if s.isdigit():
+        i = int(s) - 1
+        if 0 <= i < len(files):
+            return files[i]
+    names = [f.stem.lower() for f in files]
+    for f, stem in zip(files, names):
+        if s in stem or s == f.name.lower():
+            return f
+    candidates = [f.name for f in files]
+    got = difflib.get_close_matches(spoken_or_typed, candidates, n=1, cutoff=0.4)
+    if got:
+        name = got[0]
+        for f in files:
+            if f.name == name:
+                return f
+    return None
+
+async def pick_file_context_or_none(base_dir: Path) -> tuple[str | None, Path | None]:
+    files = _list_candidate_files(base_dir)
+    if not files:
+        print("📂 No candidate files in folder (txt/md/json/csv/yaml).")
+        return None, None
+    menu_line = _speak_menu(files)
+    print("📂 Files:\n  " + "\n  ".join(f"{i+1}. {p.name}" for i, p in enumerate(files)))
+    print("🎙️  Say the name/number with PTT (press 'i' then speak), or type it and press Enter.")
+    try:
+        local_speak(menu_line, VOICE_A)
+    except Exception:
+        pass
+    choice = await _read_choice_from_user(timeout_sec=20.0)
+    if not choice:
+        print("⏳ No choice heard/typed. Skipping file pick.")
+        return None, None
+    picked = _best_file_match(choice, files)
+    if not picked:
+        print(f"❓ Couldn't match '{choice}' to a file. Skipping file pick.")
+        return None, None
+    try:
+        text = picked.read_text(encoding="utf-8", errors="ignore")
+        print(f"✅ Using file: {picked.name}  ({len(text)} chars)")
+        return text, picked
+    except Exception as e:
+        print(f"⚠️ Failed to read {picked}: {e}")
+        return None, None
+
+# ---------- Main debate ----------
+async def run_with_saver():
+    buffers: list[bytes] = []
+    transcript: list[str] = []
+    bg_chunks: list[str] = []
+
+    threading.Thread(target=_stdin_reader, daemon=True).start()
+    asyncio.create_task(pump_interrupts())
+
+    room = rtc.Room()
+    connected = await lk_connect(room)
+
+    # Greeting (spoken immediately)
+    greet = "Hi Yashraj, how are you? Ready to listen to a debate on any topic or data? Just paste it below."
+    print(f"\n🟦 {AGENT_A} (greeting): {greet}\n")
+    local_speak(greet, VOICE_A)
+    try:
+        pcm = tts_get_pcm(greet, VOICE_A)
+        buffers.append(pcm)
+        if connected:
+            await publish_pcm_livekit(room, AGENT_A, pcm)
+    except Exception as e:
+        print("⚠️ Greeting TTS error:", e)
+    transcript.append(f"{AGENT_A}: {greet}")
+
+    # === Context selection (file -> else paste/PTT) ===
+    base_dir = Path(".").resolve()
+    file_ctx, file_path = await pick_file_context_or_none(base_dir)
+    if file_ctx:
+        context_base = file_ctx
+        print("📚 Context taken from file. Starting debate...\n")
+    else:
+        print("📥 Paste your context and press Enter (or press 'i' then speak):")
+        context_base = await wait_for_context_blocking()
+        if not context_base:
+            context_base = "Sample context about your topic."
+        print("📚 Context captured. Starting debate...\n")
+
+    # Warm-up
+    warm = await llm(SYSTEM_B, "Agent A greeted the user; reply briefly and warmly, then say you're ready.")
+    print(f"🟩 {AGENT_B}: {warm}\n")
+    local_speak(warm, VOICE_B)
+    try:
+        pcm = tts_get_pcm(warm, VOICE_B)
+        buffers.append(pcm)
+        if connected:
+            await publish_pcm_livekit(room, AGENT_B, pcm)
+    except Exception as e:
+        print("⚠️ Warm-up TTS error:", e)
+    transcript.append(f"{AGENT_B}: {warm}")
+
+    last = f"Context to discuss:\n{context_base}"
+
+    try:
+        while True:
+            # Admin: refresh background if requested
+            try:
+                sig = admin_q.get_nowait()
+                if sig == "REFRESH":
+                    processed = ingest_background(bg_chunks)
+                    if processed:
+                        print(f"📥 Ingested {len(processed)} background file(s): {processed}")
+                        transcript.append(f"[Background ingested: {', '.join(processed)}]")
+                    else:
+                        print("📭 No new background files found.")
+            except asyncio.QueueEmpty:
+                pass
+
+            # Auto-ingest at A-turn boundary (deterministic)
+            processed = ingest_background(bg_chunks)
+            if processed:
+                print(f"📥 Ingested {len(processed)} background file(s): {processed}")
+                transcript.append(f"[Background ingested: {', '.join(processed)}]")
+
+            # Build compact tail of background context (last 3 chunks, capped)
+            ctx_tail = ""
+            if bg_chunks:
+                tail = "".join(bg_chunks[-3:])
+                ctx_tail = tail[-2000:] if len(tail) > 2000 else tail
+
+            # Priority: apply interrupt before A speaks
+            intr = await next_interrupt_nowait()
+            if intr:
+                print(f"🧑‍💬 You: {intr}")
+                last = f"User interruption: {intr}"
+
+            # A speaks
+            a_in = last
+            if ctx_tail:
+                a_in = f"{a_in}\n\n(Reference docs)\n{ctx_tail}"
+            a_out = await llm(SYSTEM_A, a_in)
+            print(f"\n🟦 {AGENT_A}: {a_out}\n")
+            local_speak(a_out, VOICE_A)
+            try:
+                pcm = tts_get_pcm(a_out, VOICE_A)
+                buffers.append(pcm)
+                if connected:
+                    await publish_pcm_livekit(room, AGENT_A, pcm)
+            except Exception as e:
+                print("⚠️ TTS A error:", e)
+            transcript.append(f"{AGENT_A}: {a_out}")
+
+            # Check interrupt again BEFORE B; if present, skip B and handle immediately next loop
+            intr = await next_interrupt_nowait()
+            if intr:
+                print(f"🧑‍💬 You: {intr}")
+                last = f"User interruption: {intr}"
+                continue
+
+            # B speaks
+            b_in = f"{AGENT_A} said: {a_out}\nOriginal context (for reference):\n{context_base[:1500]}"
+            if ctx_tail:
+                b_in += f"\n\n(Reference docs)\n{ctx_tail}"
+            b_out = await llm(SYSTEM_B, b_in)
+            print(f"\n🟩 {AGENT_B}: {b_out}\n")
+            local_speak(b_out, VOICE_B)
+            try:
+                pcm = tts_get_pcm(b_out, VOICE_B)
+                buffers.append(pcm)
+                if connected:
+                    await publish_pcm_livekit(room, AGENT_B, pcm)
+            except Exception as e:
+                print("⚠️ TTS B error:", e)
+            transcript.append(f"{AGENT_B}: {b_out}")
+
+            last = b_out
+
+    except KeyboardInterrupt:
+        print("\n⏹️ Debate stopped, saving podcast...")
+
+        # Save transcript
+        with open("podcast.txt", "w", encoding="utf-8") as f:
+            f.write("🎙️ Podcast Transcript\n\n")
+            f.write("\n".join(transcript))
+
+        # Save audio
+        pcm_all = b"".join(buffers)
+        with wave.open("podcast.wav", "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(SAMPLE_WIDTH)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(pcm_all)
+
+        print("✅ Saved podcast.wav and podcast.txt")
+        try:
+            if connected:
+                await room.disconnect()
+        except Exception:
+            pass
+
+# ---------- Entry ----------
+if __name__ == "__main__":
+    asyncio.run(run_with_saver())
