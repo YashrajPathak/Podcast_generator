@@ -2,9 +2,22 @@
 # Azure OpenAI (LLM) + Azure Speech (AAD) — final WAV only; minimal console I/O
 # pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
 
-import os, sys, re, math, wave, json, tempfile, asyncio, datetime, shutil
+import os, sys, re, math, wave, json, tempfile, asyncio, datetime, shutil, atexit
 from pathlib import Path
 from dotenv import load_dotenv; load_dotenv()
+
+# ========== Global variables and setup ==========
+temp_files = []  # Track temporary files for cleanup
+
+@atexit.register
+def cleanup_temp_files():
+    """Clean up all temporary files on exit"""
+    for file in temp_files:
+        try:
+            if os.path.exists(file):
+                os.remove(file)
+        except Exception:
+            pass
 
 # ========== Azure OpenAI ==========
 from openai import AzureOpenAI, BadRequestError
@@ -48,9 +61,24 @@ def one_sentence_only(text: str) -> str:
             return p
     return t
 
+def validate_response(text: str) -> bool:
+    """Check if response meets quality standards"""
+    if not text or len(text.strip()) < 10:
+        return False
+    if text.count(".") > 2:  # Too many sentences
+        return False
+    if text.isupper():  # ALL CAPS
+        return False
+    if re.search(r'http[s]?://', text):  # URLs
+        return False
+    return True
+
 def llm_sync_safe(system: str, user: str, max_tokens: int, temperature: float) -> str:
     try:
         out = llm_sync(system, user, max_tokens, temperature)
+        if not validate_response(out):
+            # Try again with different parameters if validation fails
+            out = llm_sync(system, user, max_tokens=100, temperature=min(0.8, temperature + 0.1))
         return one_sentence_only(out)
     except BadRequestError as e:
         msg = str(e)
@@ -96,6 +124,12 @@ def cog_token_str() -> str:
 VOICE_A = os.getenv("VOICE_A", "en-US-GuyNeural")   # senior analyst
 VOICE_B = os.getenv("VOICE_B", "en-US-AriaNeural")  # senior strategist
 
+# Voice settings for more natural delivery
+VOICE_SETTINGS = {
+    "A": {"style": "friendly", "rate": "-5%", "pitch": "+2%"},
+    "B": {"style": "warm", "rate": "-4%", "pitch": "+1%"}
+}
+
 def ssml_wrapper(inner: str, voice: str, style: str | None, rate: str, pitch: str) -> str:
     if style:
         return f"""<speak version="1.0" xml:lang="en-US"
@@ -131,6 +165,7 @@ def tts_ssml_to_wav_with_fallback(text: str, voice: str, style: str | None, rate
         speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
     )
     fd, tmp_path = tempfile.mkstemp(prefix="agent_tts_", suffix=".wav"); os.close(fd)
+    temp_files.append(tmp_path)
     try:
         try_styles = [style, None] if style else [None]
         for sty in try_styles:
@@ -147,17 +182,27 @@ def tts_ssml_to_wav_with_fallback(text: str, voice: str, style: str | None, rate
         if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
             return tmp_path
         raise RuntimeError("TTS canceled even after SSML/style fallbacks")
-    except Exception:
-        try: os.remove(tmp_path)
-        except Exception: pass
-        raise
+    except Exception as e:
+        try: 
+            os.remove(tmp_path)
+            if tmp_path in temp_files:
+                temp_files.remove(tmp_path)
+        except Exception: 
+            pass
+        # Add more specific error information
+        if "401" in str(e):
+            raise RuntimeError("Authentication failed - check AAD credentials")
+        elif "404" in str(e):
+            raise RuntimeError("Voice not found - check voice name")
+        else:
+            raise RuntimeError(f"TTS failed: {str(e)}")
 
 def get_wav_duration_seconds(path: str) -> float:
     with wave.open(path, "rb") as r:
         frames = r.getnframes(); rate = r.getframerate()
         return (frames / float(rate)) if rate else 0.0
 
-# ========== Simple audio stingers ==========
+# ========== Audio utilities ==========
 def synth_tone(duration_s: float = 0.35, freq: int = 494, vol: float = 0.25, rate: int = 24000) -> str:
     import struct
     n = int(duration_s * rate)
@@ -166,9 +211,24 @@ def synth_tone(duration_s: float = 0.35, freq: int = 494, vol: float = 0.25, rat
         samp = int(vol * 32767.0 * math.sin(2 * math.pi * freq * (i / rate)))
         frames += struct.pack('<h', samp)
     fd, p = tempfile.mkstemp(prefix="tone_", suffix=".wav"); os.close(fd)
+    temp_files.append(p)
     with wave.open(p, "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
         w.writeframes(frames)
+    return p
+
+def add_silence(duration_ms: int = 300) -> str:
+    """Generate a silent WAV segment"""
+    fd, p = tempfile.mkstemp(prefix="silence_", suffix=".wav")
+    os.close(fd)
+    temp_files.append(p)
+    with wave.open(p, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        # Calculate number of frames for silence
+        frames = int(24000 * duration_ms / 1000)
+        w.writeframes(b'\x00' * frames * 2)  # 16-bit samples
     return p
 
 # ========== Atomic master WAV writer ==========
@@ -177,6 +237,7 @@ def render_master_wav(segment_paths: list[str], out_path: str, rate: int = 24000
     # Write to temp first
     fd, tmp = tempfile.mkstemp(prefix="podcast_", suffix=".wav")
     os.close(fd)
+    temp_files.append(tmp)
     try:
         with wave.open(tmp, "wb") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
@@ -190,6 +251,8 @@ def render_master_wav(segment_paths: list[str], out_path: str, rate: int = 24000
         # Atomic replace (Windows-safe if target not open)
         try:
             os.replace(tmp, out_path)
+            if tmp in temp_files:
+                temp_files.remove(tmp)
         except PermissionError:
             # write to a new file instead of failing
             base, ext = os.path.splitext(out_path)
@@ -199,19 +262,27 @@ def render_master_wav(segment_paths: list[str], out_path: str, rate: int = 24000
             return alt
         return out_path
     except Exception:
-        try: os.remove(tmp)
-        except Exception: pass
+        try: 
+            os.remove(tmp)
+            if tmp in temp_files:
+                temp_files.remove(tmp)
+        except Exception: 
+            pass
         raise
 
 # ========== Prompts (safe, one sentence per turn) ==========
 SYSTEM_A = (
-    "You are Agent A, a senior data analyst in a respectful, policy-compliant discussion with Agent B; "
-    "speak in one clear sentence (about twenty words), avoid lists and headings, use weekly aggregates (2022–2025) and monthly KPIs across all metrics, "
-    "state a key cross-metric insight with magnitudes and timing, explain its operational meaning briefly, and end with a concise question."
+    "You are Agent A, a senior data analyst having a natural conversation with Agent B. "
+    "Speak in one clear sentence (about 15-25 words). Reference weekly aggregates (2022-2025) "
+    "and monthly KPIs across all metrics. Share one key insight with context about timing and "
+    "magnitude, explain its operational significance briefly, and end with a thoughtful question "
+    "for your colleague. Keep it conversational, not robotic."
 )
 SYSTEM_B = (
-    "You are Agent B, a senior strategist replying in one clear sentence (about twenty words), avoid lists and headings, "
-    "diagnose likely drivers grounded in the datasets, connect weekly aggregates to monthly KPIs across all metrics, and offer one practical next step."
+    "You are Agent B, a senior strategist responding naturally to your colleague. "
+    "Speak in one clear sentence (about 15-25 words). Connect the weekly aggregates to monthly KPIs "
+    "across all metrics, diagnose likely drivers based on the datasets, and suggest one practical "
+    "next step. Keep the tone professional but conversational."
 )
 
 # ========== File selection & context ==========
@@ -276,18 +347,31 @@ def ask_turns_and_duration() -> tuple[int, float]:
 
 # ========== Voices & helpers ==========
 def make_a_audio(text: str) -> str:
-    return tts_ssml_to_wav_with_fallback(text, VOICE_A, style="newscast-casual", rate="-7%", pitch="-1%")
-def make_b_audio(text: str) -> str:
-    return tts_ssml_to_wav_with_fallback(text, VOICE_B, style="empathetic", rate="-6%", pitch="-2%")
+    settings = VOICE_SETTINGS["A"]
+    return tts_ssml_to_wav_with_fallback(text, VOICE_A, settings["style"], settings["rate"], settings["pitch"])
 
-OUT_WAV    = "podcast_offline_version1.wav"
-SCRIPT_TXT = "podcast_script.txt"
-SHOW_NOTES = "podcast_shownotes.md"
-TRANS_JSON = "podcast_transcript.jsonl"
-TITLE      = "Ops Signals — Data Discussion"
+def make_b_audio(text: str) -> str:
+    settings = VOICE_SETTINGS["B"]
+    return tts_ssml_to_wav_with_fallback(text, VOICE_B, settings["style"], settings["rate"], settings["pitch"])
+
+def setup_output_directory():
+    """Create a dedicated output directory with timestamp"""
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = Path(f"podcast_output_{timestamp}")
+    output_dir.mkdir(exist_ok=True)
+    return output_dir
 
 # ========== Main ==========
 async def run_podcast():
+    # Setup output directory
+    output_dir = setup_output_directory()
+    OUT_WAV    = output_dir / "podcast.wav"
+    SCRIPT_TXT = output_dir / "script.txt"
+    SHOW_NOTES = output_dir / "shownotes.md"
+    TRANS_JSON = output_dir / "transcript.jsonl"
+    TITLE      = "Ops Signals — Data Discussion"
+    
+    print("Loading context...")
     choice = ask_file_choice()
     context, meta = load_context(choice)
     turns, target_seconds = ask_turns_and_duration()
@@ -312,17 +396,23 @@ async def run_podcast():
     chime = synth_tone(0.35, 523); segments.append(chime); elapsed += get_wav_duration_seconds(chime)
     intro = "Welcome to a focused data discussion with a senior analyst and strategist, paced for clarity."
     wi = make_a_audio(intro); segments.append(wi); elapsed += get_wav_duration_seconds(wi); log("Narration", intro, elapsed)
+    segments.append(add_silence(200))  # Add 200ms silence
 
     last = seed
-    for _ in range(turns):
+    print("Generating podcast segments...")
+    for i in range(turns):
+        print(f"Processing turn {i+1}/{turns}...")
         if elapsed >= target_seconds: break
         a_out = await llm(SYSTEM_A, last, max_tokens=120, temperature=0.45)
         wa = make_a_audio(a_out); segments.append(wa); da = get_wav_duration_seconds(wa); elapsed += da; log("Agent A", a_out, elapsed)
+        segments.append(add_silence(150))  # Add silence between speakers
+        
         if elapsed >= target_seconds: break
         seg = synth_tone(0.18, 660, 0.18); segments.append(seg); elapsed += get_wav_duration_seconds(seg)
         b_in = soften_user_seed(f"Agent A just said: {a_out}\nReference context (no need to name files):\n{context[:9000]}")
         b_out = await llm(SYSTEM_B, b_in, max_tokens=120, temperature=0.45)
         wb = make_b_audio(b_out); segments.append(wb); db = get_wav_duration_seconds(wb); elapsed += db; log("Agent B", b_out, elapsed)
+        segments.append(add_silence(200))  # Add silence between turns
         last = b_out
 
     if elapsed < target_seconds - 1.0:
@@ -330,11 +420,16 @@ async def run_podcast():
         wc = make_b_audio(close); segments.append(wc); elapsed += get_wav_duration_seconds(wc); log("Narration", close, elapsed)
     out = synth_tone(0.30, 494); segments.append(out); elapsed += get_wav_duration_seconds(out)
 
+    print("Rendering final audio...")
     # Render atomically and clean up segment temps
     out_written = render_master_wav(segments, OUT_WAV)
     for p in segments:
-        try: os.remove(p)
-        except Exception: pass
+        try: 
+            os.remove(p)
+            if p in temp_files:
+                temp_files.remove(p)
+        except Exception: 
+            pass
 
     # Script + notes
     with open(SCRIPT_TXT, "w", encoding="utf-8") as f:
@@ -361,3 +456,5 @@ if __name__ == "__main__":
         print("\nStopped.")
     except Exception as e:
         print(f"X Error: {e}")
+        import traceback
+        traceback.print_exc()
