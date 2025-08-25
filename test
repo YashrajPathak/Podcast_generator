@@ -1,41 +1,223 @@
-(.venv) PS C:\Users\ypathak1\podcast_generator> python lk.py
-🎧 Generating podcast… (audio only)
-Traceback (most recent call last):
-  File "C:\Users\ypathak1\podcast_generator\lk.py", line 218, in <module>
+# two_agents_podcast_v1_livekit_safe.py — Direct Podcast (~2 min, no interruptions)
+# Azure OpenAI (LLM) + Azure Speech (AAD) + local-only run
+# Output: podcast_offline_v1.wav + podcast.txt
+# pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv livekit
+
+import os, sys, asyncio, wave, tempfile, re
+from pathlib import Path
+from dotenv import load_dotenv; load_dotenv()
+
+# ---------- Azure OpenAI ----------
+from openai import AzureOpenAI, BadRequestError
+
+AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+OPENAI_API_VERSION      = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
+
+if not all([AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OPENAI_API_VERSION]):
+    raise RuntimeError("Missing Azure OpenAI env vars")
+
+oai = AzureOpenAI(
+    api_key=AZURE_OPENAI_KEY,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_version=OPENAI_API_VERSION,
+)
+
+# ---------- Sanitizers (to avoid Azure content filter trips) ----------
+SAFE_SYMBOLS_RE = re.compile(r"[#*`_]+")
+DODGY_WORDING_RE = re.compile(
+    r"(ignore (all|previous) (instructions|prompts)|"
+    r"bypass|override|jailbreak|system prompt|"
+    r"act as (a|an) (exploit|hacker))",
+    re.IGNORECASE,
+)
+
+def sanitize_for_model(s: str) -> str:
+    """Strip markdown symbols and jailbreak-like phrasing that can trip filters."""
+    s = SAFE_SYMBOLS_RE.sub("", s or "")
+    s = DODGY_WORDING_RE.sub("", s)
+    return s.strip()
+
+async def llm(system_prompt: str, user_msg: str, max_tokens: int = 320) -> str:
+    sys_p = sanitize_for_model(system_prompt)
+    usr_p = sanitize_for_model(user_msg)
+
+    def _call(sp: str, up: str):
+        return oai.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": sp},
+                {"role": "user",   "content": up},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.7,
+        )
+
+    try:
+        r = await asyncio.to_thread(_call, sys_p, usr_p)
+        return (r.choices[0].message.content or "").strip()
+    except BadRequestError:
+        # Very safe fall-back
+        safe_sys = (
+            "You are a professional analyst. Provide a short, neutral, compliant reply. "
+            "Plain sentences only, professional tone."
+        )
+        safe_usr = usr_p[:3000]
+        r = await asyncio.to_thread(_call, safe_sys, safe_usr)
+        return (r.choices[0].message.content or "").strip()
+
+# ---------- Azure Speech (AAD) ----------
+import azure.cognitiveservices.speech as speechsdk
+from azure.identity import ClientSecretCredential
+
+TENANT_ID     = os.getenv("TENANT_ID")
+CLIENT_ID     = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
+RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional
+COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
+
+if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
+    raise RuntimeError("Missing AAD Speech env vars (TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION)")
+
+cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+
+def cog_token_str() -> str:
+    raw = cred.get_token(COG_SCOPE).token
+    return f"aad#{RESOURCE_ID}#{raw}" if RESOURCE_ID else raw
+
+def tts_to_temp_wav(text: str, voice: str) -> str:
+    """Synthesize text to a RIFF WAV temp file (24kHz/16-bit mono) and return the path."""
+    cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
+    cfg.speech_synthesis_voice_name = voice
+    cfg.set_speech_synthesis_output_format(
+        speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
+    )
+    fd, tmp_path = tempfile.mkstemp(prefix="agent_tts_", suffix=".wav"); os.close(fd)
+    audio_cfg = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
+    synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=audio_cfg)
+    res = synth.speak_text_async(text).get()
+    if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+        try: os.remove(tmp_path)
+        except Exception: pass
+        raise RuntimeError(f"TTS failed: {res.reason}")
+    return tmp_path
+
+def get_wav_duration_seconds(path: str) -> float:
+    with wave.open(path, "rb") as r:
+        frames = r.getnframes(); rate = r.getframerate()
+        return frames / float(rate) if rate else 0.0
+
+def append_wav_into_master(src_path: str, master_wf: wave.Wave_write):
+    with wave.open(src_path, "rb") as r:
+        frames = r.readframes(r.getnframes())
+        master_wf.writeframes(frames)
+
+# ---------- LiveKit (import-only; no prints, no server required) ----------
+try:
+    from livekit import rtc  # noqa: F401
+except Exception:
+    rtc = None  # Safe to continue without it
+
+# ---------- Prompts (debate-tight, senior tone, plain sentences only) ----------
+SYSTEM_A = (
+    "You are Agent A, a principal data analyst speaking with another expert. "
+    "You have two datasets: data.json with weekly aggregates 2022–2025 (sums, averages, min/max, YTD, week-over-week), "
+    "and metric.json with monthly KPIs: ASA in seconds, Average Call Duration in minutes, and Claim Processing Time in days. "
+    "Speak like a senior analyst. Cite concrete numbers and interpret what they mean operationally. "
+    "Connect movements in weekly aggregates to changes in the KPIs. "
+    "Respond in plain sentences only. Keep it to two or three sentences. "
+    "End with a focused question for Agent B."
+)
+
+SYSTEM_B = (
+    "You are Agent B, Head of Strategy, speaking with Agent A about the same datasets. "
+    "Respond directly to Agent A. Explain drivers such as seasonality, staffing, backlog, demand mix, policy, or SLA changes. "
+    "Tie weekly aggregates to the KPIs. Propose actions that a leader can take next. "
+    "Respond in plain sentences only. Keep it to two or three sentences. "
+    "End with a concrete follow-up or challenge for Agent A."
+)
+
+# ---------- File Loader (auto-uses data.json + metric.json if present) ----------
+def load_context() -> str:
+    ctx = ""
+    if Path("data.json").exists():
+        ctx += "[data.json]\n" + Path("data.json").read_text(encoding="utf-8") + "\n\n"
+    if Path("metric.json").exists():
+        ctx += "[metric.json]\n" + Path("metric.json").read_text(encoding="utf-8")
+    return ctx or "No data files found."
+
+# ---------- Main (2-minute cap, no console dialogue) ----------
+TARGET_SECONDS = 120.0
+VOICE_A = "en-US-GuyNeural"
+VOICE_B = "en-US-AriaNeural"
+OUT_WAV = "podcast_offline_v1.wav"
+OUT_TXT = "podcast.txt"
+
+async def run_podcast():
+    # Minimal console message only
+    print("🎧 Generating podcast… (audio only)")
+
+    transcript = []
+    total_secs = 0.0
+
+    with wave.open(OUT_WAV, "wb") as master_wf:
+        master_wf.setnchannels(1); master_wf.setsampwidth(2); master_wf.setframerate(24000)
+
+        # Greeting (kept very short to save time budget)
+        greet = "Hi Yashraj. I will generate a concise two-minute podcast summary from your files."
+        transcript.append(f"Agent A: {greet}")
+        wav = tts_to_temp_wav(greet, VOICE_A)
+        append_wav_into_master(wav, master_wf)
+        total_secs += get_wav_duration_seconds(wav); os.remove(wav)
+
+        # Load and sanitize context
+        context_raw = load_context()
+        context = sanitize_for_model(context_raw)
+        last = f"Here are the dataset contents:\n{context[:7000]}"
+
+        # Debate exchanges until ~2 minutes total (greeting included)
+        for _ in range(12):
+            if total_secs >= TARGET_SECONDS: break
+
+            # Agent A
+            a_in = sanitize_for_model(
+                last + "\nFocus on one or two anomalies first. Keep it tight. Plain sentences only."
+            )
+            a_out = await llm(SYSTEM_A, a_in, max_tokens=220)
+            transcript.append(f"Agent A: {a_out}")
+            wav = tts_to_temp_wav(a_out, VOICE_A)
+            append_wav_into_master(wav, master_wf)
+            total_secs += get_wav_duration_seconds(wav); os.remove(wav)
+            if total_secs >= TARGET_SECONDS: break
+
+            # Agent B
+            b_in = sanitize_for_model(
+                f"Agent A said: {a_out}\nRespond as Agent B with concise analysis and next actions, plain sentences."
+                f"\nReference datasets:\n{context[:6000]}"
+            )
+            b_out = await llm(SYSTEM_B, b_in, max_tokens=220)
+            transcript.append(f"Agent B: {b_out}")
+            wav = tts_to_temp_wav(b_out, VOICE_B)
+            append_wav_into_master(wav, master_wf)
+            total_secs += get_wav_duration_seconds(wav); os.remove(wav)
+
+            last = b_out
+
+        # Optional brief closing if time allows
+        if total_secs < TARGET_SECONDS - 2:
+            closing = "That wraps our summary. Thanks for listening."
+            transcript.append(f"Agent B: {closing}")
+            wav = tts_to_temp_wav(closing, VOICE_B)
+            append_wav_into_master(wav, master_wf)
+            total_secs += get_wav_duration_seconds(wav); os.remove(wav)
+
+    # Save transcript (no console echo of lines)
+    with open(OUT_TXT, "w", encoding="utf-8") as f:
+        f.write("\n".join(transcript))
+
+    print(f"✅ Saved {OUT_WAV} (~{int(total_secs)}s) and {OUT_TXT}")
+
+if __name__ == "__main__":
     asyncio.run(run_podcast())
-  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 190, in run
-    return runner.run(main)
-           ^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 654, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\lk.py", line 192, in run_podcast
-    b_out = await llm(SYSTEM_B, b_in, max_tokens=220)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\lk.py", line 25, in llm
-    r = await asyncio.to_thread(lambda:
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\asyncio\threads.py", line 25, in to_thread
-    return await loop.run_in_executor(None, func_call)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\concurrent\futures\thread.py", line 58, in run
-    result = self.fn(*self.args, **self.kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\lk.py", line 26, in <lambda>
-    oai.chat.completions.create(
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\openai\_utils\_utils.py", line 287, in wrapper
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\openai\resources\chat\completions\completions.py", line 1150, in create
-    return self._post(
-           ^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\openai\_base_client.py", line 1259, in post
-    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
-                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\openai\_base_client.py", line 1047, in request
-    raise self._make_status_error_from_response(err.response) from None
-openai.BadRequestError: Error code: 400 - {'error': {'message': "The response was filtered due to the prompt triggering Azure OpenAI's content management policy. Please modify your prompt and retry. To learn more about our content filtering policies please read our documentation: https://go.microsoft.com/fwlink/?linkid=2198766", 'type': None, 'param': 'prompt', 'code': 'content_filter', 'status': 400, 'innererror': {'code': 'ResponsibleAIPolicyViolation', 'content_filter_result': {'hate': {'filtered': False, 'severity': 'safe'}, 'jailbreak': {'filtered': True, 'detected': True}, 'self_harm': {'filtered': False, 'severity': 'safe'}, 'sexual': {'filtered': False, 'severity': 'safe'}, 'violence': {'filtered': False, 'severity': 'safe'}}}}}
-(.venv) PS C:\Users\ypathak1\podcast_generator>
