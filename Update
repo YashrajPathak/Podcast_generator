@@ -1,70 +1,700 @@
-def llm_tool_sync(panel_prompt: str, msg: str) -> str:
-    """
-    Tool-aware completion that ALWAYS exposes tools on every turn and
-    lets the model call tools repeatedly until it stops (bounded by hops).
-    """
-    MAX_TOOL_HOPS = 6  # prevent infinite loops
-    messages = [
-        {"role": "system", "content": panel_prompt},
-        {"role": "user",   "content": msg},
-    ]
+# podcast_professional.py — Enhanced professional podcast with Azure OpenAI + Azure Speech
+# pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
 
-    for _ in range(MAX_TOOL_HOPS):
-        # Always expose tools and allow tool calls
-        r = oai.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
-            messages=messages,
-            tools=TOOLS_SCHEMA,
-            tool_choice="auto",     # allow ANY tool if the model wants one
-            temperature=0.7,
-            max_tokens=350,
-        )
-        choice = r.choices[0]
-        assistant_msg = choice.message
-        tool_calls = getattr(assistant_msg, "tool_calls", None)
+import os, sys, re, math, wave, json, tempfile, asyncio, datetime, shutil, atexit
+from pathlib import Path
+from dotenv import load_dotenv; load_dotenv()
 
-        # Append assistant step exactly as returned (with tool_calls if any)
-        messages.append({
-            "role": "assistant",
-            "content": assistant_msg.content or "",
-            **({"tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments or "{}",
-                        },
-                    } for tc in (tool_calls or [])
-                ]} if tool_calls else {})
-        })
+# ========== Global variables and setup ==========
+temp_files = []  # Track temporary files for cleanup
 
-        # If no tools requested, we’re done — return the final assistant text
-        if not tool_calls:
-            return (assistant_msg.content or "").strip()
+@atexit.register
+def cleanup_temp_files():
+    """Clean up all temporary files on exit"""
+    for file in temp_files:
+        try:
+            if os.path.exists(file):
+                os.remove(file)
+        except Exception:
+            pass
 
-        # Execute each tool call and append the tool results
-        for tc in tool_calls:
-            fn = tc.function
-            name = fn.name
+# ========== Azure OpenAI ==========
+from openai import AzureOpenAI, BadRequestError
+AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+OPENAI_API_VERSION      = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
+if not all([AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OPENAI_API_VERSION]):
+    raise RuntimeError("Missing Azure OpenAI env vars")
+
+oai = AzureOpenAI(api_key=AZURE_OPENAI_KEY, azure_endpoint=AZURE_OPENAI_ENDPOINT, api_version=OPENAI_API_VERSION)
+
+def llm_sync(system: str, user: str, max_tokens: int, temperature: float) -> str:
+    r = oai.chat.completions.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        messages=[{"role":"system","content":system},{"role":"user","content":user}],
+        max_tokens=max_tokens, temperature=temperature)
+    return (r.choices[0].message.content or "").strip()
+
+# ===== Softener + Safe Retry =====
+def soften_user_seed(text: str) -> str:
+    t = text
+    t = re.sub(r'\b[Ss]ole factual source\b', 'primary context', t)
+    t = re.sub(r'\b[Dd]o not\b', 'please avoid', t)
+    t = re.sub(r"\b[Dd]on't\b", 'please avoid', t)
+    t = re.sub(r'\b[Ii]gnore\b', 'do not rely on', t)
+    t = t.replace("debate", "discussion").replace("Debate", "Discussion")
+    return t
+
+def one_sentence_only(text: str) -> str:
+    t = text.strip()
+    t = re.sub(r'[`*_#>]+', ' ', t)
+    t = re.sub(r'\s{2,}', ' ', t).strip()
+    parts = re.split(r'(?<=[.!?])\s+', t)
+    for p in parts:
+        p = p.strip()
+        if p:
+            if len(p.split()) > 30:
+                words = p.split()
+                p = " ".join(words[:28]) + "…"
+            return p
+    return t
+
+def validate_response(text: str) -> bool:
+    """Check if response meets quality standards"""
+    if not text or len(text.strip()) < 10:
+        return False
+    if text.count(".") > 2:  # Too many sentences
+        return False
+    if text.isupper():  # ALL CAPS
+        return False
+    if re.search(r'http[s]?://', text):  # URLs
+        return False
+    return True
+
+def llm_sync_safe(system: str, user: str, max_tokens: int, temperature: float) -> str:
+    try:
+        out = llm_sync(system, user, max_tokens, temperature)
+        if not validate_response(out):
+            # Try again with different parameters if validation fails
+            out = llm_sync(system, user, max_tokens=100, temperature=min(0.8, temperature + 0.1))
+        return one_sentence_only(out)
+    except BadRequestError as e:
+        msg = str(e)
+        if "content management policy" in msg or "content filter" in msg or getattr(e, "status_code", None) == 400:
+            soft_system = system.replace("debate", "discussion").replace("Debate", "Discussion")
+            soft_user   = soften_user_seed(user)
             try:
-                args = json.loads(fn.arguments or "{}")
+                out = llm_sync(
+                    soft_system + " Always comply with safety policies and keep a professional, neutral tone.",
+                    soft_user,
+                    max_tokens=max(60, max_tokens-20),
+                    temperature=max(0.1, temperature-0.2)
+                )
+                return one_sentence_only(out)
             except Exception:
-                args = {}
-            result = _call_tool(name, args)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "name": name,
-                "content": json.dumps(result, ensure_ascii=False),
-            })
+                minimal_system = "You are a professional analyst. Produce one safe, neutral sentence grounded in the provided context."
+                minimal_user   = "Summarize cross-metric trends and propose one action in a single safe sentence."
+                out = llm_sync(minimal_system, minimal_user, max_tokens=80, temperature=0.2)
+                return one_sentence_only(out)
+        raise
 
-        # loop continues: the next iteration gives the model the tool outputs
-        # and again allows further tool calls if it wants
+async def llm(system: str, user: str, max_tokens: int=120, temperature: float=0.45) -> str:
+    return await asyncio.to_thread(llm_sync_safe, system, user, max_tokens, temperature)
 
-    # If we hit MAX_TOOL_HOPS without a final answer, return last assistant text
-    # or a safe notice.
-    for m in reversed(messages):
-        if m["role"] == "assistant" and (m.get("content") or "").strip():
-            return m["content"].strip()
-    return "I ran multiple tool steps but didn’t produce a final answer."
+# ========== Azure Speech (AAD) ==========
+import azure.cognitiveservices.speech as speechsdk
+from azure.identity import ClientSecretCredential
+
+TENANT_ID     = os.getenv("TENANT_ID")
+CLIENT_ID     = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
+RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional
+COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
+if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
+    raise RuntimeError("Missing AAD Speech env vars (TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION)")
+
+cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+def cog_token_str() -> str:
+    tok = cred.get_token(COG_SCOPE).token
+    return f"aad#{RESOURCE_ID}#{tok}" if RESOURCE_ID else tok
+
+VOICE_A = os.getenv("VOICE_A", "en-US-GuyNeural")   # senior analyst
+VOICE_B = os.getenv("VOICE_B", "en-US-AriaNeural")  # senior strategist
+VOICE_HOST = os.getenv("VOICE_HOST", "en-US-DavisNeural")  # host voice
+
+# Voice settings for more natural delivery
+VOICE_SETTINGS = {
+    "A": {"style": "friendly", "rate": "-5%", "pitch": "+2%"},
+    "B": {"style": "warm", "rate": "-4%", "pitch": "+1%"},
+    "HOST": {"style": "newscast-casual", "rate": "-3%", "pitch": "0%"}
+}
+
+def ssml_wrapper(inner: str, voice: str, style: str | None, rate: str, pitch: str) -> str:
+    if style:
+        return f"""<speak version="1.0" xml:lang="en-US"
+                 xmlns="http://www.w3.org/2001/10/synthesis"
+                 xmlns:mstts="http://www.w3.org/2001/mstts">
+  <voice name="{voice}">
+    <mstts:express-as style="{style}">
+      <prosody rate="{rate}" pitch="{pitch}">
+        {inner}
+      </prosody>
+    </mstts:express-as>
+  </voice>
+</speak>"""
+    else:
+        return f"""<speak version="1.0" xml:lang="en-US"
+                 xmlns="http://www.w3.org/2001/10/synthesis">
+  <voice name="{voice}">
+    <prosody rate="{rate}" pitch="{pitch}">
+      {inner}
+    </prosody>
+  </voice>
+</speak>"""
+
+def to_ssml(text: str, voice: str, style: str | None, rate: str = "-6%", pitch: str = "0%") -> str:
+    t = text.strip()
+    t = t.replace(",", ",<break time='220ms'/>")
+    inner = f"{t}<break time='320ms'/>"
+    return ssml_wrapper(inner, voice, style, rate, pitch)
+
+def tts_ssml_to_wav_with_fallback(text: str, voice: str, style: str | None, rate: str, pitch: str) -> str:
+    cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
+    cfg.set_speech_synthesis_output_format(
+        speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
+    )
+    fd, tmp_path = tempfile.mkstemp(prefix="agent_tts_", suffix=".wav"); os.close(fd)
+    temp_files.append(tmp_path)
+    try:
+        try_styles = [style, None] if style else [None]
+        for sty in try_styles:
+            ssml = to_ssml(text, voice, sty, rate, pitch)
+            audio_cfg = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
+            synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=audio_cfg)
+            res = synth.speak_ssml_async(ssml).get()
+            if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+                return tmp_path
+        # Plain text fallback
+        audio_cfg = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
+        synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=audio_cfg)
+        res = synth.speak_text_async(text).get()
+        if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+            return tmp_path
+        raise RuntimeError("TTS canceled even after SSML/style fallbacks")
+    except Exception as e:
+        try: 
+            os.remove(tmp_path)
+            if tmp_path in temp_files:
+                temp_files.remove(tmp_path)
+        except Exception: 
+            pass
+        # Add more specific error information
+        if "401" in str(e):
+            raise RuntimeError("Authentication failed - check AAD credentials")
+        elif "404" in str(e):
+            raise RuntimeError("Voice not found - check voice name")
+        else:
+            raise RuntimeError(f"TTS failed: {str(e)}")
+
+def get_wav_duration_seconds(path: str) -> float:
+    with wave.open(path, "rb") as r:
+        frames = r.getnframes(); rate = r.getframerate()
+        return (frames / float(rate)) if rate else 0.0
+
+# ========== Audio utilities ==========
+def synth_tone(duration_s: float = 0.35, freq: int = 494, vol: float = 0.25, rate: int = 24000) -> str:
+    import struct
+    n = int(duration_s * rate)
+    frames = bytearray()
+    for i in range(n):
+        samp = int(vol * 32767.0 * math.sin(2 * math.pi * freq * (i / rate)))
+        frames += struct.pack('<h', samp)
+    fd, p = tempfile.mkstemp(prefix="tone_", suffix=".wav"); os.close(fd)
+    temp_files.append(p)
+    with wave.open(p, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes(frames)
+    return p
+
+def add_silence(duration_ms: int = 300) -> str:
+    """Generate a silent WAV segment"""
+    fd, p = tempfile.mkstemp(prefix="silence_", suffix=".wav")
+    os.close(fd)
+    temp_files.append(p)
+    with wave.open(p, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        # Calculate number of frames for silence
+        frames = int(24000 * duration_ms / 1000)
+        w.writeframes(b'\x00' * frames * 2)  # 16-bit samples
+    return p
+
+def generate_theme_music(duration: float = 15.0) -> str:
+    """Generate simple theme music (in a real scenario, you'd use a pre-composed track)"""
+    # Create a more musical sequence than a simple tone
+    fd, p = tempfile.mkstemp(prefix="music_", suffix=".wav"); os.close(fd)
+    temp_files.append(p)
+    
+    import struct
+    rate = 24000
+    n = int(duration * rate)
+    frames = bytearray()
+    
+    # Create a simple chord progression
+    for i in range(n):
+        # Basic chord progression: C -> G -> Am -> F
+        progress = i / n
+        if progress < 0.25:
+            freq = 262  # C
+        elif progress < 0.5:
+            freq = 392  # G
+        elif progress < 0.75:
+            freq = 440  # A
+        else:
+            freq = 349  # F
+            
+        # Add some harmonics for a richer sound
+        samp = int(0.08 * 32767.0 * (
+            math.sin(2 * math.pi * freq * (i / rate)) +
+            0.5 * math.sin(2 * math.pi * freq * 2 * (i / rate)) +
+            0.3 * math.sin(2 * math.pi * freq * 3 * (i / rate))
+        ))
+        frames += struct.pack('<h', samp)
+    
+    with wave.open(p, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes(frames)
+    
+    return p
+
+# ========== Atomic master WAV writer ==========
+def render_master_wav(segment_paths: list[str], out_path: str, rate: int = 24000):
+    """Write all segments to a temp WAV and atomically replace the target."""
+    # Write to temp first
+    fd, tmp = tempfile.mkstemp(prefix="podcast_", suffix=".wav")
+    os.close(fd)
+    temp_files.append(tmp)
+    try:
+        with wave.open(tmp, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+            for seg in segment_paths:
+                with wave.open(seg, "rb") as r:
+                    # sanity check (we generate everything at 24k/16-bit/mono)
+                    if r.getframerate() != rate or r.getnchannels() != 1 or r.getsampwidth() != 2:
+                        # If a mismatch ever occurs, fail fast to avoid corrupt audio
+                        raise RuntimeError(f"Segment format mismatch: {seg}")
+                    w.writeframes(r.readframes(r.getnframes()))
+        # Atomic replace (Windows-safe if target not open)
+        try:
+            os.replace(tmp, out_path)
+            if tmp in temp_files:
+                temp_files.remove(tmp)
+        except PermissionError:
+            # write to a new file instead of failing
+            base, ext = os.path.splitext(out_path)
+            alt = f"{base}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}"
+            os.replace(tmp, alt)
+            print(f"⚠️ Output was locked; wrote to {alt}")
+            return alt
+        return out_path
+    except Exception:
+        try: 
+            os.remove(tmp)
+            if tmp in temp_files:
+                temp_files.remove(tmp)
+        except Exception: 
+            pass
+        raise
+
+# ========== Prompts (safe, one sentence per turn) ==========
+SYSTEM_A = (
+    "You are Agent A, a senior data analyst having a natural conversation with Agent B. "
+    "Speak in one clear sentence (about 15-25 words). Reference weekly aggregates (2022-2025) "
+    "and monthly KPIs across all metrics. Share one key insight with context about timing and "
+    "magnitude, explain its operational significance briefly, and end with a thoughtful question "
+    "for your colleague. Keep it conversational, not robotic."
+)
+
+SYSTEM_B = (
+    "You are Agent B, a senior strategist responding naturally to your colleague. "
+    "Speak in one clear sentence (about 15-25 words). Connect the weekly aggregates to monthly KPIs "
+    "across all metrics, diagnose likely drivers based on the datasets, and suggest one practical "
+    "next step. Keep the tone professional but conversational."
+)
+
+INTRO_HOST = (
+    "You are the host of a professional data podcast. Create a engaging but brief introduction "
+    "(15-25 words) that welcomes listeners, introduces the show's purpose, and sets up the "
+    "conversation between our two experts. Sound professional but approachable."
+)
+
+OUTRO_HOST = (
+    "You are wrapping up a professional podcast. Create a concise outro (20-30 words) that "
+    "summarizes the key takeaway, thanks the experts, and provides a gentle call to action "
+    "(subscribe, follow for more content). Keep it professional and polished."
+)
+
+# ========== File selection & context ==========
+def ask_file_choice() -> str:
+    base = Path(".").resolve()
+    jsons = [p.name for p in base.iterdir() if p.suffix.lower() == ".json"]
+    print("JSON files in folder:", jsons)
+    print("Type one of: data.json, metric.json, metric_data.json, both (recommended), or an exact filename, then Enter:")
+    choice = sys.stdin.readline().strip().lower()
+    return choice or "both"
+
+def load_context(choice: str) -> tuple[str, dict]:
+    ctx = ""
+    meta = {"files":[]}
+    def add_file(fname: str):
+        p = Path(fname)
+        if p.exists():
+            meta["files"].append(fname)
+            return f"[{fname}]\n{p.read_text(encoding='utf-8', errors='ignore')}\n\n"
+        return ""
+    if choice == "both":
+        ctx += add_file("data.json")
+        if Path("metric_data.json").exists():
+            ctx += add_file("metric_data.json")
+        else:
+            ctx += add_file("metric.json")
+    else:
+        p = Path(choice)
+        if p.exists() and p.suffix.lower()==".json":
+            ctx += add_file(p.name)
+        else:
+            if "data" in choice: ctx += add_file("data.json")
+            if "metric_data" in choice or "metric" in choice:
+                if Path("metric_data.json").exists():
+                    ctx += add_file("metric_data.json")
+                else:
+                    ctx += add_file("metric.json")
+    if not ctx:
+        if Path("data.json").exists(): ctx += add_file("data.json")
+        if Path("metric_data.json").exists(): ctx += add_file("metric_data.json")
+        elif Path("metric.json").exists(): ctx += add_file("metric.json")
+    if not ctx:
+        raise RuntimeError("No data found (need data.json and/or metric_data.json/metric.json).")
+    return ctx, meta
+
+def ask_turns_and_duration() -> tuple[int, float]:
+    print("Enter desired number of A/B turns (each turn = A then B). Press Enter for default 6 turns:")
+    try:
+        t = sys.stdin.readline().strip()
+        turns = int(t) if t else 6
+    except Exception:
+        turns = 6
+    turns = max(4, min(10, turns))
+    print("Enter desired duration in minutes (2–5). Press Enter for default 3:")
+    try:
+        m = sys.stdin.readline().strip()
+        minutes = float(m) if m else 3.0
+    except Exception:
+        minutes = 3.0
+    minutes = max(2.0, min(5.0, minutes))
+    return turns, minutes*60.0
+
+# ========== Voices & helpers ==========
+def make_a_audio(text: str) -> str:
+    settings = VOICE_SETTINGS["A"]
+    return tts_ssml_to_wav_with_fallback(text, VOICE_A, settings["style"], settings["rate"], settings["pitch"])
+
+def make_b_audio(text: str) -> str:
+    settings = VOICE_SETTINGS["B"]
+    return tts_ssml_to_wav_with_fallback(text, VOICE_B, settings["style"], settings["rate"], settings["pitch"])
+
+def make_host_audio(text: str) -> str:
+    settings = VOICE_SETTINGS["HOST"]
+    return tts_ssml_to_wav_with_fallback(text, VOICE_HOST, settings["style"], settings["rate"], settings["pitch"])
+
+def setup_output_directory():
+    """Create a dedicated output directory with timestamp"""
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = Path(f"podcast_output_{timestamp}")
+    output_dir.mkdir(exist_ok=True)
+    return output_dir
+
+# ========== Enhanced Podcast Features ==========
+def create_professional_intro(title: str, theme: str) -> str:
+    """Generate a professional podcast introduction"""
+    return f"Welcome to {title}, where we {theme}. I'm your data analyst, and today we're joined by our strategy expert to break down the latest metrics."
+
+def create_professional_outro(title: str) -> str:
+    """Generate a professional podcast outro"""
+    return f"That concludes today's episode of {title}. For more insights, subscribe to our channel. Until next time, keep your data organized and your strategies sharp."
+
+def add_audio_effects(segments: list, intro_duration: float = 20.0, outro_duration: float = 25.0):
+    """Add professional audio effects to podcast"""
+    # Add intro music (fade in)
+    intro_music = generate_theme_music(intro_duration)
+    segments.insert(0, intro_music)
+    
+    # Add outro music (fade out)
+    outro_music = generate_theme_music(outro_duration)
+    segments.append(outro_music)
+    
+    return segments
+
+# ========== Enhanced Main Function ==========
+async def run_enhanced_podcast():
+    # Setup output directory
+    output_dir = setup_output_directory()
+    OUT_WAV = output_dir / "podcast_enhanced.wav"
+    SCRIPT_TXT = output_dir / "script_enhanced.txt"
+    SHOW_NOTES = output_dir / "shownotes_enhanced.md"
+    TRANS_JSON = output_dir / "transcript_enhanced.jsonl"
+    TITLE = "Data Dialogue: Analytics in Action"
+    THEME = "break down complex metrics into actionable business insights"
+    
+    print("Loading context...")
+    choice = ask_file_choice()
+    context, meta = load_context(choice)
+    turns, target_seconds = ask_turns_and_duration()
+
+    with open(TRANS_JSON, "w", encoding="utf-8") as _: 
+        pass  # Clear previous content
+    
+    transcript = []
+    t0 = datetime.datetime.now().isoformat()
+
+    # Build all audio segments
+    segments = []
+    elapsed = 0.0
+
+    def log(role: str, text: str, tsec: float):
+        entry = {"ts": datetime.datetime.now().isoformat(), "t": round(tsec, 2), "role": role, "text": text}
+        transcript.append(f"{role}: {text}")
+        with open(TRANS_JSON, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    # Professional intro with music
+    print("Creating professional introduction...")
+    intro_music = generate_theme_music(5.0)  # 5-second intro music
+    segments.append(intro_music)
+    elapsed += get_wav_duration_seconds(intro_music)
+    
+    # Host introduction
+    intro_text = await llm(INTRO_HOST, f"Podcast title: {TITLE}. Theme: {THEME}", max_tokens=60, temperature=0.4)
+    intro_audio = make_host_audio(intro_text)
+    segments.append(intro_audio)
+    elapsed += get_wav_duration_seconds(intro_audio)
+    log("Host", intro_text, elapsed)
+    
+    # Brief musical transition
+    transition = synth_tone(0.8, 440, 0.15)
+    segments.append(transition)
+    elapsed += get_wav_duration_seconds(transition)
+    
+    # Add silence before conversation starts
+    segments.append(add_silence(400))
+    elapsed += 0.4
+
+    # Main conversation
+    seed = soften_user_seed("Use these datasets as primary context; keep a natural one-sentence discussion.\n" + context[:12000])
+    last = seed
+    
+    print("Generating podcast segments...")
+    for i in range(turns):
+        print(f"Processing turn {i+1}/{turns}...")
+        if elapsed >= target_seconds: 
+            break
+            
+        # Agent A turn
+        a_out = await llm(SYSTEM_A, last, max_tokens=120, temperature=0.45)
+        wa = make_a_audio(a_out)
+        segments.append(wa)
+        da = get_wav_duration_seconds(wa)
+        elapsed += da
+        log("Agent A", a_out, elapsed)
+        
+        # Add natural pause between speakers
+        segments.append(add_silence(250))
+        elapsed += 0.25
+        
+        if elapsed >= target_seconds: 
+            break
+            
+        # Transition sound
+        seg = synth_tone(0.15, 660, 0.12)
+        segments.append(seg)
+        elapsed += get_wav_duration_seconds(seg)
+        
+        # Agent B turn
+        b_in = soften_user_seed(f"Agent A just said: {a_out}\nReference context (no need to name files):\n{context[:9000]}")
+        b_out = await llm(SYSTEM_B, b_in, max_tokens=120, temperature=0.45)
+        wb = make_b_audio(b_out)
+        segments.append(wb)
+        db = get_wav_duration_seconds(wb)
+        elapsed += db
+        log("Agent B", b_out, elapsed)
+        
+        # Add pause between conversation turns
+        segments.append(add_silence(350))
+        elapsed += 0.35
+        last = b_out
+
+    # Professional outro
+    print("Creating professional conclusion...")
+    outro_text = await llm(OUTRO_HOST, f"Podcast title: {TITLE}. Key topics discussed: {', '.join(transcript[-4:])}", max_tokens=80, temperature=0.3)
+    outro_audio = make_host_audio(outro_text)
+    segments.append(outro_audio)
+    elapsed += get_wav_duration_seconds(outro_audio)
+    log("Host", outro_text, elapsed)
+    
+    # Outro music fade
+    outro_music = generate_theme_music(8.0)  # 8-second outro music
+    segments.append(outro_music)
+    elapsed += get_wav_duration_seconds(outro_music)
+
+    print("Rendering final audio with professional effects...")
+    # Apply audio effects and render
+    enhanced_segments = add_audio_effects(segments)
+    out_written = render_master_wav(enhanced_segments, OUT_WAV)
+    
+    # Cleanup
+    for p in segments + enhanced_segments:
+        try: 
+            if os.path.exists(p) and p not in temp_files:
+                os.remove(p)
+        except Exception: 
+            pass
+
+    # Enhanced show notes
+    total_sec = 0.0
+    try:
+        with wave.open(out_written, "rb") as r:
+            total_sec = r.getnframes() / r.getframerate()
+    except Exception:
+        pass
+        
+    with open(SHOW_NOTES, "w", encoding="utf-8") as f:
+        f.write(f"# {TITLE}\n\n")
+        f.write(f"## Episode Details\n")
+        f.write(f"- **Recorded**: {t0}\n")
+        f.write(f"- **Duration**: {int(total_sec // 60)}m {int(total_sec % 60)}s\n")
+        f.write(f"- **Data Sources**: {', '.join(meta['files'])}\n\n")
+        
+        f.write(f"## Episode Summary\n")
+        f.write("This episode features a discussion between our data analyst and strategy expert ")
+        f.write("breaking down the latest metrics and trends from our datasets.\n\n")
+        
+        f.write(f"## Key Topics Discussed\n")
+        for i, line in enumerate(transcript[:6]):  # Show first 6 talking points
+            if i % 2 == 0:  # Just show a few highlights
+                f.write(f"- {line.split(':', 1)[1].strip()}\n")
+        
+        f.write(f"\n## Additional Notes\n")
+        f.write("- Professional tone with data-driven insights\n")
+        f.write("- Focus on actionable business intelligence\n")
+        f.write("- Balanced perspective from both analytical and strategic viewpoints\n\n")
+        
+        f.write(f"## Next Steps\n")
+        f.write("To dive deeper into these metrics, contact our analytics team or explore ")
+        f.write("the full datasets referenced in this episode.")
+
+    print(f"Enhanced podcast saved: {out_written}")
+    print(f"Additional files: {SCRIPT_TXT}, {SHOW_NOTES}, {TRANS_JSON}")
+
+# ========== Original Main Function ==========
+async def run_podcast():
+    # Setup output directory
+    output_dir = setup_output_directory()
+    OUT_WAV    = output_dir / "podcast.wav"
+    SCRIPT_TXT = output_dir / "script.txt"
+    SHOW_NOTES = output_dir / "shownotes.md"
+    TRANS_JSON = output_dir / "transcript.jsonl"
+    TITLE      = "Ops Signals — Data Discussion"
+
+    print("Loading context...")
+    choice = ask_file_choice()
+    context, meta = load_context(choice)
+    turns, target_seconds = ask_turns_and_duration()
+
+    with open(TRANS_JSON, "w", encoding="utf-8") as _: pass
+    transcript = []
+    t0 = datetime.datetime.now().isoformat()
+
+    seed = soften_user_seed("Use these datasets as primary context; keep a natural one-sentence discussion.\n" + context[:12000])
+
+    # Build all audio segments first, then render atomically.
+    segments: list[str] = []
+    elapsed = 0.0
+
+    def log(role: str, text: str, tsec: float):
+        entry = {"ts": datetime.datetime.now().isoformat(), "t": round(tsec,2), "role": role, "text": text}
+        transcript.append(f"{role}: {text}")
+        with open(TRANS_JSON, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    # Intro sting + narration
+    chime = synth_tone(0.35, 523); segments.append(chime); elapsed += get_wav_duration_seconds(chime)
+    intro = "Welcome to a focused data discussion with a senior analyst and strategist, paced for clarity."
+    wi = make_a_audio(intro); segments.append(wi); elapsed += get_wav_duration_seconds(wi); log("Narration", intro, elapsed)
+
+    last = seed
+    for _ in range(turns):
+        if elapsed >= target_seconds: break
+        a_out = await llm(SYSTEM_A, last, max_tokens=120, temperature=0.45)
+        wa = make_a_audio(a_out); segments.append(wa); da = get_wav_duration_seconds(wa); elapsed += da; log("Agent A", a_out, elapsed)
+        if elapsed >= target_seconds: break
+        seg = synth_tone(0.18, 660, 0.18); segments.append(seg); elapsed += get_wav_duration_seconds(seg)
+        b_in = soften_user_seed(f"Agent A just said: {a_out}\nReference context (no need to name files):\n{context[:9000]}")
+        b_out = await llm(SYSTEM_B, b_in, max_tokens=120, temperature=0.45)
+        wb = make_b_audio(b_out); segments.append(wb); db = get_wav_duration_seconds(wb); elapsed += db; log("Agent B", b_out, elapsed)
+        last = b_out
+
+    if elapsed < target_seconds - 1.0:
+        close = "That concludes our review; if you add more context, we can deepen findings and sharpen the next actions."
+        wc = make_b_audio(close); segments.append(wc); elapsed += get_wav_duration_seconds(wc); log("Narration", close, elapsed)
+    out = synth_tone(0.30, 494); segments.append(out); elapsed += get_wav_duration_seconds(out)
+
+    # Render atomically and clean up segment temps
+    out_written = render_master_wav(segments, OUT_WAV)
+    for p in segments:
+        try: 
+            os.remove(p)
+            if p in temp_files:
+                temp_files.remove(p)
+        except Exception: 
+            pass
+
+    # Script + notes
+    with open(SCRIPT_TXT, "w", encoding="utf-8") as f:
+        f.write("\n".join(transcript))
+
+    total_sec = 0.0
+    try:
+        with wave.open(out_written, "rb") as r:
+            total_sec = r.getnframes() / r.getframerate()
+    except Exception:
+        pass
+    with open(SHOW_NOTES, "w", encoding="utf-8") as f:
+        f.write(f"# {TITLE}\n- **Recorded**: {t0}\n- **Duration**: ~{int(total_sec)}s\n")
+        f.write(f"- **Files used**: {', '.join(meta['files'])}\n\n## Structure\n- Intro sting\n- A/B one-sentence rounds\n- Closing line\n- Outro sting\n")
+        f.write("\n## Notes\n- Senior tone; covers all metrics; safe, neutral phrasing.\n")
+
+    print(f"Saved: {out_written}, {SCRIPT_TXT}, {SHOW_NOTES}, {TRANS_JSON}")
+
+# ---------- Entry Point ----------
+if __name__ == "__main__":
+    try:
+        # Ask which version to run
+        print("Choose podcast version:")
+        print("1. Standard version (original)")
+        print("2. Enhanced version (professional features)")
+        choice = input("Enter 1 or 2: ").strip()
+        
+        if choice == "2":
+            asyncio.run(run_enhanced_podcast())
+        else:
+            asyncio.run(run_podcast())
+            
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    except Exception as e:
+        print(f"X Error: {e}")
+        import traceback
+        traceback.print_exc()
