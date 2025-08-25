@@ -355,4 +355,14 @@ async def run_podcast():
         f.write("\n## Episode Structure\n")
         f.write("- Hook & intro\n- A/B debate (8 one-sentence turns)\n- One-sentence close\n")
         f.write("\n## Key Elements\n")
-        f.write("- Senior tone, real debate cadence\n- ALL metrics considered across datasets\n- Concrete ranges, YTD & month deltas,
+        f.write("- Senior tone, real debate cadence\n- ALL metrics considered across datasets\n- Concrete ranges, YTD & month deltas, operational implications\n")
+        f.write("\n## Call to Action\n")
+        f.write("Add more datasets (CSV/JSON/TXT) and re-generate a focused briefing.\n")
+
+    print(f"✅ Saved: {final_wav}, {SCRIPT_TXT}, {SHOW_NOTES}, {TRANS_JSON}")
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run_podcast())
+    except Exception as e:
+        print(f"❌ Error: {e}")
