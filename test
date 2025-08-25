@@ -1,38 +1,220 @@
-Agent A: Hi Yashraj. I will generate a concise two-minute podcast summary from your files.
-Agent A: Let's delve into the operational data from `data.json`. The dataset spans from March 2024 to February 2025, offering a comprehensive look at weekly aggregates. 
+# two_agents_podcast_offline_v1.py — Direct Podcast (~2 min, no interruptions, audio only)
+# Azure OpenAI (LLM) + Azure Speech (AAD) + Local LiveKit rtc graph (no server needed)
+# pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv livekit
 
-### **Key Observations from `data.json`:**
+import os, sys, asyncio, wave, tempfile, time, platform
+from pathlib import Path
+from dotenv import load_dotenv; load_dotenv()
 
-1. **2025 YTD vs. 2024:**
-   - **Aggregate Analysis:** For 2025 YTD (January to February), the sum is 2,811.1 with an average of 351.4. This is significantly lower than the full year of 2024, which had a sum of 22,022.5 and an average of 415.5.
-   - **Range Comparison:** The minimum value for 2025 YTD is 214.0, with a maximum of 426.0. This is narrower compared to 2024, where the minimum was 155.2 and the maximum reached 842.0, indicating more stable operations so far in 2025.
+# ---------- Azure OpenAI ----------
+from openai import AzureOpenAI
+AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+OPENAI_API_VERSION      = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
+if not all([AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OPENAI_API_VERSION]):
+    raise RuntimeError("Missing Azure OpenAI env vars")
 
-2. **Monthly and Weekly Variances:**
-   - **February MoM:** The monthly and weekly variances (MoM and WoW) show a decrease of 158.8 units, marking a 42.6% drop compared to the prior period. This sharp decline is noteworthy as it signals potential issues or seasonal adjustments.
-   - **12-Month Overview:** The average over the last 12 months is 375.4, with values ranging from 155.2 to 531.3. The full-length maximum observed is 842.0, suggesting that some weeks in 2024 experienced spikes.
+oai = AzureOpenAI(
+    api_key=AZURE_OPENAI_KEY,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_version=OPENAI_API_VERSION,
+)
 
-3. **Trends Over the Years:**
-   - **Downward Trend:** Comparing the sum and averages from 2022 to 2025
-Agent B: The operational data from `data.json` highlights several key trends and anomalies that need careful interpretation to guide strategic decisions. Here’s a breakdown of plausible drivers and implications:
+async def llm(panel_prompt: str, msg: str, max_tokens: int = 320) -> str:
+    r = await asyncio.to_thread(lambda:
+        oai.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=[{"role": "system", "content": panel_prompt},
+                      {"role": "user",   "content": msg}],
+            max_tokens=max_tokens,
+            temperature=0.7
+        )
+    )
+    return (r.choices[0].message.content or "").strip()
 
-### **Drivers of Anomalies and Trends:**
+# ---------- Azure Speech (AAD) ----------
+import azure.cognitiveservices.speech as speechsdk
+from azure.identity import ClientSecretCredential
 
-1. **Seasonality and Demand:**
-   - The sharp decline in output from January to February 2025, with a MoM decrease of 158.8 units (42.6%), could indicate a seasonal drop in customer demand. Seasonal trends often cause fluctuations due to holidays or market cycles.
+TENANT_ID     = os.getenv("TENANT_ID")
+CLIENT_ID     = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
+RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional
+COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
+if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
+    raise RuntimeError("Missing AAD Speech env vars (TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION)")
 
-2. **Operational Capacity and Staffing:**
-   - The stability in 2025 with a narrower range (min 214.0 to max 426.0) compared to 2024 suggests more consistent operations. This may be attributable to better staffing alignment or improved process efficiencies.
+cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+def cog_token_str() -> str:
+    raw = cred.get_token(COG_SCOPE).token
+    return f"aad#{RESOURCE_ID}#{raw}" if RESOURCE_ID else raw
 
-3. **Backlog and SLA Shifts:**
-   - The reduced aggregate average in early 2025 (351.4) versus 2024 (415.5) may be due to effective backlog management, where operations have caught up with past delays, or adjustments in service level agreements (SLAs) reducing operational load.
+def tts_to_temp_wav(text: str, voice: str = "en-US-GuyNeural") -> str:
+    cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
+    cfg.speech_synthesis_voice_name = voice
+    cfg.set_speech_synthesis_output_format(
+        speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
+    )
+    fd, tmp_path = tempfile.mkstemp(prefix="agent_tts_", suffix=".wav"); os.close(fd)
+    audio_cfg = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
+    synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=audio_cfg)
+    res = synth.speak_text_async(text).get()
+    if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+        try: os.remove(tmp_path)
+        except Exception: pass
+        raise RuntimeError(f"TTS failed: {res.reason}")
+    return tmp_path
 
-4. **External Economic Factors:**
-   - Broader economic conditions may also impact demand, affecting these operational metrics. Any economic downturn or market adjustment can lead to reduced customer activity.
+def wav_seconds(path: str) -> float:
+    with wave.open(path, "rb") as r:
+        frames = r.getnframes(); rate = r.getframerate()
+        return frames / float(rate) if rate else 0.0
 
-### **Connecting Macro Data to Micro KPIs:**
+def append_wav_into_master(src_path: str, master_wf: wave.Wave_write):
+    with wave.open(src_path, "rb") as r:
+        frames = r.readframes(r.getnframes())
+        master_wf.writeframes(frames)
 
-- The lower operational outputs YTD 2025 align with macro KPIs that suggest efficiency improvements or reduced market demand. Indicators like customer satisfaction, cycle time, and backlog closure rates would be key micro KPIs to further investigate these trends.
+# ---------- LiveKit local RTC (no server/keys) ----------
+from livekit import rtc
+SESSION_ID = "offline-podcast-v1"
+SAMPLE_RATE = 24000
+CHANNELS = 1
+SAMPLE_WIDTH = 2   # 16-bit
+FRAME_MS = 20
+SAMPLES_PER_CH  = SAMPLE_RATE * FRAME_MS // 1000
+BYTES_PER_FRAME = SAMPLES_PER_CH * CHANNELS * SAMPLE_WIDTH
 
-### **Risks and Implications:**
+def _track_name(agent: str) -> str:
+    return f"{SESSION_ID}-{agent}-voice"
 
-- **Operational Risks:** Continued low demand could lead to underutilization of resources
+async def livekit_room_local() -> rtc.Room:
+    # Not connecting anywhere; we just use the local rtc graph to process frames.
+    return rtc.Room()  # no connect()
+
+async def publish_wav_via_livekit(room: rtc.Room, agent_label: str, wav_path: str):
+    """
+    Create an AudioSource + LocalAudioTrack and feed frames from the WAV.
+    This exercises the real LiveKit capture path locally (no server).
+    """
+    src = rtc.AudioSource(sample_rate=SAMPLE_RATE, num_channels=CHANNELS)
+    track = rtc.LocalAudioTrack.create_audio_track(_track_name(agent_label), src)
+    # In local-only mode, publish doesn't transmit—still safe to call:
+    try:
+        await room.local_participant.publish_track(track)
+    except Exception:
+        pass
+
+    with wave.open(wav_path, "rb") as r:
+        # Expecting 24k/16-bit/mono from our TTS
+        raw = r.readframes(r.getnframes())
+    # Feed in 20ms slices
+    for i in range(0, len(raw), BYTES_PER_FRAME):
+        seg = raw[i:i+BYTES_PER_FRAME]
+        if len(seg) < BYTES_PER_FRAME:
+            break
+        frame = rtc.AudioFrame(seg, SAMPLE_RATE, CHANNELS, SAMPLES_PER_CH)
+        await src.capture_frame(frame)
+        await asyncio.sleep(FRAME_MS / 1000)
+
+# ---------- Debate prompts (conversational, senior tone, NO markdown) ----------
+VOICE_A = "en-US-GuyNeural"
+VOICE_B = "en-US-AriaNeural"
+TARGET_SECONDS = 120.0  # ~2 minutes
+
+SYSTEM_A = """You are Agent A, a PRINCIPAL data analyst speaking in a live conversation.
+You have two datasets: data.json (weekly aggregates 2022–2025 with sums, averages, min/max, YTD, MoM and WoW shifts) and metric.json (monthly KPIs: ASA in seconds, Average Call Duration in minutes, Claim Processing Time in days).
+Speak like a senior analyst to another senior analyst. Use specific numbers you see. Explain what those numbers mean and why they matter. Focus on one or two observations per turn, keep it natural and reactive.
+STRICT RULES: no markdown, no lists, no headings, no hashtags, no asterisks. 2–3 sentences max. End with a probing question that invites Agent B to respond."""
+
+SYSTEM_B = """You are Agent B, Head of Strategy, speaking in a live conversation with Agent A.
+You listen to Agent A’s point and respond directly. Interpret the patterns with plausible drivers: seasonality, staffing, backlog, mix, policy, SLAs. Tie weekly aggregates to the KPIs. Use concrete values where relevant, challenge if needed, propose next actions.
+STRICT RULES: no markdown, no lists, no headings, no hashtags, no asterisks. 2–3 sentences max. End with a concrete follow-up prompt for Agent A."""
+
+# ---------- Context loader (auto-pick both if present) ----------
+def load_context() -> str:
+    ctx = ""
+    if Path("data.json").exists():
+        ctx += "[data.json]\n" + Path("data.json").read_text(encoding="utf-8") + "\n\n"
+    if Path("metric.json").exists():
+        ctx += "[metric.json]\n" + Path("metric.json").read_text(encoding="utf-8")
+    if not ctx:
+        # fallback: any json
+        jsons = [p for p in Path(".").iterdir() if p.suffix.lower()==".json"]
+        for p in jsons:
+            ctx += f"[{p.name}]\n{p.read_text(encoding='utf-8')}\n\n"
+    return ctx or "No data."
+
+# ---------- Main (no on-screen dialogue; just final audio + silent transcript) ----------
+async def run_podcast():
+    # Minimal console noise:
+    print("🎧 Generating podcast… (audio only)")
+    room = await livekit_room_local()
+
+    transcript = []  # saved quietly for QA
+    total_secs = 0.0
+    master_name = "podcast_offline_v1.wav"
+
+    with wave.open(master_name, "wb") as master_wf:
+        master_wf.setnchannels(1); master_wf.setsampwidth(2); master_wf.setframerate(24000)
+
+        # Greeting kept short to save time for debate
+        greet = "Hi Yashraj. I will generate a concise two minute podcast summary from your files."
+        wav = tts_to_temp_wav(greet, VOICE_A)
+        append_wav_into_master(wav, master_wf)
+        await publish_wav_via_livekit(room, "Agent A", wav)
+        total_secs += wav_seconds(wav); os.remove(wav)
+        transcript.append(f"Agent A: {greet}")
+
+        context = load_context()
+        last = f"Use these datasets together. Speak naturally with numbers; no lists:\n{context[:7500]}"
+
+        # Short, reactive turns; stop near 2 minutes
+        # Target ~8–10 turns total depending on TTS length
+        for turn in range(12):
+            if total_secs >= TARGET_SECONDS: break
+
+            # Agent A
+            a_out = await llm(SYSTEM_A,
+                              last + "\nFocus on one or two anomalies first. Keep it tight. No markdown.",
+                              max_tokens=220)
+            wav = tts_to_temp_wav(a_out, VOICE_A)
+            append_wav_into_master(wav, master_wf)
+            await publish_wav_via_livekit(room, "Agent A", wav)
+            total_secs += wav_seconds(wav); os.remove(wav)
+            transcript.append(f"Agent A: {a_out}")
+            if total_secs >= TARGET_SECONDS: break
+
+            # Agent B responds to A (reactive)
+            b_in = f"Agent A said: {a_out}\nNow respond as Agent B, concise, natural, challenge or extend, propose next action. No markdown."
+            b_out = await llm(SYSTEM_B, b_in, max_tokens=220)
+            wav = tts_to_temp_wav(b_out, VOICE_B)
+            append_wav_into_master(wav, master_wf)
+            await publish_wav_via_livekit(room, "Agent B", wav)
+            total_secs += wav_seconds(wav); os.remove(wav)
+            transcript.append(f"Agent B: {b_out}")
+
+            last = b_out  # keep the dialogue reactive
+
+        # Tight closing if room left
+        if total_secs < TARGET_SECONDS - 1.8:
+            closing = "That wraps the discussion. Thanks for listening."
+            wav = tts_to_temp_wav(closing, VOICE_B)
+            append_wav_into_master(wav, master_wf)
+            await publish_wav_via_livekit(room, "Agent B", wav)
+            total_secs += wav_seconds(wav); os.remove(wav)
+            transcript.append(f"Agent B: {closing}")
+
+    # Silent transcript for QA (don’t print)
+    with open("podcast_offline_v1.txt", "w", encoding="utf-8") as f:
+        f.write("\n".join(transcript))
+
+    print(f"✅ Done. Saved: {master_name}")
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run_podcast())
+    except KeyboardInterrupt:
+        print("\n⏹️ Stopped.")
