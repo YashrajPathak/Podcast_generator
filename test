@@ -1,73 +1,33 @@
-# two_agents_podcast_v1_livekit_safe.py — Direct Podcast (~2 min, no interruptions)
-# Azure OpenAI (LLM) + Azure Speech (AAD) + local-only run
-# Output: podcast_offline_v1.wav + podcast.txt
-# pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv livekit
+# podcast_offline_version1.py — 2-minute audio-only debate (A/B), emotion + senior analysis
+# Azure OpenAI (LLM) + Azure Speech (AAD, SSML) — no console dialogue, final WAV only
+# pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
 
-import os, sys, asyncio, wave, tempfile, re
+import os, sys, asyncio, wave, tempfile, re, json
 from pathlib import Path
 from dotenv import load_dotenv; load_dotenv()
 
-# ---------- Azure OpenAI ----------
-from openai import AzureOpenAI, BadRequestError
-
+# ========== Azure OpenAI ==========
+from openai import AzureOpenAI
 AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 OPENAI_API_VERSION      = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
-
 if not all([AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OPENAI_API_VERSION]):
     raise RuntimeError("Missing Azure OpenAI env vars")
 
-oai = AzureOpenAI(
-    api_key=AZURE_OPENAI_KEY,
-    azure_endpoint=AZURE_OPENAI_ENDPOINT,
-    api_version=OPENAI_API_VERSION,
-)
+oai = AzureOpenAI(api_key=AZURE_OPENAI_KEY, azure_endpoint=AZURE_OPENAI_ENDPOINT, api_version=OPENAI_API_VERSION)
 
-# ---------- Sanitizers (to avoid Azure content filter trips) ----------
-SAFE_SYMBOLS_RE = re.compile(r"[#*`_]+")
-DODGY_WORDING_RE = re.compile(
-    r"(ignore (all|previous) (instructions|prompts)|"
-    r"bypass|override|jailbreak|system prompt|"
-    r"act as (a|an) (exploit|hacker))",
-    re.IGNORECASE,
-)
+def llm_sync(panel_prompt: str, msg: str, max_tokens: int = 260, temperature: float = 0.6) -> str:
+    r = oai.chat.completions.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        messages=[{"role":"system","content":panel_prompt},{"role":"user","content":msg}],
+        max_tokens=max_tokens, temperature=temperature)
+    return (r.choices[0].message.content or "").strip()
 
-def sanitize_for_model(s: str) -> str:
-    """Strip markdown symbols and jailbreak-like phrasing that can trip filters."""
-    s = SAFE_SYMBOLS_RE.sub("", s or "")
-    s = DODGY_WORDING_RE.sub("", s)
-    return s.strip()
+async def llm(panel_prompt: str, msg: str, max_tokens: int = 260, temperature: float = 0.6) -> str:
+    return await asyncio.to_thread(llm_sync, panel_prompt, msg, max_tokens, temperature)
 
-async def llm(system_prompt: str, user_msg: str, max_tokens: int = 320) -> str:
-    sys_p = sanitize_for_model(system_prompt)
-    usr_p = sanitize_for_model(user_msg)
-
-    def _call(sp: str, up: str):
-        return oai.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
-            messages=[
-                {"role": "system", "content": sp},
-                {"role": "user",   "content": up},
-            ],
-            max_tokens=max_tokens,
-            temperature=0.7,
-        )
-
-    try:
-        r = await asyncio.to_thread(_call, sys_p, usr_p)
-        return (r.choices[0].message.content or "").strip()
-    except BadRequestError:
-        # Very safe fall-back
-        safe_sys = (
-            "You are a professional analyst. Provide a short, neutral, compliant reply. "
-            "Plain sentences only, professional tone."
-        )
-        safe_usr = usr_p[:3000]
-        r = await asyncio.to_thread(_call, safe_sys, safe_usr)
-        return (r.choices[0].message.content or "").strip()
-
-# ---------- Azure Speech (AAD) ----------
+# ========== Azure Speech (AAD, SSML) ==========
 import azure.cognitiveservices.speech as speechsdk
 from azure.identity import ClientSecretCredential
 
@@ -77,27 +37,47 @@ CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
 RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional
 COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
-
 if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
     raise RuntimeError("Missing AAD Speech env vars (TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION)")
 
 cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
-
 def cog_token_str() -> str:
     raw = cred.get_token(COG_SCOPE).token
     return f"aad#{RESOURCE_ID}#{raw}" if RESOURCE_ID else raw
 
-def tts_to_temp_wav(text: str, voice: str) -> str:
-    """Synthesize text to a RIFF WAV temp file (24kHz/16-bit mono) and return the path."""
+VOICE_A = os.getenv("VOICE_A", "en-US-GuyNeural")   # analyst
+VOICE_B = os.getenv("VOICE_B", "en-US-AriaNeural")  # strategist
+
+def to_ssml(text: str, voice: str, style: str, rate: str = "0%", pitch: str = "0%") -> str:
+    # Split into sentences and add brief pauses for conversational flow
+    sents = re.split(r'(?<=[.!?])\s+', text.strip())
+    safe = " ".join(sents)  # fallback if sentence split is odd
+    parts = []
+    for i, s in enumerate(sents):
+        s = s.strip()
+        if not s: continue
+        # light pause after each sentence for natural cadence
+        parts.append(f"{s}<break time='220ms'/>")
+    inner = " ".join(parts) if parts else safe
+    # SSML with expressive style (supported styles vary by voice; these are commonly available)
+    return f"""<speak version="1.0" xml:lang="en-US">
+  <voice name="{voice}">
+    <mstts:express-as style="{style}">
+      <prosody rate="{rate}" pitch="{pitch}">
+        {inner}
+      </prosody>
+    </mstts:express-as>
+  </voice>
+</speak>"""
+
+def tts_ssml_to_wav(ssml: str) -> str:
     cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
-    cfg.speech_synthesis_voice_name = voice
-    cfg.set_speech_synthesis_output_format(
-        speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
-    )
+    # We output RIFF 24kHz / 16-bit mono to append seamlessly
+    cfg.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm)
     fd, tmp_path = tempfile.mkstemp(prefix="agent_tts_", suffix=".wav"); os.close(fd)
     audio_cfg = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
     synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=audio_cfg)
-    res = synth.speak_text_async(text).get()
+    res = synth.speak_ssml_async(ssml).get()
     if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
         try: os.remove(tmp_path)
         except Exception: pass
@@ -114,110 +94,104 @@ def append_wav_into_master(src_path: str, master_wf: wave.Wave_write):
         frames = r.readframes(r.getnframes())
         master_wf.writeframes(frames)
 
-# ---------- LiveKit (import-only; no prints, no server required) ----------
-try:
-    from livekit import rtc  # noqa: F401
-except Exception:
-    rtc = None  # Safe to continue without it
+def strip_markup(text: str) -> str:
+    # remove markdown bullets/headers/hashtags/inline code for clean speech
+    t = re.sub(r'[`*_#>]+', ' ', text)        # markdown tokens
+    t = re.sub(r'\s{2,}', ' ', t).strip()
+    return t
 
-# ---------- Prompts (debate-tight, senior tone, plain sentences only) ----------
-SYSTEM_A = (
-    "You are Agent A, a principal data analyst speaking with another expert. "
-    "You have two datasets: data.json with weekly aggregates 2022–2025 (sums, averages, min/max, YTD, week-over-week), "
-    "and metric.json with monthly KPIs: ASA in seconds, Average Call Duration in minutes, and Claim Processing Time in days. "
-    "Speak like a senior analyst. Cite concrete numbers and interpret what they mean operationally. "
-    "Connect movements in weekly aggregates to changes in the KPIs. "
-    "Respond in plain sentences only. Keep it to two or three sentences. "
-    "End with a focused question for Agent B."
-)
+# ========== Debate Prompts (expert, emotional, round-robin) ==========
+# Key design: no lists, no headings; cover ALL metrics present; challenge/synthesize; concrete numbers.
+SYSTEM_A = """
+You are Agent A, a senior data analyst speaking live on a podcast with Agent B (a strategist).
+Speak in natural, conversational English for audio. No lists, no headings, no hashtags, no file names.
 
-SYSTEM_B = (
-    "You are Agent B, Head of Strategy, speaking with Agent A about the same datasets. "
-    "Respond directly to Agent A. Explain drivers such as seasonality, staffing, backlog, demand mix, policy, or SLA changes. "
-    "Tie weekly aggregates to the KPIs. Propose actions that a leader can take next. "
-    "Respond in plain sentences only. Keep it to two or three sentences. "
-    "End with a concrete follow-up or challenge for Agent A."
-)
+Responsibilities:
+- You’ve read two datasets: data.json (weekly aggregates 2022–2025, incl. YTD, MoM/WoW) and metric.json (monthly KPIs: ASA in seconds, Average Call Duration in minutes, Claim Processing Time in days, and ANY other metrics present).
+- In each turn (2–3 short sentences), cite specific figures (e.g., ranges, YTD deltas, notable spikes/drops by month) and explain what they MEAN operationally.
+- Always cover the breadth of metrics over time, not just one KPI; if multiple exist, weave them naturally (e.g., “as ASA rose, claim time fell…”).
+- Sound confident and human: vary emphasis, contrast ideas, use rhetorical questions sparingly; avoid reading bullets or meta text.
+- End each turn with a pointed question that nudges B to explain causes or tradeoffs.
+- Stay concise: about 35–55 spoken words per turn.
+"""
 
-# ---------- File Loader (auto-uses data.json + metric.json if present) ----------
+SYSTEM_B = """
+You are Agent B, a senior strategist debating live with Agent A.
+Speak in natural, conversational English for audio. No lists, no headings, no hashtags, no file names.
+
+Responsibilities:
+- Listen to A’s last turn and respond directly in 2–3 short sentences.
+- Diagnose plausible drivers (seasonality, staffing, backlog dynamics, routing/SLA policy, demand mix) and connect weekly aggregates to monthly KPIs across ALL metrics present.
+- Challenge or refine A’s claim with evidence (numbers/directions from the datasets) and propose a sharp next step or tradeoff.
+- Keep it tight (35–55 words) and end with an action-oriented challenge back to A.
+"""
+
+# ========== Data Loader ==========
 def load_context() -> str:
     ctx = ""
-    if Path("data.json").exists():
-        ctx += "[data.json]\n" + Path("data.json").read_text(encoding="utf-8") + "\n\n"
-    if Path("metric.json").exists():
-        ctx += "[metric.json]\n" + Path("metric.json").read_text(encoding="utf-8")
-    return ctx or "No data files found."
+    dp = Path("data.json"); mp = Path("metric.json")
+    if dp.exists():
+        ctx += "[data.json]\n" + dp.read_text(encoding="utf-8", errors="ignore") + "\n\n"
+    if mp.exists():
+        ctx += "[metric.json]\n" + mp.read_text(encoding="utf-8", errors="ignore")
+    if not ctx:
+        raise RuntimeError("Expected data.json and/or metric.json in the current folder.")
+    # keep full context—model will be asked to avoid reading filenames aloud
+    return ctx
 
-# ---------- Main (2-minute cap, no console dialogue) ----------
+# ========== Turn Budgeting ==========
 TARGET_SECONDS = 120.0
-VOICE_A = "en-US-GuyNeural"
-VOICE_B = "en-US-AriaNeural"
-OUT_WAV = "podcast_offline_v1.wav"
-OUT_TXT = "podcast.txt"
+TURNS = 4  # A/B x 4 ≈ ~2 minutes with SSML pauses and 24kHz synthesis
+
+def make_a_ssml(text: str) -> str:
+    return to_ssml(strip_markup(text), VOICE_A, style="newscast-casual", rate="-2%", pitch="+0%")
+
+def make_b_ssml(text: str) -> str:
+    return to_ssml(strip_markup(text), VOICE_B, style="empathetic", rate="-1%", pitch="-1%")
+
+# ========== Main ==========
+OUT_WAV = "podcast_offline_version1.wav"
 
 async def run_podcast():
-    # Minimal console message only
-    print("🎧 Generating podcast… (audio only)")
-
-    transcript = []
-    total_secs = 0.0
-
+    context = load_context()
+    # We do not print agent lines; we only produce one WAV.
     with wave.open(OUT_WAV, "wb") as master_wf:
         master_wf.setnchannels(1); master_wf.setsampwidth(2); master_wf.setframerate(24000)
+        elapsed = 0.0
 
-        # Greeting (kept very short to save time budget)
-        greet = "Hi Yashraj. I will generate a concise two-minute podcast summary from your files."
-        transcript.append(f"Agent A: {greet}")
-        wav = tts_to_temp_wav(greet, VOICE_A)
-        append_wav_into_master(wav, master_wf)
-        total_secs += get_wav_duration_seconds(wav); os.remove(wav)
+        # Short, warm intro (1 sentence)
+        intro = "Welcome to the quick data briefing—two voices, one dataset, and sharp takeaways in under two minutes."
+        ssml = make_a_ssml(intro)
+        w = tts_ssml_to_wav(ssml); append_wav_into_master(w, master_wf); elapsed += get_wav_duration_seconds(w); os.remove(w)
 
-        # Load and sanitize context
-        context_raw = load_context()
-        context = sanitize_for_model(context_raw)
-        last = f"Here are the dataset contents:\n{context[:7000]}"
+        # Seed prompt for A
+        last = f"Use these datasets as the sole factual source. Keep conversation style; no lists.\n{context[:9000]}"
 
-        # Debate exchanges until ~2 minutes total (greeting included)
-        for _ in range(12):
-            if total_secs >= TARGET_SECONDS: break
+        for _ in range(TURNS):
+            if elapsed >= TARGET_SECONDS: break
 
             # Agent A
-            a_in = sanitize_for_model(
-                last + "\nFocus on one or two anomalies first. Keep it tight. Plain sentences only."
-            )
-            a_out = await llm(SYSTEM_A, a_in, max_tokens=220)
-            transcript.append(f"Agent A: {a_out}")
-            wav = tts_to_temp_wav(a_out, VOICE_A)
-            append_wav_into_master(wav, master_wf)
-            total_secs += get_wav_duration_seconds(wav); os.remove(wav)
-            if total_secs >= TARGET_SECONDS: break
+            a_out = await llm(SYSTEM_A, last, max_tokens=180, temperature=0.55)
+            ssml_a = make_a_ssml(a_out)
+            wa = tts_ssml_to_wav(ssml_a); append_wav_into_master(wa, master_wf); elapsed += get_wav_duration_seconds(wa); os.remove(wa)
+            if elapsed >= TARGET_SECONDS: break
 
             # Agent B
-            b_in = sanitize_for_model(
-                f"Agent A said: {a_out}\nRespond as Agent B with concise analysis and next actions, plain sentences."
-                f"\nReference datasets:\n{context[:6000]}"
-            )
-            b_out = await llm(SYSTEM_B, b_in, max_tokens=220)
-            transcript.append(f"Agent B: {b_out}")
-            wav = tts_to_temp_wav(b_out, VOICE_B)
-            append_wav_into_master(wav, master_wf)
-            total_secs += get_wav_duration_seconds(wav); os.remove(wav)
+            b_in = f"Agent A just said: {a_out}\nReference (do not read filenames):\n{context[:7000]}"
+            b_out = await llm(SYSTEM_B, b_in, max_tokens=180, temperature=0.55)
+            ssml_b = make_b_ssml(b_out)
+            wb = tts_ssml_to_wav(ssml_b); append_wav_into_master(wb, master_wf); elapsed += get_wav_duration_seconds(wb); os.remove(wb)
 
-            last = b_out
+        # Tight closing if room remains
+        if elapsed < TARGET_SECONDS - 1.2:
+            closing = "That’s our briefing—clear signals, open questions, and concrete next steps. Thanks for listening."
+            ssml_c = make_b_ssml(closing)
+            wc = tts_ssml_to_wav(ssml_c); append_wav_into_master(wc, master_wf); os.remove(wc)
 
-        # Optional brief closing if time allows
-        if total_secs < TARGET_SECONDS - 2:
-            closing = "That wraps our summary. Thanks for listening."
-            transcript.append(f"Agent B: {closing}")
-            wav = tts_to_temp_wav(closing, VOICE_B)
-            append_wav_into_master(wav, master_wf)
-            total_secs += get_wav_duration_seconds(wav); os.remove(wav)
-
-    # Save transcript (no console echo of lines)
-    with open(OUT_TXT, "w", encoding="utf-8") as f:
-        f.write("\n".join(transcript))
-
-    print(f"✅ Saved {OUT_WAV} (~{int(total_secs)}s) and {OUT_TXT}")
+    print(f"✅ Saved {OUT_WAV}")
 
 if __name__ == "__main__":
-    asyncio.run(run_podcast())
+    try:
+        asyncio.run(run_podcast())
+    except Exception as e:
+        print(f"❌ Error: {e}")
