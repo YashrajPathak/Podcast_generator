@@ -1,13 +1,12 @@
-# podcast_offline_version1.py — 2-minute audio-only A/B debate with script + show notes
-# Phase 1 + Phase 2 features in one go (intro, structure, debate, summary, CTA, metadata)
-# Azure OpenAI (LLM) + Azure Speech (AAD) — final WAV only; no dialogue prints
+# podcast_offline_version1.py — 2-min A/B debate, smoother TTS (48 kHz, pauses, normalization)
+# Azure OpenAI + Azure Speech (AAD). Final outputs only; no console dialogue prints.
 # pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
 
-import os, sys, re, math, wave, json, tempfile, asyncio, datetime
+import os, sys, re, wave, json, tempfile, asyncio, datetime, shutil, struct, math
 from pathlib import Path
 from dotenv import load_dotenv; load_dotenv()
 
-# ========== Azure OpenAI ==========
+# ========= Azure OpenAI =========
 from openai import AzureOpenAI
 AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
@@ -25,10 +24,10 @@ def llm_sync(system: str, user: str, max_tokens: int, temperature: float) -> str
         max_tokens=max_tokens, temperature=temperature)
     return (r.choices[0].message.content or "").strip()
 
-async def llm(system: str, user: str, max_tokens: int=180, temperature: float=0.55) -> str:
+async def llm(system: str, user: str, max_tokens: int=110, temperature: float=0.5) -> str:
     return await asyncio.to_thread(llm_sync, system, user, max_tokens, temperature)
 
-# ========== Azure Speech (AAD) ==========
+# ========= Azure Speech (AAD) =========
 import azure.cognitiveservices.speech as speechsdk
 from azure.identity import ClientSecretCredential
 
@@ -36,7 +35,7 @@ TENANT_ID     = os.getenv("TENANT_ID")
 CLIENT_ID     = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
-RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional
+RESOURCE_ID   = os.getenv("RESOURCE_ID")
 COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
 if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
     raise RuntimeError("Missing AAD Speech env vars (TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION)")
@@ -46,25 +45,25 @@ def cog_token_str() -> str:
     tok = cred.get_token(COG_SCOPE).token
     return f"aad#{RESOURCE_ID}#{tok}" if RESOURCE_ID else tok
 
-VOICE_A = os.getenv("VOICE_A", "en-US-GuyNeural")   # senior analyst
-VOICE_B = os.getenv("VOICE_B", "en-US-AriaNeural")  # senior strategist
+VOICE_A = os.getenv("VOICE_A", "en-US-GuyNeural")
+VOICE_B = os.getenv("VOICE_B", "en-US-AriaNeural")
 
-def ssml_wrapper(inner: str, voice: str, style: str | None, rate: str, pitch: str) -> str:
-    if style:
-        return f"""<speak version="1.0" xml:lang="en-US"
-                 xmlns="http://www.w3.org/2001/10/synthesis"
-                 xmlns:mstts="http://www.w3.org/2001/mstts">
-  <voice name="{voice}">
-    <mstts:express-as style="{style}">
-      <prosody rate="{rate}" pitch="{pitch}">
-        {inner}
-      </prosody>
-    </mstts:express-as>
-  </voice>
-</speak>"""
-    else:
-        return f"""<speak version="1.0" xml:lang="en-US"
-                 xmlns="http://www.w3.org/2001/10/synthesis">
+# ========= Audio constants tuned for clarity =========
+WAV_RATE = 48000                 # use 48 kHz end-to-end
+TURN_SIL_MS = 250                # silence between turns
+SENTENCE_TRAIL_MS = 220          # trailing pause at end of each sentence
+COMMA_PAUSE_MS = 140             # pause after commas
+RATE_ADJ = "-10%"                # slower speech for intelligibility
+
+# ========= Helpers =========
+def strip_markup(t: str) -> str:
+    t = re.sub(r'[`*_#>]+', ' ', t)
+    t = re.sub(r'\s{2,}', ' ', t).strip()
+    return t
+
+def ssml_wrapper(inner: str, voice: str, rate: str, pitch: str="0%") -> str:
+    return f"""<speak version="1.0" xml:lang="en-US"
+             xmlns="http://www.w3.org/2001/10/synthesis">
   <voice name="{voice}">
     <prosody rate="{rate}" pitch="{pitch}">
       {inner}
@@ -72,253 +71,221 @@ def ssml_wrapper(inner: str, voice: str, style: str | None, rate: str, pitch: st
   </voice>
 </speak>"""
 
-def to_ssml(text: str, voice: str, style: str | None, rate: str = "0%", pitch: str = "0%") -> str:
-    # Pace with small pauses between sentences
-    sents = re.split(r'(?<=[.!?])\s+', text.strip())
-    parts = []
-    for s in sents:
-        s = s.strip()
-        if s:
-            parts.append(f"{s}<break time='220ms'/>")
-    inner = " ".join(parts) if parts else text
-    return ssml_wrapper(inner, voice, style, rate, pitch)
+def to_ssml(text: str, voice: str, rate: str = RATE_ADJ) -> str:
+    clean = text.strip()
+    # micro-pause after commas for articulation
+    safe = re.sub(r',\s*', f',<break time="{COMMA_PAUSE_MS}ms"/> ', clean)
+    inner = f"{safe}<break time='{SENTENCE_TRAIL_MS}ms'/>"
+    return ssml_wrapper(inner, voice, rate)
 
-def tts_ssml_to_wav_with_fallback(text: str, voice: str, style: str | None, rate: str, pitch: str) -> str:
+def normalize_pcm_16le(frames: bytes, target_peak=0.9) -> bytes:
+    """Peak-normalize signed 16-bit little-endian PCM to target_peak (0..1)."""
+    if not frames:
+        return frames
+    count = len(frames)//2
+    samples = struct.unpack("<" + "h"*count, frames)
+    peak = max(1, max(abs(s) for s in samples))  # avoid div by zero
+    scale = min(1.0, (target_peak*32767.0)/peak)
+    if scale >= 0.999:  # already fine
+        return frames
+    scaled = [int(max(-32768, min(32767, round(s*scale)))) for s in samples]
+    return struct.pack("<" + "h"*count, *scaled)
+
+def tts_ssml_to_wav(text: str, voice: str) -> str:
     cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
-    cfg.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm)
-
+    # Request 48kHz mono to match master container
+    cfg.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Riff48Khz16BitMonoPcm)
     fd, tmp_path = tempfile.mkstemp(prefix="agent_tts_", suffix=".wav"); os.close(fd)
-    try_styles = [style, None] if style else [None]
-
-    for sty in try_styles:
-        ssml = to_ssml(text, voice, sty, rate, pitch)
-        audio_cfg = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
-        synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=audio_cfg)
-        res = synth.speak_ssml_async(ssml).get()
-        if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            return tmp_path
-    # last fallback: plain text
+    ssml = to_ssml(text, voice)
     audio_cfg = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
     synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=audio_cfg)
-    res = synth.speak_text_async(text).get()
-    if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-        return tmp_path
-
-    try: os.remove(tmp_path)
-    except Exception: pass
-    raise RuntimeError("TTS canceled even after SSML/style fallbacks")
-
-def get_wav_duration_seconds(path: str) -> float:
-    with wave.open(path, "rb") as r:
-        frames = r.getnframes(); rate = r.getframerate()
-        return frames / float(rate) if rate else 0.0
+    res = synth.speak_ssml_async(ssml).get()
+    if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+        # plain text fallback
+        res = synth.speak_text_async(text).get()
+        if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+            try: os.remove(tmp_path)
+            except Exception: pass
+            raise RuntimeError("TTS canceled")
+    # normalize in-place for clarity
+    with wave.open(tmp_path, "rb") as r:
+        params = r.getparams()
+        frames = r.readframes(r.getnframes())
+    frames = normalize_pcm_16le(frames, target_peak=0.9)
+    # rewrite normalized audio
+    with wave.open(tmp_path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(WAV_RATE)
+        w.writeframes(frames)
+    return tmp_path
 
 def append_wav_into_master(src_path: str, master_wf: wave.Wave_write):
     with wave.open(src_path, "rb") as r:
+        # sanity: ensure 48k/16/mono; if not, we still append (but we requested 48k above)
         frames = r.readframes(r.getnframes())
-        master_wf.writeframes(frames)
+    master_wf.writeframes(frames)
 
-def strip_markup(text: str) -> str:
-    t = re.sub(r'[`*_#>]+', ' ', text)
-    t = re.sub(r'\s{2,}', ' ', t).strip()
-    return t
+def write_silence(master_wf: wave.Wave_write, ms: int = TURN_SIL_MS):
+    n = int(WAV_RATE * (ms/1000.0))
+    master_wf.writeframes(b"\x00\x00"*n)
 
-# ========== Simple audio stingers (intro/segue/outro) ==========
-def synth_tone(duration_s: float = 0.4, freq: int = 440, vol: float = 0.3, rate: int = 24000) -> str:
-    """Generate a simple sine-wave WAV and return path."""
-    import struct
-    n = int(duration_s * rate)
-    frames = bytearray()
-    for i in range(n):
-        samp = int(vol * 32767.0 * math.sin(2 * math.pi * freq * (i / rate)))
-        frames += struct.pack('<h', samp)
-    fd, p = tempfile.mkstemp(prefix="tone_", suffix=".wav"); os.close(fd)
-    with wave.open(p, "wb") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
-        w.writeframes(frames)
-    return p
-
-# ========== Prompts (expert, covers ALL metrics, debate style) ==========
+# ========= Prompts: ONE sentence per turn =========
 SYSTEM_A = """
-You are Agent A, a senior data analyst speaking live with Agent B (a strategist). No lists, no headings, no hashtags, no filenames—just natural, crisp conversation.
-
-You have two datasets in memory:
-• data.json — weekly aggregates (2022–2025): 12-mo avg/range, full-series min/max, YTD totals/averages, WoW/MoM deltas.
-• metric.json — monthly KPIs: ASA (seconds), Average Call Duration (minutes), Claim Processing Time (days), and any other metrics present.
-
-In 2–3 tight sentences (≈35–55 words), do ALL of the following each turn:
-• Synthesize across ALL available metrics (not just ASA). Use concrete numbers/ranges where visible (spikes/drops, YTD shifts, major month deltas).
-• Explain what it means operationally (capacity, backlog, policy, demand mix).
-• End with a pointed question that invites B’s strategic response.
-Keep it human and energetic—like a real debate, not a script.
+You are Agent A, a senior data analyst debating live with Agent B.
+SPEAK EXACTLY ONE SENTENCE (18–28 words). No lists, headings, hashtags, or filenames.
+Use both datasets—weekly aggregates (2022–2025: 12-mo averages/ranges, full-series min/max, YTD totals/averages, WoW/MoM deltas) and monthly KPIs (ASA seconds, Average Call Duration minutes, Claim Processing Time days, plus any others present).
+Synthesize across ALL metrics with concrete ranges/deltas, link weeklies to KPIs with an operational implication, and end with a pointed question to B.
 """
 
 SYSTEM_B = """
-You are Agent B, a senior strategist debating live with Agent A. No lists, no headings, no hashtags—just natural, crisp conversation.
-
-In 2–3 tight sentences (≈35–55 words), do ALL of the following:
-• Diagnose plausible drivers for A’s observations (seasonality, staffing, routing/SLA, backlog, demand mix), grounded in the datasets.
-• Tie weekly aggregates to monthly KPIs across ALL metrics present; challenge or refine A where needed.
-• End with a concrete next step or trade-off for A to consider.
-Keep it human and dynamic—acknowledge, build, challenge, decide.
+You are Agent B, a senior strategist debating live with Agent A.
+SPEAK EXACTLY ONE SENTENCE (18–28 words). No lists, headings, hashtags, or filenames.
+Diagnose plausible drivers (seasonality, staffing, routing/SLA, backlog, demand mix) grounded in the datasets, tie weekly aggregates to monthly KPIs, and end with a concrete next step or trade-off for A.
 """
 
-# ========== File selection (asks FIRST) ==========
+# ========= File selection =========
 def ask_file_choice() -> str:
     base = Path(".").resolve()
-    jsons = [p for p in base.iterdir() if p.suffix.lower() == ".json"]
-    names = [p.name for p in jsons]
-    print("📂 JSON files in folder:", names)
-    print("👉 Type one of: data.json, metric.json, both (recommended), or an exact filename, then Enter:")
+    names = [p.name for p in base.iterdir() if p.suffix.lower()==".json"]
+    print("JSON files in folder:", names)
+    print("Type: data.json, metric_data.json, both (recommended), or an exact .json filename, then Enter:")
     choice = sys.stdin.readline().strip().lower()
     return choice or "both"
 
 def load_context(choice: str) -> tuple[str, dict]:
     ctx = ""
     meta = {"files":[]}
-    def add_file(fname: str):
+    def add(fname: str):
         p = Path(fname)
         if p.exists():
             meta["files"].append(fname)
             return f"[{fname}]\n{p.read_text(encoding='utf-8', errors='ignore')}\n\n"
         return ""
     if choice == "both":
-        ctx += add_file("data.json")
-        ctx += add_file("metric.json")
+        ctx += add("data.json")
+        ctx += add("metric_data.json")
     else:
-        # allow partial names or exact
         p = Path(choice)
         if p.exists() and p.suffix.lower()==".json":
-            ctx += add_file(p.name)
+            ctx += add(p.name)
         else:
-            # try common
-            if "data" in choice:   ctx += add_file("data.json")
-            if "metric" in choice: ctx += add_file("metric.json")
+            if "data" in choice:   ctx += add("data.json")
+            if "metric" in choice: ctx += add("metric_data.json")
     if not ctx:
-        # fallback combine if present
-        if Path("data.json").exists():   ctx += add_file("data.json")
-        if Path("metric.json").exists(): ctx += add_file("metric.json")
+        if Path("data.json").exists():           ctx += add("data.json")
+        if Path("metric_data.json").exists():    ctx += add("metric_data.json")
     if not ctx:
-        raise RuntimeError("No data found (need data.json and/or metric.json in the current folder).")
+        raise RuntimeError("Expected data.json and/or metric_data.json in the current folder.")
     return ctx, meta
 
-# ========== Turn Budgeting & voices ==========
+# ========= Debate settings =========
 TARGET_SECONDS = 120.0
-TURNS = 4  # A/B x 4 ≈ ~2 minutes
+TURNS = 6  # 12 sentences total
 
 def make_a_audio(text: str) -> str:
-    clean = strip_markup(text)
-    return tts_ssml_to_wav_with_fallback(clean, VOICE_A, style="newscast-casual", rate="-2%", pitch="+0%")
+    return tts_ssml_to_wav(strip_markup(text), VOICE_A)
 
 def make_b_audio(text: str) -> str:
-    clean = strip_markup(text)
-    return tts_ssml_to_wav_with_fallback(clean, VOICE_B, style="empathetic", rate="-1%", pitch="-1%")
+    return tts_ssml_to_wav(strip_markup(text), VOICE_B)
 
-# ========== Output paths ==========
-OUT_WAV   = "podcast_offline_version1.wav"
-SCRIPT_TXT= "podcast_script.txt"
-SHOW_NOTES= "podcast_shownotes.md"
-TRANS_JSON= "podcast_transcript.jsonl"
-TITLE     = "Ops Signals — Two-Minute Data Debate"
+# ========= Output paths & finalize =========
+OUT_WAV_BASE   = "podcast_offline_version1.wav"
+SCRIPT_TXT     = "podcast_script.txt"
+SHOW_NOTES     = "podcast_shownotes.md"
+TRANS_JSON     = "podcast_transcript.jsonl"
+TITLE          = "Ops Signals — Two-Minute Data Debate"
 
-# ========== Main ==========
+def unique_tmp_out() -> str:
+    fd, p = tempfile.mkstemp(prefix="podcast_", suffix=".wav"); os.close(fd); return p
+
+def finalize_out(tmp_path: str, final_path: str) -> str:
+    try:
+        if Path(final_path).exists():
+            try: os.remove(final_path)
+            except Exception: pass
+        os.replace(tmp_path, final_path)
+        return final_path
+    except Exception:
+        ts = f"{Path(final_path).stem}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
+        ts_path = str(Path(final_path).with_name(ts))
+        shutil.move(tmp_path, ts_path)
+        print(f"Saved as {ts_path} (target in use).")
+        return ts_path
+
+# ========= Main =========
 async def run_podcast():
-    # 0) Ask which files to use (per your requirement)
     choice = ask_file_choice()
     context, meta = load_context(choice)
 
-    # 1) Prepare writers
     transcript = []
-    t0 = datetime.datetime.now().isoformat()
-    with open(TRANS_JSON, "w", encoding="utf-8") as _:
-        pass  # truncate existing
+    with open(TRANS_JSON, "w", encoding="utf-8") as _: pass
 
-    # 2) Prepare master WAV and stingers
-    with wave.open(OUT_WAV, "wb") as master_wf:
-        master_wf.setnchannels(1); master_wf.setsampwidth(2); master_wf.setframerate(24000)
-        elapsed = 0.0
+    tmp_out = unique_tmp_out()
+    try:
+        with wave.open(tmp_out, "wb") as master_wf:
+            master_wf.setnchannels(1); master_wf.setsampwidth(2); master_wf.setframerate(WAV_RATE)
 
-        def log(role: str, text: str, tsec: float):
-            entry = {"ts": datetime.datetime.now().isoformat(), "t": round(tsec,2), "role": role, "text": text}
-            transcript.append(f"{role}: {text}")
-            with open(TRANS_JSON, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            def log(role: str, text: str):
+                entry = {"ts": datetime.datetime.now().isoformat(), "role": role, "text": text}
+                transcript.append(f"{role}: {text}")
+                with open(TRANS_JSON, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-        # Intro sting + hook
-        chime = synth_tone(0.4, 523)
-        append_wav_into_master(chime, master_wf); elapsed += get_wav_duration_seconds(chime)
-        os.remove(chime)
+            # Intro (one sentence)
+            intro = "Welcome to Ops Signals, a fast two-minute debate where a senior analyst and strategist turn your raw metrics into decisions."
+            wi = make_a_audio(intro); append_wav_into_master(wi, master_wf); os.remove(wi)
+            write_silence(master_wf, 240); log("Narration", intro)
 
-        intro = "Welcome to Ops Signals—the two-minute debate where a senior analyst and strategist unpack your data and turn it into decisions."
-        wi = make_a_audio(intro); append_wav_into_master(wi, master_wf); elapsed += get_wav_duration_seconds(wi); os.remove(wi)
-        log("Narration", intro, elapsed)
+            seed = f"Use these datasets as the sole factual source. Keep conversation style; ONE sentence per turn.\n{context[:12000]}"
+            last = seed
 
-        # Context seed (not spoken): instruct the model
-        seed = f"Use these datasets as the sole factual source. Keep conversation style; no lists.\n{context[:12000]}"
+            for _ in range(TURNS):
+                # A
+                a_out = await llm(SYSTEM_A, last, max_tokens=110, temperature=0.46)
+                wa = make_a_audio(a_out); append_wav_into_master(wa, master_wf); os.remove(wa)
+                write_silence(master_wf, TURN_SIL_MS); log("Agent A", a_out)
 
-        # Debate — strict round-robin A/B with strong, senior tone
-        last = seed
-        for turn in range(TURNS):
-            if elapsed >= TARGET_SECONDS: break
+                # B
+                b_in = f"Agent A just said: {a_out}\nReference (do not read filenames):\n{context[:9000]}"
+                b_out = await llm(SYSTEM_B, b_in, max_tokens=110, temperature=0.46)
+                wb = make_b_audio(b_out); append_wav_into_master(wb, master_wf); os.remove(wb)
+                write_silence(master_wf, TURN_SIL_MS); log("Agent B", b_out)
 
-            # A speaks
-            a_out = await llm(SYSTEM_A, last, max_tokens=180, temperature=0.55)
-            wa = make_a_audio(a_out); append_wav_into_master(wa, master_wf); dur_a = get_wav_duration_seconds(wa); elapsed += dur_a; os.remove(wa)
-            log("Agent A", a_out, elapsed)
-            if elapsed >= TARGET_SECONDS: break
+                last = b_out
 
-            # Subtle segue
-            seg = synth_tone(0.18, 660, 0.18)
-            append_wav_into_master(seg, master_wf); elapsed += get_wav_duration_seconds(seg); os.remove(seg)
+            # Close (one sentence)
+            close = "That’s the brief—clear signals, concrete levers, and a path to act now."
+            wc = make_b_audio(close); append_wav_into_master(wc, master_wf); os.remove(wc)
+            write_silence(master_wf, 260); log("Narration", close)
 
-            # B responds
-            b_in = f"Agent A just said: {a_out}\nReference (do not read filenames):\n{context[:9000]}"
-            b_out = await llm(SYSTEM_B, b_in, max_tokens=180, temperature=0.55)
-            wb = make_b_audio(b_out); append_wav_into_master(wb, master_wf); dur_b = get_wav_duration_seconds(wb); elapsed += dur_b; os.remove(wb)
-            log("Agent B", b_out, elapsed)
+    finally:
+        pass
 
-            last = b_out
+    final_out = finalize_out(tmp_out, OUT_WAV_BASE)
 
-            # Tiny guard
-            if elapsed >= TARGET_SECONDS: break
-
-        # Closing (summary + CTA) if time remains
-        if elapsed < TARGET_SECONDS - 1.0:
-            close = "That’s the brief: trends, causes, and actions you can take now. If you want a deeper cut, drop in more files and we’ll widen the lens."
-            wc = make_b_audio(close); append_wav_into_master(wc, master_wf); elapsed += get_wav_duration_seconds(wc); os.remove(wc)
-            log("Narration", close, elapsed)
-
-        # Outro chime
-        out = synth_tone(0.35, 494)
-        append_wav_into_master(out, master_wf); elapsed += get_wav_duration_seconds(out); os.remove(out)
-
-    # 3) Script + show notes
     with open(SCRIPT_TXT, "w", encoding="utf-8") as f:
         f.write("\n".join(transcript))
 
-    total_sec = 0.0
+    total_sec = 0
     try:
-        with wave.open(OUT_WAV, "rb") as r:
+        with wave.open(final_out, "rb") as r:
             total_sec = r.getnframes() / r.getframerate()
     except Exception:
         pass
 
     with open(SHOW_NOTES, "w", encoding="utf-8") as f:
         f.write(f"# {TITLE}\n")
-        f.write(f"- **Recorded**: {t0}\n")
+        f.write(f"- **Recorded**: {datetime.datetime.now().isoformat()}\n")
         f.write(f"- **Duration**: ~{int(total_sec)}s\n")
         f.write(f"- **Files used**: {', '.join(meta['files'])}\n")
-        f.write("\n## Episode Structure\n")
-        f.write("- Hook & intro\n- A/B debate (4 turns)\n- Action-oriented close\n")
-        f.write("\n## Key Elements\n")
-        f.write("- Senior tone, real debate cadence\n- ALL metrics considered across datasets\n- Concrete ranges, YTD & month deltas, operational implications\n")
-        f.write("\n## Call to Action\n")
-        f.write("Add more datasets (CSV/JSON/TXT) and re-generate a focused briefing.\n")
+        f.write("\n## Structure\n- Intro (1 sentence)\n- A/B debate (12 sentences total)\n- Close (1 sentence)\n")
+        f.write("\n## Notes\n- One sentence per turn; slower rate; 48 kHz; per-clip normalization; 250 ms spacing for smooth joins\n")
 
-    print(f"✅ Saved: {OUT_WAV}, {SCRIPT_TXT}, {SHOW_NOTES}, {TRANS_JSON}")
+    print(f"Saved: {final_out}, {SCRIPT_TXT}, {SHOW_NOTES}, {TRANS_JSON}")
 
 if __name__ == "__main__":
     try:
         asyncio.run(run_podcast())
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
