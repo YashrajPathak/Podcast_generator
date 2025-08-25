@@ -1,203 +1,38 @@
-# podcast_offline_version1.py — Direct Podcast (~2 min, no console chatter, no live playback)
-# Azure OpenAI (LLM) + Azure Speech (AAD) — final audio only
-# pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
+Agent A: Hi Yashraj. I will generate a concise two-minute podcast summary from your files.
+Agent A: Let's delve into the operational data from `data.json`. The dataset spans from March 2024 to February 2025, offering a comprehensive look at weekly aggregates. 
 
-import os, sys, asyncio, wave
-from pathlib import Path
-from dotenv import load_dotenv; load_dotenv()
+### **Key Observations from `data.json`:**
 
-# ---------- Azure OpenAI ----------
-from openai import AzureOpenAI
-AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
-AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
-OPENAI_API_VERSION      = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
+1. **2025 YTD vs. 2024:**
+   - **Aggregate Analysis:** For 2025 YTD (January to February), the sum is 2,811.1 with an average of 351.4. This is significantly lower than the full year of 2024, which had a sum of 22,022.5 and an average of 415.5.
+   - **Range Comparison:** The minimum value for 2025 YTD is 214.0, with a maximum of 426.0. This is narrower compared to 2024, where the minimum was 155.2 and the maximum reached 842.0, indicating more stable operations so far in 2025.
 
-if not all([AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OPENAI_API_VERSION]):
-    raise RuntimeError("Missing Azure OpenAI env vars (AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OPENAI_API_VERSION)")
+2. **Monthly and Weekly Variances:**
+   - **February MoM:** The monthly and weekly variances (MoM and WoW) show a decrease of 158.8 units, marking a 42.6% drop compared to the prior period. This sharp decline is noteworthy as it signals potential issues or seasonal adjustments.
+   - **12-Month Overview:** The average over the last 12 months is 375.4, with values ranging from 155.2 to 531.3. The full-length maximum observed is 842.0, suggesting that some weeks in 2024 experienced spikes.
 
-oai = AzureOpenAI(
-    api_key=AZURE_OPENAI_KEY,
-    azure_endpoint=AZURE_OPENAI_ENDPOINT,
-    api_version=OPENAI_API_VERSION,
-)
+3. **Trends Over the Years:**
+   - **Downward Trend:** Comparing the sum and averages from 2022 to 2025
+Agent B: The operational data from `data.json` highlights several key trends and anomalies that need careful interpretation to guide strategic decisions. Here’s a breakdown of plausible drivers and implications:
 
-async def llm(panel_prompt: str, msg: str, max_tokens: int = 350) -> str:
-    r = await asyncio.to_thread(lambda:
-        oai.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
-            messages=[{"role": "system", "content": panel_prompt},
-                      {"role": "user", "content": msg}],
-            max_tokens=max_tokens,
-            temperature=0.8
-        )
-    )
-    return (r.choices[0].message.content or "").strip()
+### **Drivers of Anomalies and Trends:**
 
-# ---------- Azure Speech (AAD) ----------
-import azure.cognitiveservices.speech as speechsdk
-from azure.identity import ClientSecretCredential
+1. **Seasonality and Demand:**
+   - The sharp decline in output from January to February 2025, with a MoM decrease of 158.8 units (42.6%), could indicate a seasonal drop in customer demand. Seasonal trends often cause fluctuations due to holidays or market cycles.
 
-TENANT_ID     = os.getenv("TENANT_ID")
-CLIENT_ID     = os.getenv("CLIENT_ID")
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
-RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional
-COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
+2. **Operational Capacity and Staffing:**
+   - The stability in 2025 with a narrower range (min 214.0 to max 426.0) compared to 2024 suggests more consistent operations. This may be attributable to better staffing alignment or improved process efficiencies.
 
-if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
-    raise RuntimeError("Missing AAD Speech env vars (TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION)")
+3. **Backlog and SLA Shifts:**
+   - The reduced aggregate average in early 2025 (351.4) versus 2024 (415.5) may be due to effective backlog management, where operations have caught up with past delays, or adjustments in service level agreements (SLAs) reducing operational load.
 
-cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
-def cog_token_str() -> str:
-    raw = cred.get_token(COG_SCOPE).token
-    return f"aad#{RESOURCE_ID}#{raw}" if RESOURCE_ID else raw
+4. **External Economic Factors:**
+   - Broader economic conditions may also impact demand, affecting these operational metrics. Any economic downturn or market adjustment can lead to reduced customer activity.
 
-def tts_to_pcm(text: str, voice: str) -> bytes:
-    """Synthesize text to RAW PCM (24 kHz, 16-bit mono) and return bytes."""
-    cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
-    cfg.speech_synthesis_voice_name = voice
-    cfg.set_speech_synthesis_output_format(
-        speechsdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm
-    )
-    synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=None)
-    res = synth.speak_text_async(text).get()
-    if res.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
-        raise RuntimeError(f"TTS failed: {res.reason}")
-    return res.audio_data
+### **Connecting Macro Data to Micro KPIs:**
 
-# ---------- Audio helpers ----------
-SR = 24000
-SAMPLE_WIDTH = 2  # 16-bit
-CHANNELS = 1
+- The lower operational outputs YTD 2025 align with macro KPIs that suggest efficiency improvements or reduced market demand. Indicators like customer satisfaction, cycle time, and backlog closure rates would be key micro KPIs to further investigate these trends.
 
-def pcm_duration_seconds(pcm: bytes) -> float:
-    frames = len(pcm) // (SAMPLE_WIDTH * CHANNELS)
-    return frames / float(SR)
+### **Risks and Implications:**
 
-def write_podcast_wav(pcm_chunks: list[bytes], out_path: str):
-    with wave.open(out_path, "wb") as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(SAMPLE_WIDTH)
-        wf.setframerate(SR)
-        for b in pcm_chunks:
-            wf.writeframes(b)
-
-# ---------- Prompts (FULL, tailored for your data.json + metric.json) ----------
-SYSTEM_A = """You are Agent A, a data analyst.
-You analyze operational data and metrics from two files:
-
-1. data.json — weekly aggregates across 2022–2025 (sums, averages, min/max, YTD, MoM and VoV shifts).
-2. metric.json — monthly KPIs including:
-   - ASA (Average Speed of Answer) in seconds
-   - Average Call Duration in minutes
-   - Average Claim Processing Time in days
-
-Your task:
-- Provide a structured and detailed analysis of BOTH datasets together.
-- Highlight anomalies: ASA spikes, sharp falls, large variances, YTD and MoM movements.
-- Connect weekly aggregates (data.json) with granular KPIs (metric.json).
-- Use comparisons (2024 vs 2025 YTD, etc.).
-- Narrate clearly for audio, in natural concise sentences.
-- Always end your turn with a probing analytical question for Agent B."""
-
-SYSTEM_B = """You are Agent B, a strategist.
-You interpret the insights Agent A describes, using both data.json and metric.json.
-
-Your task:
-- Explain plausible drivers for anomalies: seasonality, staffing, backlog, SLA shifts, customer demand.
-- Connect macro weekly data to micro KPIs.
-- Discuss risks, implications, and possible operational responses.
-- Suggest practical actions (e.g., increase staffing, process redesign).
-- Narrate clearly for audio, concise and structured.
-- Always end by proposing a concrete next step or challenge back to Agent A."""
-
-# ---------- File loader (choice: data.json, metric.json, or both) ----------
-def load_context_from_choice() -> str:
-    base = Path(".").resolve()
-    # minimal prompt for the file name (no agent text will be printed later)
-    print("Enter file to analyze: type 'data.json', 'metric.json', or 'both':", flush=True)
-    choice = sys.stdin.readline().strip().lower()
-
-    def read_if_exists(name: str) -> str:
-        p = base / name
-        return p.read_text(encoding="utf-8") if p.exists() else ""
-
-    if "both" in choice or ("data" in choice and "metric" in choice):
-        ctx = ""
-        d = read_if_exists("data.json")
-        m = read_if_exists("metric.json")
-        if d: ctx += "[data.json]\n" + d + "\n\n"
-        if m: ctx += "[metric.json]\n" + m
-        return ctx or "No data."
-    if "data" in choice:
-        d = read_if_exists("data.json")
-        return ("[data.json]\n" + d) if d else "No data."
-    if "metric" in choice:
-        m = read_if_exists("metric.json")
-        return ("[metric.json]\n" + m) if m else "No data."
-
-    # default fallbacks
-    ctx = ""
-    if (base/"data.json").exists():
-        ctx += "[data.json]\n" + (base/"data.json").read_text(encoding="utf-8") + "\n\n"
-    if (base/"metric.json").exists():
-        ctx += "[metric.json]\n" + (base/"metric.json").read_text(encoding="utf-8")
-    return ctx or "No data."
-
-# ---------- Main (no live playback, no agent text printed) ----------
-TARGET_SECONDS = 120.0
-VOICE_A = "en-US-GuyNeural"
-VOICE_B = "en-US-AriaNeural"
-OUT_WAV = "podcast_offline_version1.wav"
-
-async def run_podcast():
-    pcm_chunks: list[bytes] = []
-    transcript: list[str] = []
-    total_secs = 0.0
-
-    # 1) Greeting (kept short, included in final audio)
-    greeting = "Hi Yashraj. I will generate a concise two-minute podcast summary from your files."
-    transcript.append(f"Agent A: {greeting}")
-    pcm = tts_to_pcm(greeting, VOICE_A); pcm_chunks.append(pcm); total_secs += pcm_duration_seconds(pcm)
-
-    # 2) Load chosen data (no printing of agent content)
-    context = load_context_from_choice()
-    ctx_snip = context[:7000]  # context for LLM; not printed
-
-    # 3) Dialogue rounds until ~2 minutes (greeting + content)
-    last = f"Here are the dataset contents:\n{ctx_snip}"
-
-    for _ in range(12):
-        if total_secs >= TARGET_SECONDS: break
-
-        # Agent A
-        a_out = await llm(SYSTEM_A, last)
-        transcript.append(f"Agent A: {a_out}")
-        pcm = tts_to_pcm(a_out, VOICE_A); pcm_chunks.append(pcm); total_secs += pcm_duration_seconds(pcm)
-        if total_secs >= TARGET_SECONDS: break
-
-        # Agent B
-        b_in = f"Agent A said: {a_out}\nReference datasets:\n{ctx_snip}"
-        b_out = await llm(SYSTEM_B, b_in)
-        transcript.append(f"Agent B: {b_out}")
-        pcm = tts_to_pcm(b_out, VOICE_B); pcm_chunks.append(pcm); total_secs += pcm_duration_seconds(pcm)
-
-        last = b_out
-
-    # 4) Short closing if we still have time
-    if total_secs < TARGET_SECONDS - 2.0:
-        closing = "That wraps our quick summary. Thanks for listening."
-        transcript.append(f"Agent B: {closing}")
-        pcm = tts_to_pcm(closing, VOICE_B); pcm_chunks.append(pcm); total_secs += pcm_duration_seconds(pcm)
-
-    # 5) Save final WAV + transcript
-    write_podcast_wav(pcm_chunks, OUT_WAV)
-    with open("podcast.txt", "w", encoding="utf-8") as f:
-        f.write("\n".join(transcript))
-
-    # Only one final confirmation line
-    print(f"Saved {OUT_WAV} (~{int(total_secs)}s)")
-
-if __name__ == "__main__":
-    asyncio.run(run_podcast())
+- **Operational Risks:** Continued low demand could lead to underutilization of resources
