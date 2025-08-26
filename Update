@@ -1,25 +1,24 @@
-# podcast_professional.py — Enhanced professional podcast with Azure OpenAI + Azure Speech
+# podcast_professional.py — Manager-ready: natural voices, no music, deep prompts, no repetition, atomic WAV
 # pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
 
-import os, sys, re, math, wave, json, tempfile, asyncio, datetime, shutil, atexit
+import os, sys, re, math, wave, json, tempfile, asyncio, datetime, atexit, random
 from pathlib import Path
 from dotenv import load_dotenv; load_dotenv()
 
-# ========== Global variables and setup ==========
-temp_files = []  # Track temporary files for cleanup
-
+# -------------------- temp tracking & cleanup --------------------
+temp_files: list[str] = []
 @atexit.register
-def cleanup_temp_files():
-    """Clean up all temporary files on exit"""
-    for file in temp_files:
+def _cleanup():
+    for p in list(temp_files):
         try:
-            if os.path.exists(file):
-                os.remove(file)
+            if os.path.exists(p):
+                os.remove(p)
         except Exception:
             pass
 
-# ========== Azure OpenAI ==========
+# -------------------- Azure OpenAI (safe + anti-repetition support) --------------------
 from openai import AzureOpenAI, BadRequestError
+
 AZURE_OPENAI_KEY        = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
@@ -33,40 +32,51 @@ def llm_sync(system: str, user: str, max_tokens: int, temperature: float) -> str
     r = oai.chat.completions.create(
         model=AZURE_OPENAI_DEPLOYMENT,
         messages=[{"role":"system","content":system},{"role":"user","content":user}],
-        max_tokens=max_tokens, temperature=temperature)
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=0.85
+    )
     return (r.choices[0].message.content or "").strip()
 
-# ===== Softener + Safe Retry =====
 def soften_user_seed(text: str) -> str:
     t = text
     t = re.sub(r'\b[Ss]ole factual source\b', 'primary context', t)
     t = re.sub(r'\b[Dd]o not\b', 'please avoid', t)
     t = re.sub(r"\b[Dd]on't\b", 'please avoid', t)
     t = re.sub(r'\b[Ii]gnore\b', 'do not rely on', t)
+    t = t.replace("debate", "discussion").replace("Debate", "Discussion")
+    return t
+
+def one_sentence_only(text: str) -> str:
+    t = text.strip()
+    t = re.sub(r'[`*_#>]+', ' ', t)
+    t = re.sub(r'\s{2,}', ' ', t).strip()
+    parts = re.split(r'(?<=[.!?])\s+', t)
+    for p in parts:
+        p = p.strip()
+        if p:
+            if len(p.split()) > 30:
+                words = p.split()
+                p = " ".join(words[:28]) + "…"
+            return p
     return t
 
 def validate_response(text: str) -> bool:
-    """Check if response meets quality standards"""
-    if not text or len(text.strip()) < 10:
-        return False
-    if text.count(".") > 3:  # Allow slightly more sentences for expressiveness
-        return False
-    if text.isupper():  # ALL CAPS
-        return False
-    if re.search(r'http[s]?://', text):  # URLs
-        return False
+    if not text or len(text.strip()) < 10: return False
+    if text.count(".") > 2: return False
+    if text.isupper(): return False
+    if re.search(r'http[s]?://', text): return False
     return True
 
 def llm_sync_safe(system: str, user: str, max_tokens: int, temperature: float) -> str:
     try:
         out = llm_sync(system, user, max_tokens, temperature)
         if not validate_response(out):
-            # Try again with different parameters if validation fails
             out = llm_sync(system, user, max_tokens=100, temperature=min(0.8, temperature + 0.1))
-        return out.strip()
+        return one_sentence_only(out)
     except BadRequestError as e:
         msg = str(e)
-        if "content management policy" in msg or "content filter" in msg or getattr(e, "status_code", None) == 400:
+        if ("content management policy" in msg) or ("content filter" in msg) or getattr(e, "status_code", None) == 400:
             soft_system = system.replace("debate", "discussion").replace("Debate", "Discussion")
             soft_user   = soften_user_seed(user)
             try:
@@ -76,18 +86,18 @@ def llm_sync_safe(system: str, user: str, max_tokens: int, temperature: float) -
                     max_tokens=max(60, max_tokens-20),
                     temperature=max(0.1, temperature-0.2)
                 )
-                return out.strip()
+                return one_sentence_only(out)
             except Exception:
                 minimal_system = "You are a professional analyst. Produce one safe, neutral sentence grounded in the provided context."
                 minimal_user   = "Summarize cross-metric trends and propose one action in a single safe sentence."
                 out = llm_sync(minimal_system, minimal_user, max_tokens=80, temperature=0.2)
-                return out.strip()
+                return one_sentence_only(out)
         raise
 
-async def llm(system: str, user: str, max_tokens: int=180, temperature: float=0.65) -> str:
+async def llm(system: str, user: str, max_tokens: int=120, temperature: float=0.45) -> str:
     return await asyncio.to_thread(llm_sync_safe, system, user, max_tokens, temperature)
 
-# ========== Azure Speech (AAD) ==========
+# -------------------- Azure Speech (AAD) --------------------
 import azure.cognitiveservices.speech as speechsdk
 from azure.identity import ClientSecretCredential
 
@@ -105,161 +115,196 @@ def cog_token_str() -> str:
     tok = cred.get_token(COG_SCOPE).token
     return f"aad#{RESOURCE_ID}#{tok}" if RESOURCE_ID else tok
 
-# Updated voice assignments as requested
-VOICE_NEXUS = os.getenv("AZURE_VOICE_HOST", "en-US-JennyNeural")  # Lady voice for Agent Nexus
-VOICE_RECO = os.getenv("AZURE_VOICE_BA", "en-US-JennyNeural")     # Agent Reco
-VOICE_STATIX = os.getenv("AZURE_VOICE_DA", "en-US-BrianNeural")   # Agent Statix
+# Voices per manager:
+# - Nexus: distinct FEMALE host (NOT Jenny). Use Aria by default; override via AZURE_VOICE_HOST.
+# - Reco: Jenny (female).
+# - Statix: Brian (male).
+VOICE_NEXUS  = os.getenv("AZURE_VOICE_HOST", "en-US-AriaNeural")
+VOICE_RECO   = os.getenv("AZURE_VOICE_BA",   "en-US-JennyNeural")
+VOICE_STATIX = os.getenv("AZURE_VOICE_DA",   "en-US-BrianNeural")
 
-# Enhanced voice settings for more expressive delivery
 VOICE_SETTINGS = {
-    "NEXUS": {"style": "friendly", "rate": "-2%", "pitch": "+3%", "express_as": "cheerful"},
-    "RECO": {"style": "empathetic", "rate": "-3%", "pitch": "+1%", "express_as": "hopeful"},
-    "STATIX": {"style": "serious", "rate": "-4%", "pitch": "-2%", "express_as": "warm"}
+    "NEXUS":  {"style": "newscast-casual", "rate": "-5%", "pitch": "+2%"},
+    "RECO":   {"style": "friendly",        "rate": "-6%", "pitch": "+1%"},
+    "STATIX": {"style": "serious",         "rate": "-6%", "pitch": "-1%"},
 }
 
-def ssml_wrapper(inner: str, voice: str, style: str, rate: str, pitch: str, express_as: str) -> str:
-    return f"""<speak version="1.0" xml:lang="en-US"
+def ssml_wrapper(inner: str, voice: str, style: str | None, rate: str, pitch: str) -> str:
+    if style:
+        return f"""<speak version="1.0" xml:lang="en-US"
                  xmlns="http://www.w3.org/2001/10/synthesis"
                  xmlns:mstts="http://www.w3.org/2001/mstts">
   <voice name="{voice}">
-    <mstts:express-as style="{style}" styledegree="2">
-      <prosody rate="{rate}" pitch="{pitch}" contour="(0%,+0%) (10%,+5%) (40%,+0%) (100%,-2%)">
+    <mstts:express-as style="{style}">
+      <prosody rate="{rate}" pitch="{pitch}">
         {inner}
       </prosody>
     </mstts:express-as>
   </voice>
 </speak>"""
+    return f"""<speak version="1.0" xml:lang="en-US"
+                 xmlns="http://www.w3.org/2001/10/synthesis">
+  <voice name="{voice}">
+    <prosody rate="{rate}" pitch="{pitch}">
+      {inner}
+    </prosody>
+  </voice>
+</speak>"""
 
-def to_ssml(text: str, voice: str, style: str, rate: str, pitch: str, express_as: str) -> str:
-    # Add natural pauses and emphasis for more expressive speech
-    t = text.strip()
-    t = re.sub(r'([.!?])', r'\1<break time="400ms"/>', t)  # Pauses after sentences
-    t = re.sub(r',', ',<break time="250ms"/>', t)  # Pauses after commas
-    t = re.sub(r'\b(important|crucial|significant|remarkable|surprising)\b', r'<emphasis level="strong">\1</emphasis>', t)
-    t = re.sub(r'\b(however|but|although|despite)\b', r'<break time="300ms"/>\1', t)
-    return ssml_wrapper(t, voice, style, rate, pitch, express_as)
+def to_ssml(text: str, voice: str, style: str | None, rate: str = "-6%", pitch: str = "0%") -> str:
+    # relaxed pacing (pauses after commas + tail pause)
+    t = text.strip().replace(",", ",<break time='220ms'/>")
+    inner = f"{t}<break time='320ms'/>"
+    return ssml_wrapper(inner, voice, style, rate, pitch)
 
-def tts_ssml_to_wav_with_fallback(text: str, voice: str, style: str, rate: str, pitch: str, express_as: str) -> str:
+def tts_ssml_to_wav_with_fallback(text: str, voice: str, style: str | None, rate: str, pitch: str) -> str:
     cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
-    cfg.set_speech_synthesis_output_format(
-        speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
-    )
-    fd, tmp_path = tempfile.mkstemp(prefix="agent_tts_", suffix=".wav"); os.close(fd)
-    temp_files.append(tmp_path)
+    cfg.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm)
+    fd, tmp_path = tempfile.mkstemp(prefix="seg_", suffix=".wav"); os.close(fd); temp_files.append(tmp_path)
     try:
-        ssml = to_ssml(text, voice, style, rate, pitch, express_as)
+        try_styles = [style, None] if style else [None]
+        for sty in try_styles:
+            ssml = to_ssml(text, voice, sty, rate, pitch)
+            audio_cfg = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
+            synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=audio_cfg)
+            res = synth.speak_ssml_async(ssml).get()
+            if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+                return tmp_path
+        # plain text fallback
         audio_cfg = speechsdk.audio.AudioOutputConfig(filename=tmp_path)
         synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=audio_cfg)
-        res = synth.speak_ssml_async(ssml).get()
+        res = synth.speak_text_async(text).get()
         if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
             return tmp_path
-        
-        # Fallback without expressive elements
-        ssml = f"""<speak version="1.0" xml:lang="en-US">
-                  <voice name="{voice}">
-                    <prosody rate="{rate}" pitch="{pitch}">
-                      {text}
-                    </prosody>
-                  </voice>
-                </speak>"""
-        res = synth.speak_ssml_async(ssml).get()
-        if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            return tmp_path
-            
-        raise RuntimeError("TTS canceled even after SSML fallbacks")
+        raise RuntimeError("TTS canceled even after SSML/style fallbacks")
     except Exception as e:
-        try: 
-            os.remove(tmp_path)
-            if tmp_path in temp_files:
-                temp_files.remove(tmp_path)
-        except Exception: 
-            pass
-        if "401" in str(e):
-            raise RuntimeError("Authentication failed - check AAD credentials")
-        elif "404" in str(e):
-            raise RuntimeError("Voice not found - check voice name")
-        else:
-            raise RuntimeError(f"TTS failed: {str(e)}")
+        try:
+            if os.path.exists(tmp_path): os.remove(tmp_path)
+        except Exception: pass
+        if "401" in str(e):   raise RuntimeError("Authentication failed - check AAD credentials")
+        if "404" in str(e):   raise RuntimeError("Voice not found - check voice name")
+        raise RuntimeError(f"TTS failed: {str(e)}")
 
 def get_wav_duration_seconds(path: str) -> float:
     with wave.open(path, "rb") as r:
         frames = r.getnframes(); rate = r.getframerate()
         return (frames / float(rate)) if rate else 0.0
 
-# ========== Audio utilities ==========
 def add_silence(duration_ms: int = 300) -> str:
-    """Generate a silent WAV segment"""
-    fd, p = tempfile.mkstemp(prefix="silence_", suffix=".wav")
-    os.close(fd)
-    temp_files.append(p)
+    fd, p = tempfile.mkstemp(prefix="sil_", suffix=".wav"); os.close(fd); temp_files.append(p)
     with wave.open(p, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(24000)
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
         frames = int(24000 * duration_ms / 1000)
         w.writeframes(b'\x00' * frames * 2)
     return p
 
-# ========== Atomic master WAV writer ==========
-def render_master_wav(segment_paths: list[str], out_path: str, rate: int = 24000):
-    """Write all segments to a temp WAV and atomically replace the target."""
-    fd, tmp = tempfile.mkstemp(prefix="podcast_", suffix=".wav")
-    os.close(fd)
-    temp_files.append(tmp)
+# -------------------- Atomic render (prevents Wave_write attr errors) --------------------
+def render_master_wav(segment_paths: list[str], out_path: str, rate: int = 24000) -> str:
+    fd, tmp = tempfile.mkstemp(prefix="podcast_", suffix=".wav"); os.close(fd); temp_files.append(tmp)
     try:
         with wave.open(tmp, "wb") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
             for seg in segment_paths:
                 with wave.open(seg, "rb") as r:
-                    if r.getframerate() != rate or r.getnchannels() != 1 or r.getsampwidth() != 2:
+                    if r.getframerate()!=rate or r.getnchannels()!=1 or r.getsampwidth()!=2:
                         raise RuntimeError(f"Segment format mismatch: {seg}")
                     w.writeframes(r.readframes(r.getnframes()))
         try:
             os.replace(tmp, out_path)
-            if tmp in temp_files:
-                temp_files.remove(tmp)
+            if tmp in temp_files: temp_files.remove(tmp)
+            return out_path
         except PermissionError:
             base, ext = os.path.splitext(out_path)
             alt = f"{base}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}"
             os.replace(tmp, alt)
             print(f"⚠️ Output was locked; wrote to {alt}")
+            if tmp in temp_files: temp_files.remove(tmp)
             return alt
-        return out_path
     except Exception:
-        try: 
-            os.remove(tmp)
-            if tmp in temp_files:
-                temp_files.remove(tmp)
-        except Exception: 
-            pass
+        try:
+            if os.path.exists(tmp): os.remove(tmp)
+            if tmp in temp_files: temp_files.remove(tmp)
+        except Exception: pass
         raise
 
-# ========== Enhanced Character Prompts ==========
-SYSTEM_NEXUS = """You are Agent Nexus, the host of "Optum MultiAgent Conversation". You are warm, engaging, and professional. 
-You facilitate discussions between experts, ask probing questions, and ensure the conversation stays productive. 
-You have a knack for summarizing complex ideas clearly and making technical topics accessible. 
-Your tone is conversational yet authoritative, friendly yet professional. 
-You genuinely enjoy exploring data insights and helping listeners understand their significance."""
+# -------------------- Anti-filler & opener variety --------------------
+FORBIDDEN_STARTERS = {
+    "RECO":   {"absolutely","well","look","sure","okay","so","listen","hey","you know","hold on","right","great point"},
+    "STATIX": {"hold on","actually","well","look","so","right","okay","absolutely","you know","listen","wait"},
+}
+VARIED_OPENERS = {
+    "RECO":   ["Building on that,","Given that signal,","From a prioritization angle,","Operationally,","For outcomes,",
+               "If we chase value first,","From a governance view,","For the roadmap,"],
+    "STATIX": ["The data suggests","Quality checks imply","Trend consistency indicates","From variance patterns,",
+               "Given sampling effects,","Month-to-month drift shows","On integrity grounds,","From historical bounds,"],
+}
+_last_opener_used = {"RECO": None, "STATIX": None}
 
-SYSTEM_RECO = """You are Agent Reco, the metric recommendations specialist. You're passionate about finding the perfect metrics that drive business value. 
-Your personality is energetic, optimistic, and forward-thinking. You get excited about patterns and opportunities in data.
-You speak with conviction about which metrics matter most and why. You're not afraid to champion unconventional ideas if the data supports them.
-You often use phrases like "What's fascinating here is...", "The real opportunity lies in...", "This suggests we should prioritize..."
-You debate passionately but respectfully, backing your recommendations with solid reasoning."""
+def strip_leading_filler(text: str, role: str) -> str:
+    t = text.strip()
+    low = t.lower()
+    low = re.sub(r'^(?:[a-z ]+,\s*)\1+', r'\1', low)  # dedupe repeated interjection
+    for forb in sorted(FORBIDDEN_STARTERS.get(role, set()), key=len, reverse=True):
+        if low.startswith(forb):
+            cut = len(forb)
+            t = t[cut:].lstrip(" ,–-")
+            break
+    return t.strip()
 
-SYSTEM_STATIX = """You are Agent Statix, the metric data and statistical integrity expert. You're meticulous, precise, and deeply analytical.
-Your personality is thoughtful, cautious, and grounded in evidence. You serve as the reality check in conversations.
-You question assumptions, examine methodological rigor, and ensure conclusions are statistically sound.
-You speak deliberately, choosing words carefully. You often use phrases like "Let's examine the underlying data...", 
-"What's the confidence interval here?", "We should consider alternative explanations..."
-You appreciate Reco's enthusiasm but temper it with statistical rigor. You're not pessimistic, but properly skeptical."""
+def diversify_opening(text: str, role: str) -> str:
+    clean = strip_leading_filler(text, role)
+    first_word = clean.split(" ", 1)[0].lower() if clean else ""
+    if not clean or first_word in FORBIDDEN_STARTERS.get(role, set()):
+        pool = VARIED_OPENERS[role][:]
+        prev = _last_opener_used.get(role)
+        if prev in pool: pool.remove(prev)
+        opener = random.choice(pool) if pool else ""
+        _last_opener_used[role] = opener
+        clean = f"{opener} {clean}".strip() if opener else clean
+    return re.sub(r'\s{2,}', ' ', clean).strip()
 
-# ========== File selection & context ==========
+def humanize_line(text: str, role: str) -> str:
+    s = one_sentence_only(text)
+    s = diversify_opening(s, role)
+    return s
+
+# -------------------- Prompts (deeper roles; one sentence; reactive; non-repetitive) --------------------
+SYSTEM_RECO = (
+    "You are Agent Reco, a metrics recommendation specialist speaking with Agent Statix in a live, natural conversation. "
+    "Speak in ONE concise sentence (≈15–25 words). Your sentence must: (1) respond directly to what Statix just said, "
+    "(2) reference the datasets when helpful, (3) recommend a metric or action, (4) use varied, human phrasing. "
+    "Hard rules: do NOT start with fillers or interjections like 'Absolutely', 'Well', 'Look', 'Sure', 'Okay', 'So', "
+    "'Listen', 'Hey', 'You know', 'Hold on', 'Right', 'Great point'. Avoid repeating the same opener across turns. "
+    "Use precise, concrete language; one idea per sentence; no lists, no hashtags, no file names."
+)
+
+SYSTEM_STATIX = (
+    "You are Agent Statix, a metric data and statistical integrity expert responding to Agent Reco in a live, natural conversation. "
+    "Speak in ONE concise sentence (≈15–25 words). Your sentence must: (1) respond explicitly to what Reco just said, "
+    "(2) validate or challenge with a data-based rationale, (3) add one specific trend/quality check, (4) keep phrasing varied. "
+    "Hard rules: do NOT start with fillers or interjections like 'Hold on', 'Actually', 'Well', 'Look', 'So', 'Right', "
+    "'Okay', 'Absolutely', 'You know', 'Listen', 'Wait'. Avoid repeating the same opener across turns. "
+    "Use precise, concrete language; one idea per sentence; no lists, no hashtags, no file names."
+)
+
+# Host (fixed manager lines; not generated)
+HOST_INTRO = (
+    "Hello and welcome to Optum MultiAgent Conversation, where intelligence meets collaboration. "
+    "I’m Agent Nexus, your host and guide through today’s episode. In this podcast, we bring together specialized agents "
+    "to explore the world of metrics, data, and decision-making. Let’s meet today’s experts."
+)
+HOST_OUTRO = (
+    "Thank you to Agents Reco and Statix for their insights, and thank you to our listeners for joining us today."
+)
+
+# -------------------- File selection & context --------------------
+def list_json_files() -> list[str]:
+    return sorted([p.name for p in Path('.').iterdir() if p.suffix.lower()=='.json'])
+
 def ask_file_choice() -> str:
-    base = Path(".").resolve()
-    jsons = [p.name for p in base.iterdir() if p.suffix.lower() == ".json"]
-    print("JSON files in folder:", jsons)
-    print("Type one of: data.json, metric.json, metric_data.json, both (recommended), or an exact filename, then Enter:")
+    files = list_json_files()
+    print("JSON files in folder:", files)
+    print("Type one of: " + ", ".join(files + ["both"]) + ", then Enter:")
     choice = sys.stdin.readline().strip().lower()
     return choice or "both"
 
@@ -272,301 +317,220 @@ def load_context(choice: str) -> tuple[str, dict]:
             meta["files"].append(fname)
             return f"[{fname}]\n{p.read_text(encoding='utf-8', errors='ignore')}\n\n"
         return ""
+    files = list_json_files()
     if choice == "both":
-        ctx += add_file("data.json")
-        if Path("metric_data.json").exists():
-            ctx += add_file("metric_data.json")
-        else:
-            ctx += add_file("metric.json")
+        # if both, include all JSON files found (keeps it simple & future-proof)
+        for f in files:
+            ctx += add_file(f)
     else:
-        p = Path(choice)
-        if p.exists() and p.suffix.lower()==".json":
-            ctx += add_file(p.name)
+        # exact match or partial contains
+        picked = None
+        for f in files:
+            if f.lower() == choice or Path(f).stem.lower() == choice:
+                picked = f; break
+        if not picked:
+            # partial fallback
+            for f in files:
+                if choice in f.lower():
+                    picked = f; break
+        if picked:
+            ctx += add_file(picked)
         else:
-            if "data" in choice: ctx += add_file("data.json")
-            if "metric_data" in choice or "metric" in choice:
-                if Path("metric_data.json").exists():
-                    ctx += add_file("metric_data.json")
-                else:
-                    ctx += add_file("metric.json")
+            # fallback: include all
+            for f in files:
+                ctx += add_file(f)
     if not ctx:
-        if Path("data.json").exists(): ctx += add_file("data.json")
-        if Path("metric_data.json").exists(): ctx += add_file("metric_data.json")
-        elif Path("metric.json").exists(): ctx += add_file("metric.json")
-    if not ctx:
-        raise RuntimeError("No data found (need data.json and/or metric_data.json/metric.json).")
+        raise RuntimeError("No .json files found in the current folder.")
     return ctx, meta
 
 def ask_turns_and_duration() -> tuple[int, float]:
-    print("Enter desired number of Reco/Statix turns (each turn = Reco then Statix). Press Enter for default 5 turns:")
+    print("Enter desired number of Reco/Statix turns (each turn = Reco then Statix). Press Enter for default 6 turns:")
     try:
         t = sys.stdin.readline().strip()
-        turns = int(t) if t else 5
+        turns = int(t) if t else 6
     except Exception:
-        turns = 5
-    turns = max(3, min(8, turns))
-    print("Enter desired duration in minutes (3–6). Press Enter for default 4:")
+        turns = 6
+    turns = max(4, min(10, turns))
+    print("Enter desired duration in minutes (2–5). Press Enter for default 3:")
     try:
         m = sys.stdin.readline().strip()
-        minutes = float(m) if m else 4.0
+        minutes = float(m) if m else 3.0
     except Exception:
-        minutes = 4.0
-    minutes = max(3.0, min(6.0, minutes))
+        minutes = 3.0
+    minutes = max(2.0, min(5.0, minutes))
     return turns, minutes*60.0
 
-# ========== Voices & helpers ==========
-def make_nexus_audio(text: str) -> str:
-    settings = VOICE_SETTINGS["NEXUS"]
-    return tts_ssml_to_wav_with_fallback(text, VOICE_NEXUS, settings["style"], settings["rate"], settings["pitch"], settings["express_as"])
+# -------------------- Voice helpers --------------------
+def make_audio(text: str, who: str, voice: str) -> str:
+    s = VOICE_SETTINGS[who]
+    return tts_ssml_to_wav_with_fallback(text, voice, s["style"], s["rate"], s["pitch"])
 
-def make_reco_audio(text: str) -> str:
-    settings = VOICE_SETTINGS["RECO"]
-    return tts_ssml_to_wav_with_fallback(text, VOICE_RECO, settings["style"], settings["rate"], settings["pitch"], settings["express_as"])
+def make_nexus(text: str) -> str:
+    return make_audio(text, "NEXUS", VOICE_NEXUS)
 
-def make_statix_audio(text: str) -> str:
-    settings = VOICE_SETTINGS["STATIX"]
-    return tts_ssml_to_wav_with_fallback(text, VOICE_STATIX, settings["style"], settings["rate"], settings["pitch"], settings["express_as"])
+def make_reco(text: str) -> str:
+    return make_audio(text, "RECO", VOICE_RECO)
 
-def setup_output_directory():
-    """Create a dedicated output directory with timestamp"""
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(f"podcast_output_{timestamp}")
-    output_dir.mkdir(exist_ok=True)
-    return output_dir
+def make_statix(text: str) -> str:
+    return make_audio(text, "STATIX", VOICE_STATIX)
 
-# ========== Enhanced Main Function ==========
-async def run_enhanced_podcast():
-    # Setup output directory
-    output_dir = setup_output_directory()
-    OUT_WAV = output_dir / "podcast.wav"
-    SCRIPT_TXT = output_dir / "script.txt"
-    SHOW_NOTES = output_dir / "shownotes.md"
-    TRANS_JSON = output_dir / "transcript.jsonl"
-    TITLE = "Optum MultiAgent Conversation"
-    
+# -------------------- Output directory --------------------
+def setup_output_directory() -> Path:
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    d = Path(f"podcast_output_{ts}")
+    d.mkdir(exist_ok=True)
+    return d
+
+# -------------------- Main --------------------
+async def run_podcast():
+    outdir = setup_output_directory()
+    OUT_WAV    = outdir / "podcast.wav"
+    SCRIPT_TXT = outdir / "script.txt"
+    SHOW_NOTES = outdir / "shownotes.md"
+    TRANS_JSON = outdir / "transcript.jsonl"
+    TITLE      = "Optum MultiAgent Conversation"
+
+    files = list_json_files()
     print("Loading context...")
     choice = ask_file_choice()
     context, meta = load_context(choice)
     turns, target_seconds = ask_turns_and_duration()
 
-    with open(TRANS_JSON, "w", encoding="utf-8") as _: 
-        pass
-    
+    # truncate transcript jsonl
+    with open(TRANS_JSON, "w", encoding="utf-8") as _: pass
     transcript = []
     t0 = datetime.datetime.now().isoformat()
 
-    # Build all audio segments
-    segments = []
+    segments: list[str] = []
     elapsed = 0.0
 
     def log(role: str, text: str, tsec: float):
-        entry = {"ts": datetime.datetime.now().isoformat(), "t": round(tsec, 2), "role": role, "text": text}
+        entry = {"ts": datetime.datetime.now().isoformat(), "t": round(tsec,2), "role": role, "text": text}
         transcript.append(f"{role}: {text}")
         with open(TRANS_JSON, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    # Agent Nexus introduction
-    print("Creating Agent Nexus introduction...")
-    nexus_intro = "Hello and welcome to Optum MultiAgent Conversation, where intelligence meets collaboration. I'm Agent Nexus, your host and guide through today's episode. In this podcast, we bring together specialized agents to explore the world of metrics, data, and decision-making. Let's meet today's experts."
-    nexus_audio = make_nexus_audio(nexus_intro)
-    segments.append(nexus_audio)
-    elapsed += get_wav_duration_seconds(nexus_audio)
-    log("Agent Nexus", nexus_intro, elapsed)
-    
-    segments.append(add_silence(500))
-    elapsed += 0.5
+    # Host intro (manager’s exact wording)
+    intro_audio = make_nexus(HOST_INTRO)
+    segments.append(intro_audio); elapsed += get_wav_duration_seconds(intro_audio)
+    log("Agent Nexus", HOST_INTRO, elapsed)
 
-    # Agent Reco introduction
-    print("Creating Agent Reco introduction...")
-    reco_intro = "Hi everyone, I'm Agent Reco, your go-to for metric recommendations. I specialize in identifying the most impactful metrics for performance tracking, optimization, and strategic alignment."
-    reco_audio = make_reco_audio(reco_intro)
-    segments.append(reco_audio)
-    elapsed += get_wav_duration_seconds(reco_audio)
+    # short pause
+    segments.append(add_silence(500)); elapsed += 0.5
+
+    # Agent intros (manager’s exact wording)
+    reco_intro = ("Hi everyone, I’m Agent Reco, your go-to for metric recommendations. "
+                  "I specialize in identifying the most impactful metrics for performance tracking, "
+                  "optimization, and strategic alignment.")
+    a_reco_intro = make_reco(reco_intro)
+    segments.append(a_reco_intro); elapsed += get_wav_duration_seconds(a_reco_intro)
     log("Agent Reco", reco_intro, elapsed)
-    
-    segments.append(add_silence(400))
-    elapsed += 0.4
 
-    # Agent Statix introduction
-    print("Creating Agent Statix introduction...")
-    statix_intro = "Hello! I'm Agent Statix, focused on metric data. I dive deep into data sources, trends, and statistical integrity to ensure our metrics are not just smart—but solid."
-    statix_audio = make_statix_audio(statix_intro)
-    segments.append(statix_audio)
-    elapsed += get_wav_duration_seconds(statix_audio)
+    segments.append(add_silence(400)); elapsed += 0.4
+
+    statix_intro = ("Hello! I’m Agent Statix, focused on metric data. I dive deep into data sources, trends, "
+                    "and statistical integrity to ensure our metrics are not just smart—but solid.")
+    a_statix_intro = make_statix(statix_intro)
+    segments.append(a_statix_intro); elapsed += get_wav_duration_seconds(a_statix_intro)
     log("Agent Statix", statix_intro, elapsed)
-    
-    segments.append(add_silence(600))
-    elapsed += 0.6
 
-    # Nexus transitions to discussion
-    nexus_transition = "Now that we've met our experts, let's dive into the data. Reco, what immediate patterns or opportunities are you seeing in these metrics?"
-    nexus_transition_audio = make_nexus_audio(nexus_transition)
-    segments.append(nexus_transition_audio)
-    elapsed += get_wav_duration_seconds(nexus_transition_audio)
-    log("Agent Nexus", nexus_transition, elapsed)
-    
-    segments.append(add_silence(400))
-    elapsed += 0.4
+    # small settle
+    segments.append(add_silence(600)); elapsed += 0.6
 
-    # Main conversation
-    seed = f"""Here's our current dataset context. Please analyze this thoroughly and have a natural, expressive conversation about it:
-
-{context[:10000]}
-
-Reco, as the metric recommendations specialist, start by sharing what excites you about this data and what key metrics you'd recommend prioritizing."""
-    
+    # Seed (softened), deep yet safe
+    seed = soften_user_seed(
+        "Use these datasets as primary context; produce a natural one-sentence exchange per turn with varied, human phrasing. "
+        "Reference concrete numbers/trends only when visible.\n" + context[:14000]
+    )
     last = seed
-    current_speaker = "RECO"
-    
-    print("Generating expressive podcast conversation...")
+
+    # Conversation loop (strict one sentence, non-repetitive, reactive)
     for i in range(turns):
-        print(f"Processing turn {i+1}/{turns}...")
-        if elapsed >= target_seconds: 
-            break
-            
-        if current_speaker == "RECO":
-            # Agent Reco turn - enthusiastic, recommendation-focused
-            reco_out = await llm(SYSTEM_RECO, last, max_tokens=200, temperature=0.7)
-            w_reco = make_reco_audio(reco_out)
-            segments.append(w_reco)
-            d_reco = get_wav_duration_seconds(w_reco)
-            elapsed += d_reco
-            log("Agent Reco", reco_out, elapsed)
-            
-            segments.append(add_silence(350))
-            elapsed += 0.35
-            
-            if elapsed >= target_seconds: 
-                break
-                
-            # Nexus prompt for Statix response
-            nexus_prompt = f"Statix, what's your take on Reco's recommendation? From a data integrity perspective, what should we be considering?"
-            nexus_audio_prompt = make_nexus_audio(nexus_prompt)
-            segments.append(nexus_audio_prompt)
-            elapsed += get_wav_duration_seconds(nexus_audio_prompt)
-            log("Agent Nexus", nexus_prompt, elapsed)
-            
-            segments.append(add_silence(300))
-            elapsed += 0.3
-            
-            # Prepare for Statix response
-            statix_in = f"""Reco just said: "{reco_out}"
+        if elapsed >= target_seconds: break
 
-Our dataset context: {context[:8000]}
+        # Reco
+        reco_raw = await llm(
+            SYSTEM_RECO,
+            soften_user_seed(
+                "Reply in one sentence with varied, human phrasing; do not reuse your last opener or any filler. "
+                f"Agent Statix previously said: {last if i>0 else 'N/A'}\n"
+                f"Reference context (no need to name files):\n{context[:9000]}"
+            ),
+            max_tokens=120, temperature=0.45
+        )
+        reco_line = humanize_line(reco_raw, "RECO")
+        seg = make_reco(reco_line); segments.append(seg)
+        elapsed += get_wav_duration_seconds(seg)
+        log("Agent Reco", reco_line, elapsed)
 
-Statix, provide your analytical perspective. What data quality considerations, statistical validations, or alternative interpretations should we examine?"""
-            last = statix_in
-            current_speaker = "STATIX"
-            
-        else:  # STATIX turn
-            # Agent Statix turn - analytical, integrity-focused
-            statix_out = await llm(SYSTEM_STATIX, last, max_tokens=200, temperature=0.65)
-            w_statix = make_statix_audio(statix_out)
-            segments.append(w_statix)
-            d_statix = get_wav_duration_seconds(w_statix)
-            elapsed += d_statix
-            log("Agent Statix", statix_out, elapsed)
-            
-            segments.append(add_silence(400))
-            elapsed += 0.4
-            
-            if elapsed >= target_seconds: 
-                break
-                
-            # Nexus prompt for Reco response
-            nexus_prompt = f"Reco, how do you respond to Statix's analytical points? Where do you see alignment or potential adjustments to your recommendations?"
-            nexus_audio_prompt = make_nexus_audio(nexus_prompt)
-            segments.append(nexus_audio_prompt)
-            elapsed += get_wav_duration_seconds(nexus_audio_prompt)
-            log("Agent Nexus", nexus_prompt, elapsed)
-            
-            segments.append(add_silence(300))
-            elapsed += 0.3
-            
-            # Prepare for Reco response
-            reco_in = f"""Statix just provided this analysis: "{statix_out}"
+        segments.append(add_silence(320)); elapsed += 0.32
+        if elapsed >= target_seconds: break
 
-Our dataset context: {context[:8000]}
+        # Statix
+        statix_raw = await llm(
+            SYSTEM_STATIX,
+            soften_user_seed(
+                "Reply in one sentence with varied, human phrasing; do not reuse your last opener or any filler. "
+                f"Agent Reco just said: {reco_line}\n"
+                f"Reference context (no need to name files):\n{context[:9000]}"
+            ),
+            max_tokens=120, temperature=0.45
+        )
+        statix_line = humanize_line(statix_raw, "STATIX")
+        seg = make_statix(statix_line); segments.append(seg)
+        elapsed += get_wav_duration_seconds(seg)
+        log("Agent Statix", statix_line, elapsed)
 
-Reco, respond to Statix's points while reinforcing or refining your metric recommendations. Where do you find agreement or productive tension?"""
-            last = reco_in
-            current_speaker = "RECO"
+        segments.append(add_silence(360)); elapsed += 0.36
+        last = statix_line
 
-    # Agent Nexus conclusion
-    print("Creating Agent Nexus conclusion...")
-    nexus_outro = "Thank you to Agents Reco and Statix for their fascinating insights and spirited discussion today. Your different perspectives really highlight what makes metric analysis both challenging and exciting. And thank you to our listeners for joining us on this Optum MultiAgent Conversation. We look forward to bringing you more data-driven discussions soon."
-    nexus_outro_audio = make_nexus_audio(nexus_outro)
-    segments.append(nexus_outro_audio)
-    elapsed += get_wav_duration_seconds(nexus_outro_audio)
-    log("Agent Nexus", nexus_outro, elapsed)
+    # Host outro (manager’s exact wording)
+    outro_audio = make_nexus(HOST_OUTRO)
+    segments.append(outro_audio); elapsed += get_wav_duration_seconds(outro_audio)
+    log("Agent Nexus", HOST_OUTRO, elapsed)
 
-    print("Rendering final audio...")
-    out_written = render_master_wav(segments, OUT_WAV)
-    
-    # Cleanup
+    # Render atomically
+    out_written = render_master_wav(segments, str(OUT_WAV))
+
+    # cleanup segments (keep only final)
     for p in segments:
-        try: 
+        try:
             if os.path.exists(p) and p not in temp_files:
                 os.remove(p)
-        except Exception: 
+        except Exception:
             pass
 
-    # Enhanced show notes
+    # Save script + notes
+    with open(SCRIPT_TXT, "w", encoding="utf-8") as f:
+        f.write("\n".join(transcript))
+
     total_sec = 0.0
     try:
         with wave.open(out_written, "rb") as r:
             total_sec = r.getnframes() / r.getframerate()
     except Exception:
         pass
-        
+
     with open(SHOW_NOTES, "w", encoding="utf-8") as f:
         f.write(f"# {TITLE}\n\n")
-        f.write(f"## Episode Details\n")
         f.write(f"- **Recorded**: {t0}\n")
         f.write(f"- **Duration**: {int(total_sec // 60)}m {int(total_sec % 60)}s\n")
-        f.write(f"- **Data Sources**: {', '.join(meta['files'])}\n\n")
-        
-        f.write(f"## Participants\n")
-        f.write("- 🎧 **Agent Nexus**: Host and facilitator\n")
-        f.write("- 🔵 **Agent Reco**: Metric recommendations specialist (energetic, optimistic)\n")
-        f.write("- 🔴 **Agent Statix**: Metric data integrity expert (analytical, meticulous)\n\n")
-        
-        f.write(f"## Episode Summary\n")
-        f.write("This episode features a dynamic discussion between Agent Reco and Agent Statix, ")
-        f.write("exploring metric recommendations and data integrity considerations from our latest datasets. ")
-        f.write("The conversation showcases the productive tension between innovative recommendation and statistical rigor.\n\n")
-        
-        f.write(f"## Key Discussion Points\n")
-        discussion_points = [line for line in transcript if any(agent in line for agent in ["Reco", "Statix"])][3:9]
-        for i, line in enumerate(discussion_points):
-            f.write(f"{i+1}. {line.split(':', 1)[1].strip()}\n")
-        
-        f.write(f"\n## Character Insights\n")
-        f.write("- **Agent Reco** brought energetic optimism and forward-thinking metric recommendations\n")
-        f.write("- **Agent Statix** provided careful analysis and data integrity perspectives\n")
-        f.write("- **Agent Nexus** facilitated the discussion and ensured balanced exploration of ideas\n\n")
-        
-        f.write(f"## Next Steps\n")
-        f.write("To explore these metrics further, examine the source datasets or reach out to our analytics team for deeper insights.")
+        f.write(f"- **Data sources**: {', '.join(meta['files'])}\n")
+        f.write("\n## Participants\n")
+        f.write("- 🎧 Agent Nexus (Host)\n- 🔵 Agent Reco (Recommendations)\n- 🔴 Agent Statix (Statistics)\n")
+        f.write("\n## Format\n")
+        f.write("- Host intro, agent intros, one-sentence turns with natural pacing, host outro (no music/jingles)\n")
 
-    print(f"Podcast saved: {out_written}")
-    print(f"Additional files: {SCRIPT_TXT}, {SHOW_NOTES}, {TRANS_JSON}")
-    print("\n🎧 Podcast generation complete! The conversation features:")
-    print("   - Expressive, character-driven dialogue")
-    print("   - Natural debates and discussions")
-    print("   - Emotional nuance in vocal delivery")
-    print("   - Proper conclusion with Agent Nexus signing off")
+    print(f"✅ Saved: {out_written}")
+    print(f"📝 Also wrote: {SCRIPT_TXT}, {SHOW_NOTES}, {TRANS_JSON}")
 
-# ---------- Entry Point ----------
+# -------------------- entry --------------------
 if __name__ == "__main__":
     try:
-        print("Starting Optum MultiAgent Conversation Podcast Generator...")
-        print("Creating expressive, character-driven podcast with emotional depth...")
-        asyncio.run(run_enhanced_podcast())
-            
+        print("Starting Optum MultiAgent Conversation Podcast Generator (no music)…")
+        asyncio.run(run_podcast())
     except KeyboardInterrupt:
         print("\nStopped.")
     except Exception as e:
         print(f"X Error: {e}")
-        import traceback
-        traceback.print_exc()
+        import traceback; traceback.print_exc()
