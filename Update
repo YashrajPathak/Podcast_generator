@@ -1,56 +1,17 @@
-PS C:\Users\ypathak1\podcast_generator> python lk.py
-Starting Optum MultiAgent Conversation Podcast Generator (no music)…
-Loading context...
-JSON files in folder: ['data.json', 'metric_data.json']    
-Type one of: data.json, metric_data.json, both, then Enter:
-both
-Enter desired number of Reco/Statix turns (each turn = Reco then Statix). Press Enter for default 6 turns:
-10
-Enter desired duration in minutes (2–5). Press Enter for default 3:
-5
-X Error: invalid group reference 1 at position 17
-Traceback (most recent call last):
-  File "C:\Users\ypathak1\podcast_generator\lk.py", line 531, in <module>
-    asyncio.run(run_podcast())
-  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 190, in run
-    return runner.run(main)
-           ^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 654, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\lk.py", line 461, in run_podcast
-    reco_line = humanize_line(reco_raw, "RECO")
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\lk.py", line 268, in humanize_line
-    s = diversify_opening(s, role)
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\lk.py", line 255, in diversify_opening
-    clean = strip_leading_filler(text, role)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ypathak1\podcast_generator\lk.py", line 246, in strip_leading_filler
-    low = re.sub(r'^(?:[a-z ]+,\s*)\1+', r'\1', low)  # dedupe repeated interjection
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\re\__init__.py", line 185, in sub
-    return _compile(pattern, flags).sub(repl, string, count)
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\re\__init__.py", line 294, in _compile
-    p = _compiler.compile(pattern, flags)
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\re\_compiler.py", line 745, in compile
-    p = _parser.parse(p, flags)
-        ^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\re\_parser.py", line 989, in parse
-    p = _parse_sub(source, state, flags & SRE_FLAG_VERBOSE, 0)
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\re\_parser.py", line 464, in _parse_sub
-    itemsappend(_parse(source, state, verbose, nested + 1,
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\re\_parser.py", line 548, in _parse
-    code = _escape(source, this, state)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python311\Lib\re\_parser.py", line 444, in _escape
-    raise source.error("invalid group reference %d" % group, len(escape) - 1)
-re.error: invalid group reference 1 at position 17
+def strip_leading_filler(text: str, role: str) -> str:
+    t = text.strip()
+
+    # 1) Dedupe repeated interjections like "Absolutely, absolutely," or
+    #    two-word ones like "Hold on, hold on,"
+    t = re.sub(r'^([A-Za-z]+,\s*)\1+', r'\1', t)                          # single-word repeats
+    t = re.sub(r'^((?:[A-Za-z]+(?:\s+[A-Za-z]+)?),\s*)\1+', r'\1', t)      # up to two-word repeats
+
+    # 2) Remove any forbidden starter (role-specific), case-insensitive
+    low = t.lower()
+    for forb in sorted(FORBIDDEN_STARTERS.get(role, set()), key=len, reverse=True):
+        if low.startswith(forb):
+            cut = len(forb)
+            t = t[cut:].lstrip(" ,–-")
+            break
+
+    return re.sub(r'\s{2,}', ' ', t).strip()
