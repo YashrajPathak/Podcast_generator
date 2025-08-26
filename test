@@ -1,19 +1,19 @@
-# podcast_humanlike.py — No-music podcast with humanlike pitch & safe prompts (Azure OpenAI + Azure Speech)
+# podcast_fixed_openings.py — Exact scripted openings/closings + humanlike one-sentence discussion
+# No music/beeps. Azure OpenAI + Azure Speech.
 # pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
-import os, sys, re, wave, json, math, atexit, tempfile, asyncio, datetime, random
+
+import os, sys, re, wave, json, tempfile, asyncio, datetime, random, atexit
 from pathlib import Path
 from dotenv import load_dotenv; load_dotenv()
 
 # ------------------------- temp tracking & cleanup -------------------------
-TEMP_PATHS: list[str] = []
+TMP: list[str] = []
 @atexit.register
 def _cleanup():
-    for p in TEMP_PATHS:
+    for p in TMP:
         try:
-            if os.path.exists(p):
-                os.remove(p)
-        except Exception:
-            pass
+            if os.path.exists(p): os.remove(p)
+        except Exception: pass
 
 # ------------------------- Azure OpenAI (safe) -----------------------------
 from openai import AzureOpenAI, BadRequestError
@@ -24,11 +24,7 @@ OPENAI_API_VERSION      = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
 if not all([AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, OPENAI_API_VERSION]):
     raise RuntimeError("Missing Azure OpenAI env vars")
 
-oai = AzureOpenAI(
-    api_key=AZURE_OPENAI_KEY,
-    azure_endpoint=AZURE_OPENAI_ENDPOINT,
-    api_version=OPENAI_API_VERSION,
-)
+oai = AzureOpenAI(api_key=AZURE_OPENAI_KEY, azure_endpoint=AZURE_OPENAI_ENDPOINT, api_version=OPENAI_API_VERSION)
 
 def _llm_sync(system: str, user: str, max_tokens: int, temperature: float) -> str:
     r = oai.chat.completions.create(
@@ -46,47 +42,35 @@ def _soften(text: str) -> str:
     t = t.replace("debate","discussion").replace("Debate","Discussion")
     return t
 
-def _one_sentence_gate(text: str, max_words: int = 28) -> str:
-    # strip markup, collapse whitespace, keep the first sentence only, hard cap words
-    t = re.sub(r'[`*_#>]+', ' ', text).strip()
-    t = re.sub(r'\s{2,}', ' ', t)
-    parts = re.split(r'(?<=[.!?])\s+', t) or [t]
-    s = parts[0].strip()
+def _one_sentence(text: str, max_words: int = 26) -> str:
+    t = re.sub(r'[`*_#>]+',' ', text).strip()
+    t = re.sub(r'\s{2,}',' ', t)
+    s = (re.split(r'(?<=[.!?])\s+', t) or [t])[0].strip()
     words = s.split()
-    if len(words) > max_words:
-        s = " ".join(words[:max_words-1]) + "…"
-    # avoid trailing markdown artifacts
-    return s
+    return " ".join(words[:max_words-1]) + "…" if len(words)>max_words else s
 
 def _looks_ok(text: str) -> bool:
-    if not text or len(text.strip()) < 8: return False
-    if text.count(".") > 2: return False
-    if text.isupper(): return False
-    if re.search(r'http[s]?://', text): return False
-    return True
+    return bool(text and len(text.strip())>=8 and text.count(".")<=2 and not text.isupper() and not re.search(r'http[s]?://', text))
 
 def llm_safe(system: str, user: str, max_tokens: int, temperature: float) -> str:
     try:
         out = _llm_sync(system, user, max_tokens, temperature)
         if not _looks_ok(out):
             out = _llm_sync(system, user, max_tokens=max(60, max_tokens//2), temperature=min(0.8, temperature+0.1))
-        return _one_sentence_gate(out)
+        return _one_sentence(out)
     except BadRequestError as e:
-        msg = f"{e}"
-        if "content" in msg.lower():
-            soft_sys = _soften(system) + " Always keep a professional, neutral tone and comply with safety policies."
-            soft_user= _soften(user)
-            try:
-                out = _llm_sync(soft_sys, soft_user, max_tokens=max(60, max_tokens-20), temperature=max(0.1, temperature-0.2))
-                return _one_sentence_gate(out)
-            except Exception:
-                minimal_system = "You are a professional analyst; produce one safe, neutral sentence grounded in the provided context."
-                minimal_user   = "Summarize cross-metric trends and propose one action in a single safe sentence."
-                out = _llm_sync(minimal_system, minimal_user, max_tokens=80, temperature=0.2)
-                return _one_sentence_gate(out)
-        raise
+        soft_sys = _soften(system) + " Always keep a professional, neutral tone and comply with safety policies."
+        soft_user= _soften(user)
+        try:
+            out = _llm_sync(soft_sys, soft_user, max_tokens=max(60, max_tokens-20), temperature=max(0.1, temperature-0.2))
+            return _one_sentence(out)
+        except Exception:
+            minimal_system = "You are a professional analyst; produce one safe, neutral sentence grounded in the provided context."
+            minimal_user   = "Summarize cross-metric trends and propose one action in a single safe sentence."
+            out = _llm_sync(minimal_system, minimal_user, max_tokens=80, temperature=0.2)
+            return _one_sentence(out)
 
-async def llm(system: str, user: str, max_tokens: int=120, temperature: float=0.45) -> str:
+async def llm(system: str, user: str, max_tokens: int=110, temperature: float=0.45) -> str:
     return await asyncio.to_thread(llm_safe, system, user, max_tokens, temperature)
 
 # ------------------------- Azure Speech (AAD) ------------------------------
@@ -96,8 +80,8 @@ from azure.identity import ClientSecretCredential
 TENANT_ID     = os.getenv("TENANT_ID")
 CLIENT_ID     = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-SPEECH_REGION = os.getenv("SPEECH_REGION", "eastus")
-RESOURCE_ID   = os.getenv("RESOURCE_ID")  # optional
+SPEECH_REGION = os.getenv("SPEECH_REGION","eastus")
+RESOURCE_ID   = os.getenv("RESOURCE_ID")
 COG_SCOPE     = "https://cognitiveservices.azure.com/.default"
 if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION]):
     raise RuntimeError("Missing AAD Speech env vars (TENANT_ID, CLIENT_ID, CLIENT_SECRET, SPEECH_REGION)")
@@ -107,174 +91,152 @@ def cog_token_str() -> str:
     tok = cred.get_token(COG_SCOPE).token
     return f"aad#{RESOURCE_ID}#{tok}" if RESOURCE_ID else tok
 
-# Distinct voices per your request
-VOICE_NEXUS  = os.getenv("AZURE_VOICE_HOST", "en-US-SaraNeural")   # female host (distinct from Jenny)
-VOICE_RECO   = os.getenv("AZURE_VOICE_BA",   "en-US-JennyNeural")  # female Reco
-VOICE_STATIX = os.getenv("AZURE_VOICE_DA",   "en-US-BrianNeural")  # male Statix
+# ---- Voices (as requested)
+VOICE_NEXUS  = os.getenv("AZURE_VOICE_HOST", "en-US-SaraNeural")   # Host (female, distinct)
+VOICE_RECO   = os.getenv("AZURE_VOICE_BA",   "en-US-JennyNeural")  # Reco (female)
+VOICE_STATIX = os.getenv("AZURE_VOICE_DA",   "en-US-BrianNeural")  # Statix (male)
 
-# Baseline delivery + humanlike pitch plan
 VOICE_PLAN = {
-    "NEXUS":  {"style":"newscast-casual", "base_pitch":"+2%", "base_rate":"-3%"},
-    "RECO":   {"style":"friendly",        "base_pitch":"+1%", "base_rate":"-4%"},
-    "STATIX": {"style":"serious",         "base_pitch":"-2%", "base_rate":"-5%"},
+    "NEXUS":{"style":"newscast-casual","base_pitch":"+2%","base_rate":"-3%"},
+    "RECO":{"style":"friendly","base_pitch":"+1%","base_rate":"-4%"},
+    "STATIX":{"style":"serious","base_pitch":"-2%","base_rate":"-5%"},
 }
 
-def _jitter(percent_str: str, spread=3) -> str:
-    # percent_str like "+2%" or "-3%"; add ±spread% of micro-variation
-    m = re.match(r'([+-]?\d+)%', percent_str.strip())
-    base = int(m.group(1)) if m else 0
+def _jitter(pct: str, spread=3) -> str:
+    m = re.match(r'([+-]?\d+)%', pct.strip()); base = int(m.group(1)) if m else 0
     j = random.randint(-spread, spread)
-    return f"{base + j}%"
+    return f"{base+j}%"
 
 def _emphasize_numbers(text: str) -> str:
-    # wrap large numbers/percentages with <emphasis>
-    def repl(m):
-        s = m.group(0)
-        return f"<emphasis level=\"moderate\">{s}</emphasis>"
-    t = re.sub(r'\b\d{3,}(\.\d+)?\b', repl, text)            # 1000, 7406, 398.7
-    t = re.sub(r'\b-?\d+(\.\d+)?%\b', repl, t)               # 42.6%
+    wrap = lambda s: f'<emphasis level="moderate">{s}</emphasis>'
+    t = re.sub(r'\b\d{3,}(\.\d+)?\b', lambda m: wrap(m.group(0)), text)
+    t = re.sub(r'\b-?\d+(\.\d+)?%\b', lambda m: wrap(m.group(0)), t)
     return t
 
-def _add_clause_pauses(text: str) -> str:
-    # light pauses after commas/semicolons/“however/but”
+def _clause_pauses(text: str) -> str:
     t = re.sub(r',\s*', ',<break time="220ms"/> ', text)
     t = re.sub(r';\s*', ';<break time="260ms"/> ', t)
-    t = re.sub(r'\bHowever\b', 'However,<break time="220ms"/>', t, flags=re.I)
-    t = re.sub(r'\bBut\b',     'But,<break time="220ms"/>', t, flags=re.I)
+    t = re.sub(r'\bHowever\b','However,<break time="220ms"/>', t, flags=re.I)
+    t = re.sub(r'\bBut\b','But,<break time="220ms"/>', t, flags=re.I)
     return t
 
-def _inflect(text: str, role: str) -> tuple[str, str]:
-    # adjust pitch for questions / contrasts; return (pitch, rate)
+def _inflect(text: str, role: str) -> tuple[str,str]:
     base_pitch = VOICE_PLAN[role]["base_pitch"]
     base_rate  = VOICE_PLAN[role]["base_rate"]
-    pitch = _jitter(base_pitch, spread=3)
-    rate  = _jitter(base_rate,  spread=2)
+    pitch = _jitter(base_pitch, 3)
+    rate  = _jitter(base_rate, 2)
     if text.strip().endswith("?"):
-        # curious lift
         try:
-            pval = int(pitch.replace('%',''))
-            pitch = f"{min(pval+5, pval+7)}%"
-        except Exception:
-            pitch = "+6%"
-    elif re.search(r'\bhowever\b|\bbut\b', text, flags=re.I):
+            p = int(pitch.replace('%','')); pitch = f"{p+6}%"
+        except: pitch = "+6%"
+    elif re.search(r'\bhowever\b|\bbut\b', text, re.I):
         try:
-            pval = int(pitch.replace('%',''))
-            pitch = f"{pval-3}%"
-        except Exception:
-            pitch = "-2%"
+            p = int(pitch.replace('%','')); pitch = f"{p-3}%"
+        except: pitch = "-2%"
     return pitch, rate
 
-def _ssml_wrap(inner: str, voice: str, style: str|None, rate: str, pitch: str) -> str:
+def _ssml(voice: str, style: str|None, rate: str, pitch: str, inner: str) -> str:
     if style:
         return f"""<speak version="1.0" xml:lang="en-US"
-    xmlns="http://www.w3.org/2001/10/synthesis"
-    xmlns:mstts="http://www.w3.org/2001/mstts">
-  <voice name="{voice}">
-    <mstts:express-as style="{style}">
-      <prosody rate="{rate}" pitch="{pitch}">{inner}</prosody>
-    </mstts:express-as>
-  </voice>
+  xmlns="http://www.w3.org/2001/10/synthesis"
+  xmlns:mstts="http://www.w3.org/2001/mstts">
+<voice name="{voice}">
+  <mstts:express-as style="{style}">
+    <prosody rate="{rate}" pitch="{pitch}">{inner}</prosody>
+  </mstts:express-as>
+</voice>
 </speak>"""
     else:
         return f"""<speak version="1.0" xml:lang="en-US"
-    xmlns="http://www.w3.org/2001/10/synthesis">
-  <voice name="{voice}">
-    <prosody rate="{rate}" pitch="{pitch}">{inner}</prosody>
-  </voice>
+  xmlns="http://www.w3.org/2001/10/synthesis">
+<voice name="{voice}">
+  <prosody rate="{rate}" pitch="{pitch}">{inner}</prosody>
+</voice>
 </speak>"""
 
 def text_to_ssml(text: str, role: str) -> str:
-    # Humanlike pipeline: emphasise numbers -> clause pauses -> end pause -> inflect/jitter
     plan = VOICE_PLAN[role]
-    t = text.strip()
-    t = _emphasize_numbers(t)
-    t = _add_clause_pauses(t)
-    t = f"{t}<break time=\"320ms\"/>"
+    t = _emphasize_numbers(text.strip())
+    t = _clause_pauses(t)
+    t = f'{t}<break time="320ms"/>'
     pitch, rate = _inflect(text, role)
     voice = VOICE_NEXUS if role=="NEXUS" else VOICE_RECO if role=="RECO" else VOICE_STATIX
-    return _ssml_wrap(t, voice, plan["style"], rate, pitch)
+    return _ssml(voice, plan["style"], rate, pitch, t)
 
-def synth_ssml_to_wav(ssml: str) -> str:
+def synth(ssml: str) -> str:
     cfg = speechsdk.SpeechConfig(auth_token=cog_token_str(), region=SPEECH_REGION)
-    cfg.set_speech_synthesis_output_format(
-        speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
-    )
-    fd, tmp = tempfile.mkstemp(prefix="tts_", suffix=".wav"); os.close(fd)
-    TEMP_PATHS.append(tmp)
-    audio_cfg = speechsdk.audio.AudioOutputConfig(filename=tmp)
-    synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=audio_cfg)
-    res = synth.speak_ssml_async(ssml).get()
-    if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+    cfg.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm)
+    fd, tmp = tempfile.mkstemp(prefix="seg_", suffix=".wav"); os.close(fd); TMP.append(tmp)
+    out = speechsdk.audio.AudioOutputConfig(filename=tmp)
+    spk = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=out)
+    r = spk.speak_ssml_async(ssml).get()
+    if r.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
         return tmp
-    # fallback – try plain text once
-    text = re.sub(r'<[^>]+>',' ', ssml)
-    synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=audio_cfg)
-    res = synth.speak_text_async(text).get()
-    if res.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+    # fallback once
+    plain = re.sub(r'<[^>]+>',' ', ssml)
+    spk = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=out)
+    r = spk.speak_text_async(plain).get()
+    if r.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
         return tmp
     try: os.remove(tmp)
-    except Exception: pass
-    raise RuntimeError("TTS failed (SSML and text)")
+    except: pass
+    raise RuntimeError("TTS failed")
 
-def get_wav_seconds(path: str) -> float:
+def wav_len(path: str) -> float:
     with wave.open(path, "rb") as r:
-        return r.getnframes() / float(r.getframerate() or 24000)
+        fr = r.getframerate() or 24000
+        return r.getnframes()/float(fr)
 
-# ------------------------- atomic writer (no Wave_write bug) ---------------
-def write_master_wav(segments: list[str], out_path: str, rate=24000) -> str:
+def write_master(segments: list[str], out_path: str, rate=24000) -> str:
     fd, tmp = tempfile.mkstemp(prefix="final_", suffix=".wav"); os.close(fd)
     try:
         with wave.open(tmp, "wb") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
             for seg in segments:
                 with wave.open(seg, "rb") as r:
-                    if r.getframerate()!=rate or r.getnchannels()!=1 or r.getsampwidth()!=2:
+                    if (r.getframerate(), r.getnchannels(), r.getsampwidth()) != (rate,1,2):
                         raise RuntimeError(f"Segment format mismatch: {seg}")
                     w.writeframes(r.readframes(r.getnframes()))
-        try:
-            os.replace(tmp, out_path)
+        try: os.replace(tmp, out_path)
         except PermissionError:
-            base, ext = os.path.splitext(out_path)
+            base,ext = os.path.splitext(out_path)
             alt = f"{base}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}"
             os.replace(tmp, alt)
-            print(f"⚠️ Output file was locked; wrote to {alt}")
+            print(f"⚠️ Output was locked; wrote to {alt}")
             return alt
         return out_path
     except Exception:
         try: os.remove(tmp)
-        except Exception: pass
+        except: pass
         raise
 
 # ------------------------- file selection & context ------------------------
 def list_json_files() -> list[str]:
-    base = Path(".").resolve()
-    return [p.name for p in base.iterdir() if p.is_file() and p.suffix.lower()==".json"]
+    return [p.name for p in Path(".").iterdir() if p.is_file() and p.suffix.lower()==".json"]
 
-def ask_file_choice() -> str:
+def ask_files() -> str:
     files = list_json_files()
     print("JSON files in folder:", files)
     print("Type one of: data.json, metric_data.json, both, then Enter:")
-    choice = sys.stdin.readline().strip().lower()
+    choice = (sys.stdin.readline() or "").strip().lower()
     if choice not in {"data.json","metric_data.json","both"}:
-        return "both" if ("data.json" in files and "metric_data.json" in files) else (files[0] if files else "both")
+        if "data.json" in files and "metric_data.json" in files: return "both"
+        return files[0] if files else "both"
     return choice
 
 def load_context(choice: str) -> tuple[str, dict]:
-    ctx = ""
-    meta = {"files":[]}
+    ctx, meta = "", {"files":[]}
     def add(fname: str):
-        p=Path(fname)
+        p = Path(fname)
         if p.exists():
             meta["files"].append(fname)
             return f"[{fname}]\n{p.read_text(encoding='utf-8', errors='ignore')}\n\n"
         return ""
     if choice=="both":
-        ctx += add("data.json")
-        ctx += add("metric_data.json")
-    elif choice in ("data.json","metric_data.json"):
+        ctx += add("data.json") + add("metric_data.json")
+    else:
         ctx += add(choice)
-    if not ctx:
-        raise RuntimeError("No data found (need data.json and/or metric_data.json).")
+    if not ctx: raise RuntimeError("No data found (need data.json and/or metric_data.json).")
     return ctx, meta
 
 def ask_turns_and_duration() -> tuple[int,float]:
@@ -291,177 +253,142 @@ def ask_turns_and_duration() -> tuple[int,float]:
     return turns, mins*60.0
 
 # ------------------------- opener control / humanization -------------------
-FORBIDDEN_OPENERS = {
-    "RECO": {"absolutely","well","look","sure","okay","so","listen","hey","you know","hold on","right","great point"},
+FORBIDDEN = {
+    "RECO":{"absolutely","well","look","sure","okay","so","listen","hey","you know","hold on","right","great point"},
     "STATIX":{"hold on","actually","well","look","so","right","okay","absolutely","you know","listen","wait"},
 }
-OPENER_POOL = {
-    "RECO": [
-        "Given that", "Looking at this", "From that signal", "On those figures", "Based on the last month",
-        "If we take the trend", "Against YTD context", "From a planning view"
-    ],
-    "STATIX":[
-        "Data suggests", "From the integrity check", "The safer interpretation", "Statistically speaking",
-        "Given the variance profile", "From the control limits", "Relative to seasonality", "From the timestamp audit"
-    ],
+OPENERS = {
+    "RECO":[ "Given that","Looking at this","From that signal","On those figures","Based on the last month","If we take the trend","Against YTD context","From a planning view" ],
+    "STATIX":[ "Data suggests","From the integrity check","The safer interpretation","Statistically speaking","Given the variance profile","From the control limits","Relative to seasonality","From the timestamp audit" ],
 }
-
-def strip_forbidden_openers(text: str, role: str) -> str:
+def strip_forbidden(text: str, role: str) -> str:
     low = text.strip().lower()
-    # remove one leading forbidden token if present
-    for word in sorted(FORBIDDEN_OPENERS[role], key=lambda x: -len(x)):
-        if low.startswith(word+" ") or low == word:
-            # drop that word
-            return text[len(word):].lstrip(" ,.-–—")
+    for w in sorted(FORBIDDEN[role], key=lambda x: -len(x)):
+        if low.startswith(w+" ") or low == w:
+            return text[len(w):].lstrip(" ,.-–—")
     return text
 
-def diversify_opening(text: str, role: str, last_opener: dict) -> str:
-    t = strip_forbidden_openers(text, role)
-    # If starts with a generic interjection or is too bare, prepend a varied opener
-    first_word = (t.split()[:1] or [""])[0].strip(",. ").lower()
-    if first_word in FORBIDDEN_OPENERS[role] or not first_word:
-        cand = random.choice(OPENER_POOL[role])
-    else:
-        # 40% chance to still vary the opener for richness
-        cand = random.choice(OPENER_POOL[role]) if random.random()<0.4 else None
-    if cand:
-        if last_opener.get(role) == cand:
-            # avoid repeating same opener
-            pool = [c for c in OPENER_POOL[role] if c!=cand]
+def vary_opening(text: str, role: str, last_open: dict) -> str:
+    t = strip_forbidden(text, role)
+    first = (t.split()[:1] or [""])[0].strip(",. ").lower()
+    if first in FORBIDDEN[role] or not first or random.random()<0.4:
+        cand = random.choice(OPENERS[role])
+        if last_open.get(role)==cand:
+            pool = [c for c in OPENERS[role] if c!=cand]
             cand = random.choice(pool) if pool else cand
-        last_opener[role] = cand
+        last_open[role] = cand
         return f"{cand}, {t}"
     return t
 
 def limit_sentence(text: str) -> str:
-    # ensure one sentence & length
-    return _one_sentence_gate(text, max_words=26)
+    return _one_sentence(text, max_words=26)
 
-# ------------------------- AGENT PROMPTS (rich characters) -----------------
-SYSTEM_NEXUS = (
-    "You are Agent Nexus, a warm, concise host for a professional analytics podcast. "
-    "Goal: welcome listeners, set purpose, and hand off cleanly to the panelists. "
-    "Style: approachable, confident, 1 sentence (15–25 words), no lists, no hashtags, no file names."
-)
-
+# ------------------------- AGENT PROMPTS (characters) ----------------------
 SYSTEM_RECO = (
-    "You are Agent Reco, a **metrics recommendation specialist** pairing analytic breadth with product sense. "
-    "Persona: pragmatic, collaborative, business-outcome oriented; you speak in crisp, specific language. "
-    "Your job in each turn: respond directly to Statix’s last point, reference the available datasets when helpful, "
-    "recommend one concrete metric or action (e.g., adopt 3-month rolling ASA, tune staffing-to-ASA ratio, add control chart, "
-    "timestamp audit, queue mapping validation, seasonality decomposition), and keep phrasing varied and human. "
-    "Content standards: one sentence only (≈15–25 words), one idea per sentence, avoid filler, no lists, no hashtags, no file names. "
-    "Forbidden openers: 'Absolutely', 'Well', 'Look', 'Sure', 'Okay', 'So', 'Listen', 'Hey', 'You know', 'Hold on', 'Right', 'Great point'. "
-    "Voice: confident but curious; you often frame actions as bets tied to measurable impact. "
-    "Examples of good outputs (do not copy verbatim): "
-    "• 'Given the January ASA break, run a 3-month rolling window and link thresholds to weekly staffing to prevent whiplash.' "
-    "• 'If timestamp alignment checks out, implement a P-chart for ASA and raise routing to high-skill queues during spikes.' "
+    "You are Agent Reco, a metrics recommendation specialist: pragmatic, collaborative, outcome-oriented. "
+    "One sentence only (≈15–25 words), one idea, respond directly to Statix, cite datasets when helpful, "
+    "recommend one concrete metric/action (rolling ASA, staffing ratio, control chart, timestamp audit, queue mapping, seasonality). "
+    "Avoid filler; forbidden openers: Absolutely, Well, Look, Sure, Okay, So, Listen, Hey, You know, Hold on, Right, Great point. "
+    "No lists/hashtags/file names; keep phrasing varied and human."
 )
-
 SYSTEM_STATIX = (
-    "You are Agent Statix, the **data quality and statistical integrity lead** who protects decisions from bad inference. "
-    "Persona: precise, evidence-led, calm skepticism; you add just enough rigor to keep actions safe and effective. "
-    "Your job in each turn: respond explicitly to Reco’s last point, confirm or challenge with a specific data-based rationale "
-    "(e.g., variance magnitudes, YTD deltas, 12-month range, WoW/MoM changes), add one integrity or trend check "
-    "(timestamp audit, queue mapping, control chart calibration, seasonality decomposition, winsorization), and keep phrasing varied and human. "
-    "Content standards: one sentence only (≈15–25 words), one idea per sentence, avoid filler, no lists, no hashtags, no file names. "
-    "Forbidden openers: 'Hold on', 'Actually', 'Well', 'Look', 'So', 'Right', 'Okay', 'Absolutely', 'You know', 'Listen', 'Wait'. "
-    "Voice: steady and empirical; you frame trade-offs and edge cases without blocking progress. "
-    "Examples of good outputs (do not copy verbatim): "
-    "• 'Before converting ASA drops into staffing cuts, calibrate control limits against the 12-month range to avoid false positives.' "
-    "• 'If queue mapping is consistent, seasonality decomposition will separate real trend from holiday noise before tuning thresholds.' "
+    "You are Agent Statix, the data quality/statistical integrity lead: precise, evidence-led, calm skeptic. "
+    "One sentence only (≈15–25 words), one idea, respond to Reco, confirm or challenge with a specific data rationale "
+    "(variance magnitudes, YTD deltas, 12-month range, WoW/MoM), add one integrity/trend check "
+    "(timestamp audit, queue mapping, control limits, seasonality, winsorization). "
+    "Avoid filler; forbidden openers: Hold on, Actually, Well, Look, So, Right, Okay, Absolutely, You know, Listen, Wait. "
+    "No lists/hashtags/file names; keep phrasing varied and human."
+)
+SYSTEM_NEXUS = (
+    "You are Agent Nexus, the warm, concise host. Your job: welcome listeners, set purpose, hand off/close cleanly. "
+    "For generated lines, keep to 1 sentence (15–25 words)."
 )
 
-# ------------------------- MAIN (no music) ---------------------------------
+# ------------------------- FIXED LINES (verbatim) --------------------------
+NEXUS_INTRO = (
+    "Hello and welcome to Optum MultiAgent Conversation, where intelligence meets collaboration. I’m Agent Nexus, your host and guide through today’s episode. "
+    "In this podcast, we bring together specialized agents to explore the world of metrics, data, and decision-making. Let’s meet today’s experts."
+)
+RECO_INTRO  = (
+    "Hi everyone, I’m Agent Reco, your go-to for metric recommendations. I specialize in identifying the most impactful metrics for performance tracking, optimization, and strategic alignment."
+)
+STATIX_INTRO= (
+    "Hello! I’m Agent Statix, focused on metric data. I dive deep into data sources, trends, and statistical integrity to ensure our metrics are not just smart—but solid."
+)
+NEXUS_OUTRO = "Thanking to Agents and listeners"
+
+# ------------------------- MAIN -------------------------------------------
 async def run_podcast():
     print("Starting Optum MultiAgent Conversation Podcast Generator (no music)…")
-    # choose files & duration
-    context_choice = ask_file_choice()
-    context, meta = load_context(context_choice)
+    choice = ask_files()
+    context, meta = load_context(choice)
     turns, target_seconds = ask_turns_and_duration()
 
-    # paths
     out_dir = Path(f"podcast_output_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
     out_dir.mkdir(exist_ok=True)
     OUT_WAV    = str(out_dir / "podcast.wav")
     TRANS_JSON = str(out_dir / "transcript.jsonl")
-    SCRIPT_TXT = str(out_dir / "script.txt")      # not printed to console
+    SCRIPT_TXT = str(out_dir / "script.txt")
     SHOW_NOTES = str(out_dir / "shownotes.md")
 
-    # transcript log file
+    # transcript log
     with open(TRANS_JSON, "w", encoding="utf-8") as _: pass
     transcript = []
-    def log(role: str, text: str, elapsed: float):
-        entry = {"ts": datetime.datetime.now().isoformat(), "t": round(elapsed,2), "role": role, "text": text}
-        transcript.append(f"{role}: {text}")
+    def log(role, text, tsec):
         with open(TRANS_JSON, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            f.write(json.dumps({"ts":datetime.datetime.now().isoformat(),"t":round(tsec,2),"role":role,"text":text}, ensure_ascii=False)+"\n")
+        transcript.append(f"{role}: {text}")
 
-    # Build SSML + synth for all lines, then render atomically
-    segments: list[str] = []
-    elapsed = 0.0
+    segments, elapsed = [], 0.0
 
-    # Host intro
-    intro = await llm(SYSTEM_NEXUS, "Welcome the audience and set up a two-expert discussion on metrics and data quality.", max_tokens=60, temperature=0.35)
-    ssml_intro = text_to_ssml(intro, "NEXUS")
-    wav_intro  = synth_ssml_to_wav(ssml_intro); segments.append(wav_intro); elapsed += get_wav_seconds(wav_intro); log("Agent Nexus", intro, elapsed)
+    # --- Fixed intros (no LLM)
+    for line, role in [(NEXUS_INTRO,"NEXUS"), (RECO_INTRO,"RECO"), (STATIX_INTRO,"STATIX")]:
+        ssml = text_to_ssml(line, role)
+        wav  = synth(ssml); segments.append(wav); elapsed += wav_len(wav); log(f"Agent {role.title()}", line, elapsed)
 
-    # Debate loop
-    # Seed user context (softened) for first Reco line
-    seed = _soften("Use these datasets as primary context; keep a natural one-sentence discussion.\n" + context[:12000])
+    # --- Discussion
+    seed = _soften("Use these datasets as primary context; keep a natural one-sentence discussion.\n"+context[:12000])
     last_line = seed
-    last_opener = {"RECO":None, "STATIX":None}
+    last_open = {"RECO":None, "STATIX":None}
 
-    for i in range(turns):
+    for _ in range(turns):
         if elapsed >= target_seconds: break
-
         # RECO
-        reco_raw = await llm(SYSTEM_RECO, last_line, max_tokens=110, temperature=0.45)
-        reco_line = limit_sentence(diversify_opening(reco_raw, "RECO", last_opener))
-        ssml_reco = text_to_ssml(reco_line, "RECO")
-        wav_reco  = synth_ssml_to_wav(ssml_reco); segments.append(wav_reco); elapsed += get_wav_seconds(wav_reco); log("Agent Reco", reco_line, elapsed)
+        reco_raw  = await llm(SYSTEM_RECO, last_line, max_tokens=110, temperature=0.45)
+        reco_line = limit_sentence(vary_opening(reco_raw, "RECO", last_open))
+        ssml_r = text_to_ssml(reco_line, "RECO")
+        wav_r  = synth(ssml_r); segments.append(wav_r); elapsed += wav_len(wav_r); log("Agent Reco", reco_line, elapsed)
         if elapsed >= target_seconds: break
-
         # STATIX
         statix_user = _soften(f"Agent Reco just said: {reco_line}\nReference context (no need to name files):\n{context[:9000]}")
         statix_raw  = await llm(SYSTEM_STATIX, statix_user, max_tokens=110, temperature=0.45)
-        statix_line = limit_sentence(diversify_opening(statix_raw, "STATIX", last_opener))
-        ssml_statix = text_to_ssml(statix_line, "STATIX")
-        wav_statix  = synth_ssml_to_wav(ssml_statix); segments.append(wav_statix); elapsed += get_wav_seconds(wav_statix); log("Agent Statix", statix_line, elapsed)
-
+        statix_line = limit_sentence(vary_opening(statix_raw, "STATIX", last_open))
+        ssml_s = text_to_ssml(statix_line, "STATIX")
+        wav_s  = synth(ssml_s); segments.append(wav_s); elapsed += wav_len(wav_s); log("Agent Statix", statix_line, elapsed)
         last_line = statix_line
 
-    # Host outro
-    outro = await llm(
-        SYSTEM_NEXUS,
-        "Thank both experts and close the show with one crisp takeaway and a gentle call to action.",
-        max_tokens=70, temperature=0.3
-    )
-    ssml_outro = text_to_ssml(outro, "NEXUS")
-    wav_outro  = synth_ssml_to_wav(ssml_outro); segments.append(wav_outro); elapsed += get_wav_seconds(wav_outro); log("Agent Nexus", outro, elapsed)
+    # --- Fixed outro (no LLM)
+    ssml_out = text_to_ssml(NEXUS_OUTRO, "NEXUS")
+    wav_out  = synth(ssml_out); segments.append(wav_out); elapsed += wav_len(wav_out); log("Agent Nexus", NEXUS_OUTRO, elapsed)
 
-    # Render atomically
-    written = write_master_wav(segments, OUT_WAV)
+    # atomic render
+    written = write_master(segments, OUT_WAV)
 
-    # Save script + notes (no console spam)
-    with open(SCRIPT_TXT, "w", encoding="utf-8") as f:
-        f.write("\n".join(transcript))
-    with open(SHOW_NOTES, "w", encoding="utf-8") as f:
+    # save texts (no console spam)
+    with open(SCRIPT_TXT,"w",encoding="utf-8") as f: f.write("\n".join(transcript))
+    with open(SHOW_NOTES,"w",encoding="utf-8") as f:
         f.write("# Optum MultiAgent Conversation\n")
         f.write(f"- Recorded: {datetime.datetime.now().isoformat()}\n")
         f.write(f"- Duration: ~{int(elapsed)}s\n")
-        f.write(f"- Files used: {', '.join(meta['files'])}\n\n")
-        f.write("## Format\n- Host intro (no music)\n- One-sentence Reco/Statix rounds\n- Host outro (no music)\n")
-        f.write("\n## Notes\n- Distinct voices; humanlike pitch with micro-variation and smart inflection.\n")
-        f.write("- Numbers emphasized; clause pauses for clarity; no filler openers.\n")
+        f.write(f"- Files used: {', '.join(meta['files'])}\n")
+        f.write("\n## Format\n- Fixed host/panel intros (no music)\n- One-sentence Reco/Statix rounds\n- Fixed host outro\n")
+        f.write("\n## Voice Map\n- Nexus: " + VOICE_NEXUS + "\n- Reco: " + VOICE_RECO + "\n- Statix: " + VOICE_STATIX + "\n")
 
     # best-effort temp cleanup
-    for p in list(TEMP_PATHS):
+    for p in list(TMP):
         try:
-            if os.path.exists(p):
-                os.remove(p)
-        except Exception:
-            pass
+            if os.path.exists(p): os.remove(p)
+        except Exception: pass
 
     print(f"Saved: {written}")
     print(f"Extra: {SCRIPT_TXT}, {SHOW_NOTES}, {TRANS_JSON}")
