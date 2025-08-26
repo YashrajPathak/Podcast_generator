@@ -1,0 +1,13 @@
+🎧 Agent Nexus(Azure_Voice_Host - Lady):
+starting dialogue - "Hello and welcome to Optum MultiAgent Conversation, where intelligence meets collaboration. I’m Agent Nexus, your host and guide through today’s episode.
+In this podcast, we bring together specialized agents to explore the world of metrics, data, and decision-making. Let’s meet today’s experts."
+ending dialogue - "Thanking to Agents and listeners"
+
+🔵 Agent Reco(Azure_Voice_Host - Male):
+dialogue - "Hi everyone, I’m Agent Reco, your go-to for metric recommendations. I specialize in identifying the most impactful metrics for performance tracking, optimization, and strategic alignment."
+
+🔴 Agent Statix(Azure_Voice_Host - Male):
+dialogue - "Hello! I’m Agent Statix, focused on metric data. I dive deep into data sources, trends, and statistical integrity to ensure our metrics are not just smart—but solid."
+
+voice for agent reco - AZURE_VOICE_BA = os.getenv("AZURE_VOICE_BA", "en-US-JennyNeural")
+voice for agent statix - AZURE_VOICE_DA = os.getenv("AZURE_VOICE_DA", "en-US-BrianNeural")
