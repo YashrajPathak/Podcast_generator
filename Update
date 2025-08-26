@@ -1,7 +1,7 @@
 # podcast_professional.py — Enhanced professional podcast with Azure OpenAI + Azure Speech
 # pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
 
-import os, sys, re, math, wave, json, tempfile, asyncio, datetime, shutil, atexit, random
+import os, sys, re, math, wave, json, tempfile, asyncio, datetime, shutil, atexit
 from pathlib import Path
 from dotenv import load_dotenv; load_dotenv()
 
@@ -120,15 +120,16 @@ def cog_token_str() -> str:
     tok = cred.get_token(COG_SCOPE).token
     return f"aad#{RESOURCE_ID}#{tok}" if RESOURCE_ID else tok
 
-VOICE_A = os.getenv("VOICE_A", "en-US-GuyNeural")   # senior analyst
-VOICE_B = os.getenv("VOICE_B", "en-US-AriaNeural")  # senior strategist
-VOICE_HOST = os.getenv("VOICE_HOST", "en-US-DavisNeural")  # host voice
+# Updated voice assignments as requested
+VOICE_NEXUS = os.getenv("AZURE_VOICE_HOST", "en-US-JennyNeural")  # Lady voice for Agent Nexus
+VOICE_RECO = os.getenv("AZURE_VOICE_BA", "en-US-JennyNeural")     # Agent Reco
+VOICE_STATIX = os.getenv("AZURE_VOICE_DA", "en-US-BrianNeural")   # Agent Statix
 
 # Voice settings for more natural delivery
 VOICE_SETTINGS = {
-    "A": {"style": "friendly", "rate": "-5%", "pitch": "+2%"},
-    "B": {"style": "warm", "rate": "-4%", "pitch": "+1%"},
-    "HOST": {"style": "newscast-casual", "rate": "-3%", "pitch": "0%"}
+    "NEXUS": {"style": "friendly", "rate": "-3%", "pitch": "+2%"},
+    "RECO": {"style": "newscast-casual", "rate": "-4%", "pitch": "0%"},
+    "STATIX": {"style": "serious", "rate": "-5%", "pitch": "-1%"}
 }
 
 def ssml_wrapper(inner: str, voice: str, style: str | None, rate: str, pitch: str) -> str:
@@ -204,20 +205,6 @@ def get_wav_duration_seconds(path: str) -> float:
         return (frames / float(rate)) if rate else 0.0
 
 # ========== Audio utilities ==========
-def synth_tone(duration_s: float = 0.35, freq: int = 494, vol: float = 0.25, rate: int = 24000) -> str:
-    import struct
-    n = int(duration_s * rate)
-    frames = bytearray()
-    for i in range(n):
-        samp = int(vol * 32767.0 * math.sin(2 * math.pi * freq * (i / rate)))
-        frames += struct.pack('<h', samp)
-    fd, p = tempfile.mkstemp(prefix="tone_", suffix=".wav"); os.close(fd)
-    temp_files.append(p)
-    with wave.open(p, "wb") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
-        w.writeframes(frames)
-    return p
-
 def add_silence(duration_ms: int = 300) -> str:
     """Generate a silent WAV segment"""
     fd, p = tempfile.mkstemp(prefix="silence_", suffix=".wav")
@@ -230,62 +217,6 @@ def add_silence(duration_ms: int = 300) -> str:
         # Calculate number of frames for silence
         frames = int(24000 * duration_ms / 1000)
         w.writeframes(b'\x00' * frames * 2)  # 16-bit samples
-    return p
-
-def create_futuristic_sweep(duration: float = 3.0) -> str:
-    """Create a futuristic rising sweep sound for intro"""
-    import struct
-    fd, p = tempfile.mkstemp(prefix="sweep_", suffix=".wav"); os.close(fd)
-    temp_files.append(p)
-    
-    rate = 24000
-    n = int(duration * rate)
-    frames = bytearray()
-    
-    for i in range(n):
-        # Exponential frequency rise from 100Hz to 1000Hz
-        progress = i / n
-        freq = 100 + 900 * (1 - math.exp(-5 * progress))
-        
-        # Add some modulation for a more interesting sound
-        mod = 0.7 * math.sin(2 * math.pi * 5 * progress)
-        samp = int(0.15 * 32767.0 * math.sin(2 * math.pi * freq * (i / rate) + mod))
-        frames += struct.pack('<h', samp)
-    
-    with wave.open(p, "wb") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
-        w.writeframes(frames)
-    
-    return p
-
-def create_data_pulse(duration: float = 2.5) -> str:
-    """Create a data transmission pulse sound for outro"""
-    import struct
-    fd, p = tempfile.mkstemp(prefix="pulse_", suffix=".wav"); os.close(fd)
-    temp_files.append(p)
-    
-    rate = 24000
-    n = int(duration * rate)
-    frames = bytearray()
-    
-    for i in range(n):
-        progress = i / n
-        # Create a pulsing effect with multiple frequencies
-        base_freq = 300
-        pulse = math.exp(-10 * (progress - 0.5)**2)  # Gaussian pulse shape
-        
-        # Multiple harmonics for a data transmission sound
-        samp = int(0.2 * 32767.0 * pulse * (
-            math.sin(2 * math.pi * base_freq * (i / rate)) +
-            0.6 * math.sin(2 * math.pi * base_freq * 1.5 * (i / rate)) +
-            0.3 * math.sin(2 * math.pi * base_freq * 2.5 * (i / rate))
-        ))
-        frames += struct.pack('<h', samp)
-    
-    with wave.open(p, "wb") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
-        w.writeframes(frames)
-    
     return p
 
 # ========== Atomic master WAV writer ==========
@@ -328,31 +259,17 @@ def render_master_wav(segment_paths: list[str], out_path: str, rate: int = 24000
         raise
 
 # ========== Prompts (safe, one sentence per turn) ==========
-SYSTEM_A = (
-    "You are Agent A, a senior data analyst having a natural conversation with Agent B. "
-    "Speak in one clear sentence (about 15-25 words). Reference weekly aggregates (2022-2025) "
-    "and monthly KPIs across all metrics. Share one key insight with context about timing and "
-    "magnitude, explain its operational significance briefly, and end with a thoughtful question "
-    "for your colleague. Keep it conversational, not robotic."
+SYSTEM_RECO = (
+    "You are Agent Reco, specializing in metric recommendations. "
+    "Speak in one clear sentence (about 15-25 words). Identify the most impactful metrics "
+    "for performance tracking, optimization, and strategic alignment. Keep it professional but conversational."
 )
 
-SYSTEM_B = (
-    "You are Agent B, a senior strategist responding naturally to your colleague. "
-    "Speak in one clear sentence (about 15-25 words). Connect the weekly aggregates to monthly KPIs "
-    "across all metrics, diagnose likely drivers based on the datasets, and suggest one practical "
-    "next step. Keep the tone professional but conversational."
-)
-
-INTRO_HOST = (
-    "You are the host of a professional data podcast. Create a engaging but brief introduction "
-    "(15-25 words) that welcomes listeners, introduces the show's purpose, and sets up the "
-    "conversation between our two experts. Sound professional but approachable."
-)
-
-OUTRO_HOST = (
-    "You are wrapping up a professional podcast. Create a concise outro (20-30 words) that "
-    "summarizes the key takeaway, thanks the experts, and provides a gentle call to action "
-    "(subscribe, follow for more content). Keep it professional and polished."
+SYSTEM_STATIX = (
+    "You are Agent Statix, focused on metric data. "
+    "Speak in one clear sentence (about 15-25 words). Dive deep into data sources, trends, "
+    "and statistical integrity to ensure our metrics are not just smart—but solid. "
+    "Keep it professional but conversational."
 )
 
 # ========== File selection & context ==========
@@ -399,7 +316,7 @@ def load_context(choice: str) -> tuple[str, dict]:
     return ctx, meta
 
 def ask_turns_and_duration() -> tuple[int, float]:
-    print("Enter desired number of A/B turns (each turn = A then B). Press Enter for default 6 turns:")
+    print("Enter desired number of Reco/Statix turns (each turn = Reco then Statix). Press Enter for default 6 turns:")
     try:
         t = sys.stdin.readline().strip()
         turns = int(t) if t else 6
@@ -416,17 +333,17 @@ def ask_turns_and_duration() -> tuple[int, float]:
     return turns, minutes*60.0
 
 # ========== Voices & helpers ==========
-def make_a_audio(text: str) -> str:
-    settings = VOICE_SETTINGS["A"]
-    return tts_ssml_to_wav_with_fallback(text, VOICE_A, settings["style"], settings["rate"], settings["pitch"])
+def make_nexus_audio(text: str) -> str:
+    settings = VOICE_SETTINGS["NEXUS"]
+    return tts_ssml_to_wav_with_fallback(text, VOICE_NEXUS, settings["style"], settings["rate"], settings["pitch"])
 
-def make_b_audio(text: str) -> str:
-    settings = VOICE_SETTINGS["B"]
-    return tts_ssml_to_wav_with_fallback(text, VOICE_B, settings["style"], settings["rate"], settings["pitch"])
+def make_reco_audio(text: str) -> str:
+    settings = VOICE_SETTINGS["RECO"]
+    return tts_ssml_to_wav_with_fallback(text, VOICE_RECO, settings["style"], settings["rate"], settings["pitch"])
 
-def make_host_audio(text: str) -> str:
-    settings = VOICE_SETTINGS["HOST"]
-    return tts_ssml_to_wav_with_fallback(text, VOICE_HOST, settings["style"], settings["rate"], settings["pitch"])
+def make_statix_audio(text: str) -> str:
+    settings = VOICE_SETTINGS["STATIX"]
+    return tts_ssml_to_wav_with_fallback(text, VOICE_STATIX, settings["style"], settings["rate"], settings["pitch"])
 
 def setup_output_directory():
     """Create a dedicated output directory with timestamp"""
@@ -434,52 +351,6 @@ def setup_output_directory():
     output_dir = Path(f"podcast_output_{timestamp}")
     output_dir.mkdir(exist_ok=True)
     return output_dir
-
-# ========== Enhanced Podcast Features ==========
-def create_unique_intro_sequence() -> list:
-    """Create a unique intro sequence with futuristic sounds"""
-    segments = []
-    
-    # Futuristic rising sweep
-    sweep = create_futuristic_sweep(2.5)
-    segments.append(sweep)
-    
-    # Short pause
-    segments.append(add_silence(200))
-    
-    # Data transmission sound
-    data_sound = synth_tone(0.4, 800, 0.18)
-    segments.append(data_sound)
-    
-    # Another short pause
-    segments.append(add_silence(150))
-    
-    # Final transition tone
-    transition = synth_tone(0.3, 600, 0.2)
-    segments.append(transition)
-    
-    return segments
-
-def create_unique_outro_sequence() -> list:
-    """Create a unique outro sequence with data transmission sounds"""
-    segments = []
-    
-    # Data transmission pulse
-    pulse = create_data_pulse(2.0)
-    segments.append(pulse)
-    
-    # Short pause
-    segments.append(add_silence(250))
-    
-    # Descending tone
-    descend = synth_tone(0.5, 400, 0.15)
-    segments.append(descend)
-    
-    # Final closing tone
-    close_tone = synth_tone(0.4, 300, 0.12)
-    segments.append(close_tone)
-    
-    return segments
 
 # ========== Enhanced Main Function ==========
 async def run_enhanced_podcast():
@@ -489,8 +360,7 @@ async def run_enhanced_podcast():
     SCRIPT_TXT = output_dir / "script_enhanced.txt"
     SHOW_NOTES = output_dir / "shownotes_enhanced.md"
     TRANS_JSON = output_dir / "transcript_enhanced.jsonl"
-    TITLE = "Data Dialogue: Analytics in Action"
-    THEME = "break down complex metrics into actionable business insights"
+    TITLE = "Optum MultiAgent Conversation"
     
     print("Loading context...")
     choice = ask_file_choice()
@@ -513,28 +383,41 @@ async def run_enhanced_podcast():
         with open(TRANS_JSON, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    # Unique intro sequence
-    print("Creating unique introduction...")
-    intro_sounds = create_unique_intro_sequence()
-    segments.extend(intro_sounds)
-    for sound in intro_sounds:
-        elapsed += get_wav_duration_seconds(sound)
+    # Agent Nexus introduction
+    print("Creating Agent Nexus introduction...")
+    nexus_intro = "Hello and welcome to Optum MultiAgent Conversation, where intelligence meets collaboration. I'm Agent Nexus, your host and guide through today's episode. In this podcast, we bring together specialized agents to explore the world of metrics, data, and decision-making. Let's meet today's experts."
+    nexus_audio = make_nexus_audio(nexus_intro)
+    segments.append(nexus_audio)
+    elapsed += get_wav_duration_seconds(nexus_audio)
+    log("Agent Nexus", nexus_intro, elapsed)
     
-    # Host introduction
-    intro_text = await llm(INTRO_HOST, f"Podcast title: {TITLE}. Theme: {THEME}", max_tokens=60, temperature=0.4)
-    intro_audio = make_host_audio(intro_text)
-    segments.append(intro_audio)
-    elapsed += get_wav_duration_seconds(intro_audio)
-    log("Host", intro_text, elapsed)
+    # Add pause after introduction
+    segments.append(add_silence(500))
+    elapsed += 0.5
+
+    # Agent Reco introduction
+    print("Creating Agent Reco introduction...")
+    reco_intro = "Hi everyone, I'm Agent Reco, your go-to for metric recommendations. I specialize in identifying the most impactful metrics for performance tracking, optimization, and strategic alignment."
+    reco_audio = make_reco_audio(reco_intro)
+    segments.append(reco_audio)
+    elapsed += get_wav_duration_seconds(reco_audio)
+    log("Agent Reco", reco_intro, elapsed)
     
-    # Brief transition
-    transition = synth_tone(0.6, 520, 0.16)
-    segments.append(transition)
-    elapsed += get_wav_duration_seconds(transition)
-    
-    # Add silence before conversation starts
+    # Add pause between agents
     segments.append(add_silence(400))
     elapsed += 0.4
+
+    # Agent Statix introduction
+    print("Creating Agent Statix introduction...")
+    statix_intro = "Hello! I'm Agent Statix, focused on metric data. I dive deep into data sources, trends, and statistical integrity to ensure our metrics are not just smart—but solid."
+    statix_audio = make_statix_audio(statix_intro)
+    segments.append(statix_audio)
+    elapsed += get_wav_duration_seconds(statix_audio)
+    log("Agent Statix", statix_intro, elapsed)
+    
+    # Add pause before conversation starts
+    segments.append(add_silence(600))
+    elapsed += 0.6
 
     # Main conversation
     seed = soften_user_seed("Use these datasets as primary context; keep a natural one-sentence discussion.\n" + context[:12000])
@@ -546,53 +429,42 @@ async def run_enhanced_podcast():
         if elapsed >= target_seconds: 
             break
             
-        # Agent A turn
-        a_out = await llm(SYSTEM_A, last, max_tokens=120, temperature=0.45)
-        wa = make_a_audio(a_out)
-        segments.append(wa)
-        da = get_wav_duration_seconds(wa)
-        elapsed += da
-        log("Agent A", a_out, elapsed)
+        # Agent Reco turn
+        reco_out = await llm(SYSTEM_RECO, last, max_tokens=120, temperature=0.45)
+        w_reco = make_reco_audio(reco_out)
+        segments.append(w_reco)
+        d_reco = get_wav_duration_seconds(w_reco)
+        elapsed += d_reco
+        log("Agent Reco", reco_out, elapsed)
         
         # Add natural pause between speakers
-        segments.append(add_silence(250))
-        elapsed += 0.25
+        segments.append(add_silence(300))
+        elapsed += 0.3
         
         if elapsed >= target_seconds: 
             break
             
-        # Transition sound
-        seg = synth_tone(0.15, 660, 0.12)
-        segments.append(seg)
-        elapsed += get_wav_duration_seconds(seg)
-        
-        # Agent B turn
-        b_in = soften_user_seed(f"Agent A just said: {a_out}\nReference context (no need to name files):\n{context[:9000]}")
-        b_out = await llm(SYSTEM_B, b_in, max_tokens=120, temperature=0.45)
-        wb = make_b_audio(b_out)
-        segments.append(wb)
-        db = get_wav_duration_seconds(wb)
-        elapsed += db
-        log("Agent B", b_out, elapsed)
+        # Agent Statix turn
+        statix_in = soften_user_seed(f"Agent Reco just said: {reco_out}\nReference context (no need to name files):\n{context[:9000]}")
+        statix_out = await llm(SYSTEM_STATIX, statix_in, max_tokens=120, temperature=0.45)
+        w_statix = make_statix_audio(statix_out)
+        segments.append(w_statix)
+        d_statix = get_wav_duration_seconds(w_statix)
+        elapsed += d_statix
+        log("Agent Statix", statix_out, elapsed)
         
         # Add pause between conversation turns
-        segments.append(add_silence(350))
-        elapsed += 0.35
-        last = b_out
+        segments.append(add_silence(400))
+        elapsed += 0.4
+        last = statix_out
 
-    # Professional outro
-    print("Creating professional conclusion...")
-    outro_text = await llm(OUTRO_HOST, f"Podcast title: {TITLE}. Key topics discussed: {', '.join(transcript[-4:])}", max_tokens=80, temperature=0.3)
-    outro_audio = make_host_audio(outro_text)
-    segments.append(outro_audio)
-    elapsed += get_wav_duration_seconds(outro_audio)
-    log("Host", outro_text, elapsed)
-    
-    # Unique outro sequence
-    outro_sounds = create_unique_outro_sequence()
-    segments.extend(outro_sounds)
-    for sound in outro_sounds:
-        elapsed += get_wav_duration_seconds(sound)
+    # Agent Nexus conclusion
+    print("Creating Agent Nexus conclusion...")
+    nexus_outro = "Thank you to Agents Reco and Statix for their insights, and thank you to our listeners for joining us today on Optum MultiAgent Conversation."
+    nexus_outro_audio = make_nexus_audio(nexus_outro)
+    segments.append(nexus_outro_audio)
+    elapsed += get_wav_duration_seconds(nexus_outro_audio)
+    log("Agent Nexus", nexus_outro, elapsed)
 
     print("Rendering final audio...")
     out_written = render_master_wav(segments, OUT_WAV)
@@ -620,114 +492,35 @@ async def run_enhanced_podcast():
         f.write(f"- **Duration**: {int(total_sec // 60)}m {int(total_sec % 60)}s\n")
         f.write(f"- **Data Sources**: {', '.join(meta['files'])}\n\n")
         
+        f.write(f"## Participants\n")
+        f.write("- 🎧 **Agent Nexus**: Host and guide\n")
+        f.write("- 🔵 **Agent Reco**: Metric recommendations specialist\n")
+        f.write("- 🔴 **Agent Statix**: Metric data and statistical integrity expert\n\n")
+        
         f.write(f"## Episode Summary\n")
-        f.write("This episode features a discussion between our data analyst and strategy expert ")
+        f.write("This episode features a discussion between Agent Reco and Agent Statix, ")
         f.write("breaking down the latest metrics and trends from our datasets.\n\n")
         
         f.write(f"## Key Topics Discussed\n")
-        for i, line in enumerate(transcript[:6]):  # Show first 6 talking points
+        for i, line in enumerate(transcript[3:9]):  # Show first few talking points after introductions
             if i % 2 == 0:  # Just show a few highlights
                 f.write(f"- {line.split(':', 1)[1].strip()}\n")
         
-        f.write(f"\n## Additional Notes\n")
-        f.write("- Professional tone with data-driven insights\n")
-        f.write("- Focus on actionable business intelligence\n")
-        f.write("- Balanced perspective from both analytical and strategic viewpoints\n\n")
-        
-        f.write(f"## Next Steps\n")
-        f.write("To dive deeper into these metrics, contact our analytics team or explore ")
-        f.write("the full datasets referenced in this episode.")
+        f.write(f"\n## Next Steps\n")
+        f.write("To dive deeper into these metrics, explore the full datasets referenced in this episode.")
 
     print(f"Enhanced podcast saved: {out_written}")
     print(f"Additional files: {SCRIPT_TXT}, {SHOW_NOTES}, {TRANS_JSON}")
 
-# ========== Original Main Function ==========
-async def run_podcast():
-    # Setup output directory
-    output_dir = setup_output_directory()
-    OUT_WAV    = output_dir / "podcast.wav"
-    SCRIPT_TXT = output_dir / "script.txt"
-    SHOW_NOTES = output_dir / "shownotes.md"
-    TRANS_JSON = output_dir / "transcript.jsonl"
-    TITLE      = "Ops Signals — Data Discussion"
-
-    print("Loading context...")
-    choice = ask_file_choice()
-    context, meta = load_context(choice)
-    turns, target_seconds = ask_turns_and_duration()
-
-    with open(TRANS_JSON, "w", encoding="utf-8") as _: pass
-    transcript = []
-    t0 = datetime.datetime.now().isoformat()
-
-    seed = soften_user_seed("Use these datasets as primary context; keep a natural one-sentence discussion.\n" + context[:12000])
-
-    # Build all audio segments first, then render atomically.
-    segments: list[str] = []
-    elapsed = 0.0
-
-    def log(role: str, text: str, tsec: float):
-        entry = {"ts": datetime.datetime.now().isoformat(), "t": round(tsec,2), "role": role, "text": text}
-        transcript.append(f"{role}: {text}")
-        with open(TRANS_JSON, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-    # Intro sting + narration
-    chime = synth_tone(0.35, 523); segments.append(chime); elapsed += get_wav_duration_seconds(chime)
-    intro = "Welcome to a focused data discussion with a senior analyst and strategist, paced for clarity."
-    wi = make_a_audio(intro); segments.append(wi); elapsed += get_wav_duration_seconds(wi); log("Narration", intro, elapsed)
-
-    last = seed
-    for _ in range(turns):
-        if elapsed >= target_seconds: break
-        a_out = await llm(SYSTEM_A, last, max_tokens=120, temperature=0.45)
-        wa = make_a_audio(a_out); segments.append(wa); da = get_wav_duration_seconds(wa); elapsed += da; log("Agent A", a_out, elapsed)
-        if elapsed >= target_seconds: break
-        seg = synth_tone(0.18, 660, 0.18); segments.append(seg); elapsed += get_wav_duration_seconds(seg)
-        b_in = soften_user_seed(f"Agent A just said: {a_out}\nReference context (no need to name files):\n{context[:9000]}")
-        b_out = await llm(SYSTEM_B, b_in, max_tokens=120, temperature=0.45)
-        wb = make_b_audio(b_out); segments.append(wb); db = get_wav_duration_seconds(wb); elapsed += db; log("Agent B", b_out, elapsed)
-        last = b_out
-
-    if elapsed < target_seconds - 1.0:
-        close = "That concludes our review; if you add more context, we can deepen findings and sharpen the next actions."
-        wc = make_b_audio(close); segments.append(wc); elapsed += get_wav_duration_seconds(wc); log("Narration", close, elapsed)
-    out = synth_tone(0.30, 494); segments.append(out); elapsed += get_wav_duration_seconds(out)
-
-    # Render atomically and clean up segment temps
-    out_written = render_master_wav(segments, OUT_WAV)
-    for p in segments:
-        try: 
-            os.remove(p)
-            if p in temp_files:
-                temp_files.remove(p)
-        except Exception: 
-            pass
-
-    # Script + notes
-    with open(SCRIPT_TXT, "w", encoding="utf-8") as f:
-        f.write("\n".join(transcript))
-
-    total_sec = 0.0
-    try:
-        with wave.open(out_written, "rb") as r:
-            total_sec = r.getnframes() / r.getframerate()
-    except Exception:
-        pass
-    with open(SHOW_NOTES, "w", encoding="utf-8") as f:
-        f.write(f"# {TITLE}\n- **Recorded**: {t0}\n- **Duration**: ~{int(total_sec)}s\n")
-        f.write(f"- **Files used**: {', '.join(meta['files'])}\n\n## Structure\n- Intro sting\n- A/B one-sentence rounds\n- Closing line\n- Outro sting\n")
-        f.write("\n## Notes\n- Senior tone; covers all metrics; safe, neutral phrasing.\n")
-
-    print(f"Saved: {out_written}, {SCRIPT_TXT}, {SHOW_NOTES}, {TRANS_JSON}")
-
 # ---------- Entry Point ----------
 if __name__ == "__main__":
     try:
-        # Ask which version to run
-        print("Choose podcast version:")
-        print("1. Standard version (original)")
-        print("2. Enhanced version (professional features)")
-        choice = input("Enter 1 or 2: ").strip()
-        
-        if choice
+        print("Starting Optum MultiAgent Conversation Podcast Generator...")
+        asyncio.run(run_enhanced_podcast())
+            
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    except Exception as e:
+        print(f"X Error: {e}")
+        import traceback
+        traceback.print_exc()
