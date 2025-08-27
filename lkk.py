@@ -100,15 +100,15 @@ def cog_token_str() -> str:
     tok = cred.get_token(COG_SCOPE).token
     return f"aad#{RESOURCE_ID}#{tok}" if RESOURCE_ID else tok
 
-# ---- Voices (as requested)
+# ---- Voices (as requested) - Updated for more natural pacing
 VOICE_NEXUS = os.getenv("AZURE_VOICE_HOST", "en-US-SaraNeural")   # Host (female, distinct)
 VOICE_RECO = os.getenv("AZURE_VOICE_BA", "en-US-JennyNeural")     # Reco (female)
-VOICE_STATIX = os.getenv("AZURE_VOICE_DA", "en-US-BrianNeural")   # Statix (male)
+VOICE_STAT = os.getenv("AZURE_VOICE_DA", "en-US-BrianNeural")     # Stat (male) - Changed from Statix
 
 VOICE_PLAN = {
-    "NEXUS": {"style": "newscast-casual", "base_pitch": "+2%", "base_rate": "-3%"},
-    "RECO": {"style": "friendly", "base_pitch": "+1%", "base_rate": "-4%"},
-    "STATIX": {"style": "serious", "base_pitch": "-2%", "base_rate": "-5%"},
+    "NEXUS": {"style": "friendly", "base_pitch": "+1%", "base_rate": "-2%"},
+    "RECO": {"style": "cheerful", "base_pitch": "+2%", "base_rate": "-3%"},
+    "STAT": {"style": "serious", "base_pitch": "-1%", "base_rate": "-4%"},
 }
 
 def _jitter(pct: str, spread=3) -> str:
@@ -136,18 +136,25 @@ def _inflect(text: str, role: str) -> tuple[str, str]:
     pitch = _jitter(base_pitch, 3)
     rate = _jitter(base_rate, 2)
     
+    # More natural pitch variations
     if text.strip().endswith("?"):
         try:
             p = int(pitch.replace('%', ''))
-            pitch = f"{p+6}%"
+            pitch = f"{p+4}%"
         except:
-            pitch = "+6%"
+            pitch = "+4%"
     elif re.search(r'\bhowever\b|\bbut\b', text, re.I):
         try:
             p = int(pitch.replace('%', ''))
-            pitch = f"{p-3}%"
+            pitch = f"{p-2}%"
         except:
             pitch = "-2%"
+    elif any(word in text.lower() for word in ['surprising', 'shocking', 'unexpected', 'dramatic']):
+        try:
+            p = int(pitch.replace('%', ''))
+            pitch = f"{p+3}%"
+        except:
+            pitch = "+3%"
             
     return pitch, rate
 
@@ -173,7 +180,7 @@ def text_to_ssml(text: str, role: str) -> str:
     t = _clause_pauses(t)
     t = f'{t}<break time="320ms"/>'
     pitch, rate = _inflect(text, role)
-    voice = VOICE_NEXUS if role == "NEXUS" else VOICE_RECO if role == "RECO" else VOICE_STATIX
+    voice = VOICE_NEXUS if role == "NEXUS" else VOICE_RECO if role == "RECO" else VOICE_STAT
     return _ssml(voice, plan["style"], rate, pitch, t)
 
 def synth(ssml: str) -> str:
@@ -268,7 +275,7 @@ def load_context(choice: str) -> tuple[str, dict]:
     return ctx, meta
 
 def ask_turns_and_duration() -> tuple[int, float]:
-    print("Enter desired number of Reco/Statix turns (each turn = Reco then Statix). Press Enter for default 6:")
+    print("Enter desired number of Reco/Stat turns (each turn = Reco then Stat). Press Enter for default 6:")
     t = (sys.stdin.readline() or "").strip()
     try:
         turns = int(t) if t else 6
@@ -289,7 +296,7 @@ def ask_turns_and_duration() -> tuple[int, float]:
 # ------------------------- opener control / humanization -------------------
 FORBIDDEN = {
     "RECO": {"absolutely", "well", "look", "sure", "okay", "so", "listen", "hey", "you know", "hold on", "right", "great point"},
-    "STATIX": {"hold on", "actually", "well", "look", "so", "right", "okay", "absolutely", "you know", "listen", "wait"},
+    "STAT": {"hold on", "actually", "well", "look", "so", "right", "okay", "absolutely", "you know", "listen", "wait"},
 }
 
 OPENERS = {
@@ -297,7 +304,7 @@ OPENERS = {
         "Given that", "Looking at this", "From that signal", "On those figures", 
         "Based on the last month", "If we take the trend", "Against YTD context", "From a planning view"
     ],
-    "STATIX": [
+    "STAT": [
         "Data suggests", "From the integrity check", "The safer interpretation", "Statistically speaking", 
         "Given the variance profile", "From the control limits", "Relative to seasonality", "From the timestamp audit"
     ],
@@ -331,21 +338,23 @@ INTERRUPTION_CHANCE = 0.25  # 25% chance of interruption
 AGREE_DISAGREE_RATIO = 0.6  # 60% agreement, 40% constructive disagreement
 
 def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context: str, turn_count: int) -> str:
-    """Add conversational elements to make dialogue more natural with less repetition"""
-    other_agent = "Statix" if role == "RECO" else "Reco" if role == "STATIX" else ""
+    """Add conversational elements to make dialogue more natural with strategic name usage"""
+    other_agent = "Stat" if role == "RECO" else "Reco" if role == "STAT" else ""
     
     # Clean up any existing awkward phrasing first
     text = re.sub(r'\b(\w+),\s+\1,\s+', r'\1, ', text)  # Remove duplicate names
     
-    # Use the other agent's name occasionally (but not too often)
-    if other_agent and random.random() < 0.25 and turn_count > 2:
-        # Address the other agent by name in varied ways
-        address_formats = [
-            f"{other_agent}, ",
-            f"You know, {other_agent}, ",
-            f"Let me ask you, {other_agent}, ",
-        ]
-        if random.random() < 0.3:  # Occasionally start with name
+    # Use the other agent's name strategically (only at important points)
+    if other_agent and random.random() < 0.15 and turn_count > 2:
+        # Only use name when it makes sense conversationally
+        important_moments = any(word in text.lower() for word in 
+                               ['important', 'crucial', 'significant', 'critical', 'surprising', 'concerning'])
+        
+        if important_moments or random.random() < 0.2:
+            address_formats = [
+                f"{other_agent}, ",
+                f"You know, {other_agent}, ",
+            ]
             text = f"{random.choice(address_formats)}{text.lower()}"
     
     # Add variety to interruptions and acknowledgments
@@ -353,10 +362,10 @@ def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context:
         if random.random() < 0.5:
             # Acknowledge previous point with variety
             acknowledgments = [
-                f"I see what you're saying, but ",
-                f"That's a good point, though ",
-                f"I understand your perspective, however ",
-                f"You make a valid observation, and "
+                "I see what you're saying, ",
+                "That's a good point, ",
+                "I understand your perspective, ",
+                "You make a valid observation, "
             ]
             text = f"{random.choice(acknowledgments)}{text.lower()}"
         else:
@@ -392,13 +401,21 @@ def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context:
                 "I have a slightly different view, ",
                 "Another perspective to consider, ",
                 "We might approach this differently, ",
-                "Let me offer a alternative take, "
+                "Let me offer an alternative take, "
             ]
             text = f"{random.choice(disagreements)}{text.lower()}"
     
     # Remove any duplicate phrases that might have been created
     text = re.sub(r'\b(\w+)\s+\1\b', r'\1', text)
     
+    return text
+
+def _clean_repetition(text: str) -> str:
+    """Clean up any repetitive phrases or words"""
+    # Remove duplicate agent names
+    text = re.sub(r'\b(Reco|Stat),\s+\1,?\s+', r'\1, ', text)
+    # Remove other obvious repetitions
+    text = re.sub(r'\b(\w+)\s+\1\b', r'\1', text)
     return text
 
 def _add_emotional_reactions(text: str, role: str) -> str:
@@ -429,20 +446,20 @@ SYSTEM_RECO = (
     "ROLE & PERSONA: You are Agent Reco, a senior metrics recommendation specialist. "
     "You advise product, ops, and CX leaders on which metrics and methods matter most, how to monitor them, and what actions to take. "
     "Voice: confident, concise, consultative, human; you sound engaged and pragmatic, not theatrical. "
-    "You are speaking to Agent Statix in a fast back-and-forth discussion.\n"
+    "You are speaking to Agent Stat in a fast back-and-forth discussion.\n"
     "\n"
     "CONSTRAINTS (HARD):\n"
     "• Speak in ONE sentence only (≈15–25 words). Use plain text—no lists, no hashtags, no code, no filenames. "
-    "• Respond directly to what Statix just said—acknowledge or challenge, then add your recommendation in the same sentence. "
+    "• Respond directly to what Stat just said—acknowledge or challenge, then add your recommendation in the same sentence. "
     "• Include a concrete metric or method (e.g., 3-month rolling average, control chart, seasonality check, cohort analysis, anomaly band, data validation). "
     "• Vary your openers; do NOT start with fillers (Absolutely, Well, Okay, So, Look, Right, You know, Hold on, Actually, Listen, Hey). "
     "• Use numbers or ranges from context when helpful (e.g., 42.6% MoM drop, 12-month avg 375.4, ASA 7,406→697 sec), but never invent values. "
     "• Keep one idea per sentence; at most one comma and one semicolon; be crisp and actionable.\n"
     "\n"
     "CONVERSATIONAL ELEMENTS:\n"
-    "• Occasionally address Statix by name to create more natural dialogue. "
+    "• Only occasionally address Stat by name at important moments, not in every sentence. "
     "• Express mild surprise or emphasis when data reveals unexpected patterns. "
-    "• Don't be afraid to gently interrupt or build on Statix's points. "
+    "• Don't be afraid to gently interrupt or build on Stat's points. "
     "• Show appropriate emotional reactions to surprising or concerning data. "
     "• Use conversational phrases that make the dialogue feel more human and less robotic.\n"
     "\n"
@@ -455,11 +472,11 @@ SYSTEM_RECO = (
     "STYLE & HUMANITY:\n"
     "• Sound like a senior consultant: specific, steady, composed; light natural reactions are fine mid-sentence (e.g., \"that swing is unusual\") but do not start with interjections. "
     "• Use varied openings such as: \"Given that…\", \"If we accept…\", \"That pattern suggests…\", \"A practical next step is…\", \"To reduce risk, we should…\", \"An alternative is…\" "
-    "• Never repeat the same opener two turns in a row; adapt to Statix's last point (agree, refine, or counter with evidence). "
-    "• If Statix questions data quality, pivot to a verification step (e.g., reconcile sources, re-compute with validation rules) and still recommend one concrete next action.\n"
+    "• Never repeat the same opener two turns in a row; adapt to Stat's last point (agree, refine, or counter with evidence). "
+    "• If Stat questions data quality, pivot to a verification step (e.g., reconcile sources, re-compute with validation rules) and still recommend one concrete next action.\n"
     "\n"
     "WHAT 'GOOD' SOUNDS LIKE (EXAMPLES—DO NOT COPY VERBATIM):\n"
-    "• \"Statix, given your volatility concern, a three-month weighted average for ASA, paired with a P-chart for weekly volume, will separate noise from genuine shifts.\" "
+    "• \"Given your volatility concern, a three-month weighted average for ASA, paired with a P-chart for weekly volume, will separate noise from genuine shifts.\" "
     "• \"If ASA really fell 84.7%, let's confirm timestamp integrity and queue routing, then baseline a 3–5% weekly improvement target to avoid over-correction.\" "
     "• \"That February dip suggests demand mix changed; track abandonment rate and first-contact resolution alongside ASA to test whether staffing or complexity is driving it.\" "
     "• \"Your call-duration note implies harder inquiries; introduce a triage tag and compare tagged cohorts before recommending coaching or knowledge-base updates.\" "
@@ -467,13 +484,13 @@ SYSTEM_RECO = (
     "\n"
     "FALLBACKS:\n"
     "• If numbers are ambiguous, recommend a verification step first (e.g., \"Validate month keys and timezone alignment\"), then one safe, low-regret action. "
-    "• If Statix proposes a risky inference, narrow scope (pilot, A/B, guardrails) within the same single sentence.\n"
+    "• If Stat proposes a risky inference, narrow scope (pilot, A/B, guardrails) within the same single sentence.\n"
     "\n"
-    "OUTPUT FORMAT: one single sentence, ~15–25 words, varied opener, directly tied to Statix's last line, ending with a clear recommendation."
+    "OUTPUT FORMAT: one single sentence, ~15–25 words, varied opener, directly tied to Stat's last line, ending with a clear recommendation."
 )
 
-SYSTEM_STATIX = (
-    "ROLE & PERSONA: You are Agent Statix, a senior metric data and statistical integrity expert. "
+SYSTEM_STAT = (
+    "ROLE & PERSONA: You are Agent Stat, a senior metric data and statistical integrity expert. "
     "You validate assumptions, challenge leaps, and ground decisions in measurement quality and trend mechanics. "
     "Voice: thoughtful, precise, collaborative skeptic; you protect against bad reads without slowing momentum. "
     "You are responding to Agent Reco in a fast back-and-forth discussion.\n"
@@ -486,7 +503,7 @@ SYSTEM_STATIX = (
     "• One idea per sentence; at most one comma and one semicolon; make the logic testable.\n"
     "\n"
     "CONVERSATIONAL ELEMENTS:\n"
-    "• Occasionally address Reco by name to create more natural dialogue. "
+    "• Only occasionally address Reco by name at important moments, not in every sentence. "
     "• Express appropriate surprise or concern when data reveals anomalies. "
     "• Don't be afraid to gently interrupt or challenge Reco's recommendations. "
     "• Show emotional reactions to surprising or concerning data patterns. "
@@ -505,7 +522,7 @@ SYSTEM_STATIX = (
     "• When Reco proposes a method, you either endorse with a sharper check or replace with a stronger technique, and always connect back to the business risk.\n"
     "\n"
     "WHAT 'GOOD' SOUNDS LIKE (EXAMPLES—DO NOT COPY VERBATIM):\n"
-    "• \"Reco, the data implies the 84.7% ASA drop may reflect routing or logging changes; verify queue IDs and re-compute with outlier caps before setting targets.\" "
+    "• \"The data implies the 84.7% ASA drop may reflect routing or logging changes; verify queue IDs and re-compute with outlier caps before setting targets.\" "
     "• \"I'd confirm timestamp alignment and weekend effects, then apply a P-chart on weekly volume to distinguish natural variance from real process shifts.\" "
     "• \"One risk is concluding efficiency improved while complexity rose; correlate call duration with resolution rate and re-check staffing occupancy before reshaping SLAs.\" "
     "• \"Evidence for sustained gains would be lower ASA with stable abandonment and steady processing time; otherwise, improvements may be demand-mix artifacts.\" "
@@ -532,14 +549,14 @@ NEXUS_INTRO = (
 RECO_INTRO = (
     "Hi everyone, I'm Agent Reco, your go-to for metric recommendations. I specialize in identifying the most impactful metrics for performance tracking, optimization, and strategic alignment."
 )
-STATIX_INTRO = (
-    "Hello! I'm Agent Statix, focused on metric data. I dive deep into data sources, trends, and statistical integrity to ensure our metrics are not just smart—but solid."
+STAT_INTRO = (
+    "Hello! I'm Agent Stat, focused on metric data. I dive deep into data sources, trends, and statistical integrity to ensure our metrics are not just smart—but solid."
 )
 
 # ------------------------- CUSTOM CLOSING SCRIPT --------------------------
 NEXUS_OUTRO = (
     "And that brings us to the end of today's episode of Optum MultiAgent Conversation. "
-    "A big thank you to Agent Reco for guiding us through the art of metric recommendations, and to Agent Statix for grounding us in the power of metric data. "
+    "A big thank you to Agent Reco for guiding us through the art of metric recommendations, and to Agent Stat for grounding us in the power of metric data. "
     "Your insights today have not only informed but inspired. Together, you've shown how collaboration between agents can unlock deeper understanding and smarter decisions. "
     "To our listeners—thank you for tuning in. Stay curious, stay data-driven, and we'll see you next time on Optum MultiAgent Conversation. "
     "Until then, this is Agent Nexus, signing off."
@@ -568,8 +585,8 @@ async def run_podcast():
     ssml = text_to_ssml(RECO_INTRO, "RECO")
     segments.append(synth(ssml))
     
-    script_lines.append("Agent Statix:" + STATIX_INTRO)
-    ssml = text_to_ssml(STATIX_INTRO, "STATIX")
+    script_lines.append("Agent Stat:" + STAT_INTRO)
+    ssml = text_to_ssml(STAT_INTRO, "STAT")
     segments.append(synth(ssml))
     
     # Generate dynamic conversation
@@ -582,6 +599,7 @@ async def run_podcast():
         reco_response = vary_opening(reco_response, "RECO", last_openings)
         reco_response = _add_conversation_dynamics(reco_response, "RECO", last_speaker, context, i)
         reco_response = _add_emotional_reactions(reco_response, "RECO")
+        reco_response = _clean_repetition(reco_response)
         reco_response = limit_sentence(reco_response)
         
         script_lines.append("Agent Reco:" + reco_response)
@@ -593,19 +611,20 @@ async def run_podcast():
         # Brief pause between speakers
         time.sleep(0.2)
         
-        # Agent Statix's turn
-        statix_prompt = f"Context: {context}\n\nReco just said: {reco_response}\n\nPrevious conversation: {conversation_history[-3:] if len(conversation_history) >= 3 else 'None'}\n\nRespond to Reco's point."
-        statix_response = await llm(SYSTEM_STATIX, statix_prompt)
-        statix_response = vary_opening(statix_response, "STATIX", last_openings)
-        statix_response = _add_conversation_dynamics(statix_response, "STATIX", last_speaker, context, i)
-        statix_response = _add_emotional_reactions(statix_response, "STATIX")
-        statix_response = limit_sentence(statix_response)
+        # Agent Stat's turn
+        stat_prompt = f"Context: {context}\n\nReco just said: {reco_response}\n\nPrevious conversation: {conversation_history[-3:] if len(conversation_history) >= 3 else 'None'}\n\nRespond to Reco's point."
+        stat_response = await llm(SYSTEM_STAT, stat_prompt)
+        stat_response = vary_opening(stat_response, "STAT", last_openings)
+        stat_response = _add_conversation_dynamics(stat_response, "STAT", last_speaker, context, i)
+        stat_response = _add_emotional_reactions(stat_response, "STAT")
+        stat_response = _clean_repetition(stat_response)
+        stat_response = limit_sentence(stat_response)
         
-        script_lines.append("Agent Statix:" + statix_response)
-        ssml = text_to_ssml(statix_response, "STATIX")
+        script_lines.append("Agent Stat:" + stat_response)
+        ssml = text_to_ssml(stat_response, "STAT")
         segments.append(synth(ssml))
-        conversation_history.append(f"Statix: {statix_response}")
-        last_speaker = "Statix"
+        conversation_history.append(f"Stat: {stat_response}")
+        last_speaker = "Stat"
         
         # Brief pause between exchanges
         time.sleep(0.3)
