@@ -1,6 +1,8 @@
-# podcast_fixed_openings.py — Exact scripted openings/closings + humanlike one-sentence discussion
-# No music/beeps. Azure OpenAI + Azure Speech.
-# pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
+podcast_fixed_openings.py — Exact scripted openings/closings + humanlike one-sentence discussion
+
+No music/beeps. Azure OpenAI + Azure Speech.
+
+pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
 
 import os, sys, re, wave, json, tempfile, asyncio, datetime, random, atexit, time
 from pathlib import Path
@@ -133,6 +135,7 @@ def _inflect(text: str, role: str) -> tuple[str, str]:
     base_rate = VOICE_PLAN[role]["base_rate"]
     pitch = _jitter(base_pitch, 3)
     rate = _jitter(base_rate, 2)
+    
     if text.strip().endswith("?"):
         try:
             p = int(pitch.replace('%', ''))
@@ -145,6 +148,7 @@ def _inflect(text: str, role: str) -> tuple[str, str]:
             pitch = f"{p-3}%"
         except:
             pitch = "-2%"
+            
     return pitch, rate
 
 def _ssml(voice: str, style: str | None, rate: str, pitch: str, inner: str) -> str:
@@ -246,16 +250,19 @@ def ask_files() -> str:
 
 def load_context(choice: str) -> tuple[str, dict]:
     ctx, meta = "", {"files": []}
+    
     def add(fname: str):
         p = Path(fname)
         if p.exists():
             meta["files"].append(fname)
             return f"[{fname}]\n{p.read_text(encoding='utf-8', errors='ignore')}\n\n"
         return ""
+    
     if choice == "both":
         ctx += add("data.json") + add("metric_data.json")
     else:
         ctx += add(choice)
+        
     if not ctx:
         raise RuntimeError("No data found (need data.json and/or metric_data.json).")
     return ctx, meta
@@ -268,7 +275,7 @@ def ask_turns_and_duration() -> tuple[int, float]:
     except:
         turns = 6
     turns = max(4, min(12, turns))
-
+    
     print("Enter desired duration in minutes (2–5). Press Enter for default 3:")
     m = (sys.stdin.readline() or "").strip()
     try:
@@ -276,7 +283,7 @@ def ask_turns_and_duration() -> tuple[int, float]:
     except:
         mins = 3.0
     mins = max(2.0, min(5.0, mins))
-
+    
     return turns, mins * 60.0
 
 # ------------------------- opener control / humanization -------------------
@@ -287,11 +294,11 @@ FORBIDDEN = {
 
 OPENERS = {
     "RECO": [
-        "Given that", "Looking at this", "From that signal", "On those figures",
+        "Given that", "Looking at this", "From that signal", "On those figures", 
         "Based on the last month", "If we take the trend", "Against YTD context", "From a planning view"
     ],
     "STATIX": [
-        "Data suggests", "From the integrity check", "The safer interpretation", "Statistically speaking",
+        "Data suggests", "From the integrity check", "The safer interpretation", "Statistically speaking", 
         "Given the variance profile", "From the control limits", "Relative to seasonality", "From the timestamp audit"
     ],
 }
@@ -306,6 +313,7 @@ def strip_forbidden(text: str, role: str) -> str:
 def vary_opening(text: str, role: str, last_open: dict) -> str:
     t = strip_forbidden(text, role)
     first = (t.split()[:1] or [""])[0].strip(",. ").lower()
+    
     if first in FORBIDDEN[role] or not first or random.random() < 0.4:
         cand = random.choice(OPENERS[role])
         if last_open.get(role) == cand:
@@ -322,55 +330,75 @@ def limit_sentence(text: str) -> str:
 INTERRUPTION_CHANCE = 0.25  # 25% chance of interruption
 AGREE_DISAGREE_RATIO = 0.6  # 60% agreement, 40% constructive disagreement
 
-def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context: str) -> str:
-    """Add conversational elements to make dialogue more natural"""
+def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context: str, turn_count: int) -> str:
+    """Add conversational elements to make dialogue more natural with less repetition"""
     other_agent = "Statix" if role == "RECO" else "Reco" if role == "STATIX" else ""
-    if other_agent and random.random() < 0.3:
+    
+    # Clean up any existing awkward phrasing first
+    text = re.sub(r'\b(\w+),\s+\1,\s+', r'\1, ', text)  # Remove duplicate names
+    
+    # Use the other agent's name occasionally (but not too often)
+    if other_agent and random.random() < 0.25 and turn_count > 2:
+        # Address the other agent by name in varied ways
         address_formats = [
             f"{other_agent}, ",
             f"You know, {other_agent}, ",
-            f"I have to say, {other_agent}, ",
             f"Let me ask you, {other_agent}, ",
         ]
-        text = f"{random.choice(address_formats)}{text.lower()}"
-    if random.random() < INTERRUPTION_CHANCE and role != "NEXUS" and last_speaker:
+        if random.random() < 0.3:  # Occasionally start with name
+            text = f"{random.choice(address_formats)}{text.lower()}"
+    
+    # Add variety to interruptions and acknowledgments
+    if random.random() < INTERRUPTION_CHANCE and role != "NEXUS" and last_speaker and turn_count > 1:
         if random.random() < 0.5:
+            # Acknowledge previous point with variety
             acknowledgments = [
-                f"{last_speaker}, I see your point but ",
-                f"I appreciate that perspective, {last_speaker}, however ",
-                f"That's interesting, {last_speaker}, though I'd add ",
-                f"You're right about that, {last_speaker}, and "
+                f"I see what you're saying, but ",
+                f"That's a good point, though ",
+                f"I understand your perspective, however ",
+                f"You make a valid observation, and "
             ]
             text = f"{random.choice(acknowledgments)}{text.lower()}"
         else:
+            # Mild interruption with variety
             interruptions = [
-                "Actually, if I may interject, ",
-                "Wait, let me jump in here - ",
-                "I have to disagree slightly - ",
-                "That reminds me - "
+                "If I might add, ",
+                "Building on that, ",
+                "To expand on your point, ",
+                "Another way to look at this is "
             ]
             text = f"{random.choice(interruptions)}{text}"
+    
+    # Add emotional reactions more selectively
     surprise_words = ['surprising', 'shocking', 'unexpected', 'dramatic', 'remarkable', 'concerning']
-    if random.random() < 0.3 and any(word in text.lower() for word in surprise_words):
-        emphatics = ["Surprisingly, ", "Interestingly, ", "Remarkably, ", "Unexpectedly, ", "Concerningly, "]
+    if random.random() < 0.25 and any(word in text.lower() for word in surprise_words):
+        emphatics = ["Surprisingly, ", "Interestingly, ", "Remarkably, ", "Unexpectedly, "]
         text = f"{random.choice(emphatics)}{text}"
-    if random.random() < 0.4 and role != "NEXUS":
+    
+    # Add agreement or disagreement with more natural phrasing
+    if random.random() < 0.35 and role != "NEXUS" and turn_count > 1:
         if random.random() < AGREE_DISAGREE_RATIO:
+            # Agreement with variety
             agreements = [
-                "I completely agree with that approach, ",
-                "That's exactly right, ",
-                "You've hit the nail on the head, ",
-                "I'm glad we're aligned on this, "
+                "I agree with that approach, ",
+                "That makes sense, ",
+                "You're right about that, ",
+                "That's a solid recommendation, "
             ]
             text = f"{random.choice(agreements)}{text.lower()}"
         else:
+            # Constructive disagreement with variety
             disagreements = [
-                "I see it a bit differently, ",
-                "Let me offer an alternative perspective, ",
-                "I'm not sure I fully agree, ",
-                "We might want to consider another angle, "
+                "I have a slightly different view, ",
+                "Another perspective to consider, ",
+                "We might approach this differently, ",
+                "Let me offer a alternative take, "
             ]
             text = f"{random.choice(disagreements)}{text.lower()}"
+    
+    # Remove any duplicate phrases that might have been created
+    text = re.sub(r'\b(\w+)\s+\1\b', r'\1', text)
+    
     return text
 
 def _add_emotional_reactions(text: str, role: str) -> str:
@@ -381,15 +409,19 @@ def _add_emotional_reactions(text: str, role: str) -> str:
         "positive": ["That's encouraging! ", "This is positive news. ", "I'm pleased to see this improvement. "],
         "surprising": ["That's surprising! ", "I didn't expect that result. ", "This is unexpected. "]
     }
+    
+    # Check for emotional triggers in the text
     for trigger, reactions in emotional_triggers.items():
         if trigger in text.lower() and random.random() < 0.4:
             reaction = random.choice(reactions)
+            # Insert reaction at a natural break point
             if ',' in text:
                 parts = text.split(',', 1)
                 text = f"{parts[0]}, {reaction}{parts[1].lstrip()}"
             else:
                 text = f"{reaction}{text}"
             break
+    
     return text
 
 # ------------------------- AGENT PROMPTS (characters) ----------------------
@@ -519,89 +551,80 @@ async def run_podcast():
     choice = ask_files()
     context, meta = load_context(choice)
     turns, target_seconds = ask_turns_and_duration()
-
+    
     # Generate conversation
     segments = []
     script_lines = []
     last_openings = {}
     conversation_history = []
     last_speaker = ""
-
+    
     # Fixed introductions
     script_lines.append("Agent Nexus:" + NEXUS_INTRO)
     ssml = text_to_ssml(NEXUS_INTRO, "NEXUS")
     segments.append(synth(ssml))
-
+    
     script_lines.append("Agent Reco:" + RECO_INTRO)
     ssml = text_to_ssml(RECO_INTRO, "RECO")
     segments.append(synth(ssml))
-
+    
     script_lines.append("Agent Statix:" + STATIX_INTRO)
     ssml = text_to_ssml(STATIX_INTRO, "STATIX")
     segments.append(synth(ssml))
-
+    
     # Generate dynamic conversation
     for i in range(turns):
         print(f"Generating turn {i+1}/{turns}...")
-
+        
         # Agent Reco's turn
-        reco_prompt = (
-            f"Context: {context}\n\n"
-            f"Previous conversation: {conversation_history[-2:] if conversation_history else 'None'}\n\n"
-            f"Provide your recommendation based on the data."
-        )
+        reco_prompt = f"Context: {context}\n\nPrevious conversation: {conversation_history[-2:] if conversation_history else 'None'}\n\nProvide your recommendation based on the data."
         reco_response = await llm(SYSTEM_RECO, reco_prompt)
         reco_response = vary_opening(reco_response, "RECO", last_openings)
-        reco_response = _add_conversation_dynamics(reco_response, "RECO", last_speaker, context)
+        reco_response = _add_conversation_dynamics(reco_response, "RECO", last_speaker, context, i)
         reco_response = _add_emotional_reactions(reco_response, "RECO")
         reco_response = limit_sentence(reco_response)
-
+        
         script_lines.append("Agent Reco:" + reco_response)
         ssml = text_to_ssml(reco_response, "RECO")
         segments.append(synth(ssml))
         conversation_history.append(f"Reco: {reco_response}")
         last_speaker = "Reco"
-
+        
         # Brief pause between speakers
         time.sleep(0.2)
-
+        
         # Agent Statix's turn
-        statix_prompt = (
-            f"Context: {context}\n\n"
-            f"Reco just said: {reco_response}\n\n"
-            f"Previous conversation: {conversation_history[-3:] if len(conversation_history) >= 3 else 'None'}\n\n"
-            f"Respond to Reco's point."
-        )
+        statix_prompt = f"Context: {context}\n\nReco just said: {reco_response}\n\nPrevious conversation: {conversation_history[-3:] if len(conversation_history) >= 3 else 'None'}\n\nRespond to Reco's point."
         statix_response = await llm(SYSTEM_STATIX, statix_prompt)
         statix_response = vary_opening(statix_response, "STATIX", last_openings)
-        statix_response = _add_conversation_dynamics(statix_response, "STATIX", last_speaker, context)
+        statix_response = _add_conversation_dynamics(statix_response, "STATIX", last_speaker, context, i)
         statix_response = _add_emotional_reactions(statix_response, "STATIX")
         statix_response = limit_sentence(statix_response)
-
+        
         script_lines.append("Agent Statix:" + statix_response)
         ssml = text_to_ssml(statix_response, "STATIX")
         segments.append(synth(ssml))
         conversation_history.append(f"Statix: {statix_response}")
         last_speaker = "Statix"
-
+        
         # Brief pause between exchanges
         time.sleep(0.3)
-
-    # Scripted Nexus conclusion (no LLM)
+    
+    # Use the custom closing script
     script_lines.append("Agent Nexus:" + NEXUS_OUTRO)
     ssml = text_to_ssml(NEXUS_OUTRO, "NEXUS")
     segments.append(synth(ssml))
-
+    
     # Write final output
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = f"podcast_{timestamp}.wav"
     write_master(segments, output_file)
-
+    
     # Write script to file
     script_file = f"podcast_script_{timestamp}.txt"
     with open(script_file, "w", encoding="utf-8") as f:
         f.write("\n".join(script_lines))
-
+    
     print(f"Podcast generated successfully!")
     print(f"Audio: {output_file}")
     print(f"Script: {script_file}")
