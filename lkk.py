@@ -49,35 +49,39 @@ def _soften(text: str) -> str:
     t = t.replace("debate", "discussion").replace("Debate", "Discussion")
     return t
 
-def _one_sentence(text: str, max_words: int = 26) -> str:
+def _ensure_complete_sentence(text: str) -> str:
+    """Ensure the response is a complete sentence without artificial truncation"""
     t = re.sub(r'[`*_#>]+', ' ', text).strip()
     t = re.sub(r'\s{2,}', ' ', t)
-    s = (re.split(r'(?<=[.!?])\s+', t) or [t])[0].strip()
-    words = s.split()
-    return " ".join(words[:max_words-1]) + "…" if len(words) > max_words else s
+    
+    # Ensure it ends with proper punctuation
+    if t and t[-1] not in {'.', '!', '?'}:
+        t += '.'
+    
+    return t
 
 def _looks_ok(text: str) -> bool:
-    return bool(text and len(text.strip()) >= 8 and text.count(".") <= 2 and not text.isupper() and not re.search(r'http[s]?://', text))
+    return bool(text and len(text.strip()) >= 8 and text.count(".") <= 3 and not text.isupper() and not re.search(r'http[s]?://', text))
 
 def llm_safe(system: str, user: str, max_tokens: int, temperature: float) -> str:
     try:
         out = _llm_sync(system, user, max_tokens, temperature)
         if not _looks_ok(out):
-            out = _llm_sync(system, user, max_tokens=max(60, max_tokens//2), temperature=min(0.8, temperature+0.1))
-        return _one_sentence(out)
+            out = _llm_sync(system, user, max_tokens=max(80, max_tokens//2), temperature=min(0.8, temperature+0.1))
+        return _ensure_complete_sentence(out)
     except BadRequestError as e:
         soft_sys = _soften(system) + " Always keep a professional, neutral tone and comply with safety policies."
         soft_user = _soften(user)
         try:
-            out = _llm_sync(soft_sys, soft_user, max_tokens=max(60, max_tokens-20), temperature=max(0.1, temperature-0.2))
-            return _one_sentence(out)
+            out = _llm_sync(soft_sys, soft_user, max_tokens=max(80, max_tokens-20), temperature=max(0.1, temperature-0.2))
+            return _ensure_complete_sentence(out)
         except Exception:
             minimal_system = "You are a professional analyst; produce one safe, neutral sentence grounded in the provided context."
             minimal_user = "Summarize cross-metric trends and propose one action in a single safe sentence."
-            out = _llm_sync(minimal_system, minimal_user, max_tokens=80, temperature=0.2)
-            return _one_sentence(out)
+            out = _llm_sync(minimal_system, minimal_user, max_tokens=100, temperature=0.2)
+            return _ensure_complete_sentence(out)
 
-async def llm(system: str, user: str, max_tokens: int = 110, temperature: float = 0.45) -> str:
+async def llm(system: str, user: str, max_tokens: int = 130, temperature: float = 0.45) -> str:
     return await asyncio.to_thread(llm_safe, system, user, max_tokens, temperature)
 
 # ------------------------- Azure Speech (AAD) ------------------------------
@@ -103,7 +107,7 @@ def cog_token_str() -> str:
 # ---- Voices (as requested) - Updated for more natural pacing
 VOICE_NEXUS = os.getenv("AZURE_VOICE_HOST", "en-US-SaraNeural")   # Host (female, distinct)
 VOICE_RECO = os.getenv("AZURE_VOICE_BA", "en-US-JennyNeural")     # Reco (female)
-VOICE_STAT = os.getenv("AZURE_VOICE_DA", "en-US-BrianNeural")     # Stat (male) - Changed from Statix
+VOICE_STAT = os.getenv("AZURE_VOICE_DA", "en-US-BrianNeural")     # Stat (male)
 
 VOICE_PLAN = {
     "NEXUS": {"style": "friendly", "base_pitch": "+1%", "base_rate": "-2%"},
@@ -330,32 +334,44 @@ def vary_opening(text: str, role: str, last_open: dict) -> str:
         return f"{cand}, {t}"
     return t
 
-def limit_sentence(text: str) -> str:
-    return _one_sentence(text, max_words=26)
+def ensure_complete_response(text: str) -> str:
+    """Ensure response is a complete sentence without artificial truncation"""
+    text = text.strip()
+    if text and text[-1] not in {'.', '!', '?'}:
+        text += '.'
+    return text
 
 # ------------------------ Conversation Dynamics ----------------------------
 INTERRUPTION_CHANCE = 0.25  # 25% chance of interruption
 AGREE_DISAGREE_RATIO = 0.6  # 60% agreement, 40% constructive disagreement
 
-def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context: str, turn_count: int) -> str:
-    """Add conversational elements to make dialogue more natural with strategic name usage"""
+def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context: str, turn_count: int, conversation_history: list) -> str:
+    """Add strategic conversational elements including selective name usage"""
     other_agent = "Stat" if role == "RECO" else "Reco" if role == "STAT" else ""
     
-    # Clean up any existing awkward phrasing first
-    text = re.sub(r'\b(\w+),\s+\1,\s+', r'\1, ', text)  # Remove duplicate names
+    # Strategic name usage - only at important moments
+    should_use_name = (
+        # When emphasizing something important
+        any(word in text.lower() for word in ['important', 'crucial', 'critical', 'significant', 'essential']) or
+        # When disagreeing or challenging
+        any(word in text.lower() for word in ['but', 'however', 'although', 'disagree', 'challenge', 'contrary']) or
+        # When building significantly on previous point
+        (turn_count > 2 and random.random() < 0.3) or
+        # When the content is particularly surprising
+        any(word in text.lower() for word in ['surprising', 'shocking', 'unexpected', 'dramatic', 'remarkable']) or
+        # When transitioning to a new topic or approach
+        (len(conversation_history) > 2 and "alternative" in text.lower()) or
+        # When acknowledging a particularly good point
+        (random.random() < 0.2 and any(word in text.lower() for word in ['agree', 'right', 'correct', 'valid']))
+    )
     
-    # Use the other agent's name strategically (only at important points)
-    if other_agent and random.random() < 0.15 and turn_count > 2:
-        # Only use name when it makes sense conversationally
-        important_moments = any(word in text.lower() for word in 
-                               ['important', 'crucial', 'significant', 'critical', 'surprising', 'concerning'])
-        
-        if important_moments or random.random() < 0.2:
-            address_formats = [
-                f"{other_agent}, ",
-                f"You know, {other_agent}, ",
-            ]
-            text = f"{random.choice(address_formats)}{text.lower()}"
+    if other_agent and should_use_name and random.random() < 0.7:  # 70% chance even when appropriate
+        address_formats = [
+            f"{other_agent}, ",
+            f"You know, {other_agent}, ",
+            f"Let me ask you, {other_agent}, ",
+        ]
+        text = f"{random.choice(address_formats)}{text.lower()}"
     
     # Add variety to interruptions and acknowledgments
     if random.random() < INTERRUPTION_CHANCE and role != "NEXUS" and last_speaker and turn_count > 1:
@@ -405,9 +421,6 @@ def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context:
             ]
             text = f"{random.choice(disagreements)}{text.lower()}"
     
-    # Remove any duplicate phrases that might have been created
-    text = re.sub(r'\b(\w+)\s+\1\b', r'\1', text)
-    
     return text
 
 def _clean_repetition(text: str) -> str:
@@ -416,6 +429,8 @@ def _clean_repetition(text: str) -> str:
     text = re.sub(r'\b(Reco|Stat),\s+\1,?\s+', r'\1, ', text)
     # Remove other obvious repetitions
     text = re.sub(r'\b(\w+)\s+\1\b', r'\1', text)
+    # Remove repeated phrases
+    text = re.sub(r'\b(Given that|If we|The safer read|The safer interpretation),\s+\1', r'\1', text)
     return text
 
 def _add_emotional_reactions(text: str, role: str) -> str:
@@ -449,7 +464,7 @@ SYSTEM_RECO = (
     "You are speaking to Agent Stat in a fast back-and-forth discussion.\n"
     "\n"
     "CONSTRAINTS (HARD):\n"
-    "• Speak in ONE sentence only (≈15–25 words). Use plain text—no lists, no hashtags, no code, no filenames. "
+    "• Speak in COMPLETE sentences (≈15–30 words). Use plain text—no lists, no hashtags, no code, no filenames. "
     "• Respond directly to what Stat just said—acknowledge or challenge, then add your recommendation in the same sentence. "
     "• Include a concrete metric or method (e.g., 3-month rolling average, control chart, seasonality check, cohort analysis, anomaly band, data validation). "
     "• Vary your openers; do NOT start with fillers (Absolutely, Well, Okay, So, Look, Right, You know, Hold on, Actually, Listen, Hey). "
@@ -486,7 +501,7 @@ SYSTEM_RECO = (
     "• If numbers are ambiguous, recommend a verification step first (e.g., \"Validate month keys and timezone alignment\"), then one safe, low-regret action. "
     "• If Stat proposes a risky inference, narrow scope (pilot, A/B, guardrails) within the same single sentence.\n"
     "\n"
-    "OUTPUT FORMAT: one single sentence, ~15–25 words, varied opener, directly tied to Stat's last line, ending with a clear recommendation."
+    "OUTPUT FORMAT: one complete sentence, ~15–30 words, varied opener, directly tied to Stat's last line, ending with a clear recommendation."
 )
 
 SYSTEM_STAT = (
@@ -496,9 +511,9 @@ SYSTEM_STAT = (
     "You are responding to Agent Reco in a fast back-and-forth discussion.\n"
     "\n"
     "CONSTRAINTS (HARD):\n"
-    "• Speak in ONE sentence only (≈15–25 words). Plain text only—no lists, no hashtags, no code, no filenames. "
+    "• Speak in COMPLETE sentences (≈15–30 words). Plain text only—no lists, no hashtags, no code, no filenames. "
     "• Respond explicitly to Reco—agree, qualify, or refute—and add one concrete check, statistic, or risk in the same sentence. "
-    "• Bring a specific datum when feasible (e.g., 12-month range 155.2–531.3, YTD avg 351.4, MoM −42.6%); never invent values. "
+        "• Bring a specific datum when feasible (e.g., 12-month range 155.2–531.3, YTD avg 351.4, MoM −42.6%); never invent values. "
     "• Vary your openers; do NOT start with fillers (Hold on, Actually, Well, Look, So, Right, Okay, Absolutely, You know, Listen, Wait). "
     "• One idea per sentence; at most one comma and one semicolon; make the logic testable.\n"
     "\n"
@@ -532,7 +547,7 @@ SYSTEM_STAT = (
     "• If Reco's claim lacks evidence, request a minimal confirmatory test and propose a narrow pilot in the same sentence. "
     "• If data are inconsistent, call for a reconciliation step (schema, keys, timezones) and state the decision risk succinctly.\n"
     "\n"
-    "OUTPUT FORMAT: one single sentence, ~15–25 words, varied opener, explicitly addressing Reco's last line, ending with a concrete check or risk and an immediate next step."
+    "OUTPUT FORMAT: one complete sentence, ~15–30 words, varied opener, explicitly addressing Reco's last line, ending with a concrete check or risk and an immediate next step."
 )
 
 SYSTEM_NEXUS = (
@@ -597,10 +612,10 @@ async def run_podcast():
         reco_prompt = f"Context: {context}\n\nPrevious conversation: {conversation_history[-2:] if conversation_history else 'None'}\n\nProvide your recommendation based on the data."
         reco_response = await llm(SYSTEM_RECO, reco_prompt)
         reco_response = vary_opening(reco_response, "RECO", last_openings)
-        reco_response = _add_conversation_dynamics(reco_response, "RECO", last_speaker, context, i)
+        reco_response = _add_conversation_dynamics(reco_response, "RECO", last_speaker, context, i, conversation_history)
         reco_response = _add_emotional_reactions(reco_response, "RECO")
         reco_response = _clean_repetition(reco_response)
-        reco_response = limit_sentence(reco_response)
+        reco_response = ensure_complete_response(reco_response)
         
         script_lines.append("Agent Reco:" + reco_response)
         ssml = text_to_ssml(reco_response, "RECO")
@@ -615,10 +630,10 @@ async def run_podcast():
         stat_prompt = f"Context: {context}\n\nReco just said: {reco_response}\n\nPrevious conversation: {conversation_history[-3:] if len(conversation_history) >= 3 else 'None'}\n\nRespond to Reco's point."
         stat_response = await llm(SYSTEM_STAT, stat_prompt)
         stat_response = vary_opening(stat_response, "STAT", last_openings)
-        stat_response = _add_conversation_dynamics(stat_response, "STAT", last_speaker, context, i)
+        stat_response = _add_conversation_dynamics(stat_response, "STAT", last_speaker, context, i, conversation_history)
         stat_response = _add_emotional_reactions(stat_response, "STAT")
         stat_response = _clean_repetition(stat_response)
-        stat_response = limit_sentence(stat_response)
+        stat_response = ensure_complete_response(stat_response)
         
         script_lines.append("Agent Stat:" + stat_response)
         ssml = text_to_ssml(stat_response, "STAT")
