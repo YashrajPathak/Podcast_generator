@@ -405,3 +405,12 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8002, reload=True)
+
+podcast-orchestrator/
+├── main.py
+├── graph.py
+├── livekit_integration.py
+├── tools.py
+├── evaluation.py
+├── requirements.txt
+└── .env
