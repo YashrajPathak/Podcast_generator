@@ -1,0 +1,407 @@
+# graph.py - FIXED and READY TO RUN
+import os
+import re
+import wave
+import json
+import uuid
+import asyncio
+import random
+import tempfile
+from pathlib import Path
+from typing import Dict, List, Any, Optional, TypedDict, Literal
+from datetime import datetime
+
+# Install: pip install langgraph
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
+
+# Use your existing implementations from podcast.py
+# We'll copy the necessary functions here
+
+# ============ CORE FUNCTIONS FROM podcast.py ============
+def ensure_complete_response(text: str) -> str:
+    """Ensure response is a complete sentence"""
+    text = text.strip()
+    if text and text[-1] not in {'.', '!', '?'}:
+        text += '.'
+    return text
+
+def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context: str, turn_count: int, conversation_history: list) -> str:
+    """Add conversational elements"""
+    other_agent = "Stat" if role == "RECO" else "Reco" if role == "STAT" else ""
+    
+    if other_agent and random.random() < 0.3:
+        address_formats = [f"{other_agent}, ", f"You know, {other_agent}, "]
+        text = f"{random.choice(address_formats)}{text.lower()}"
+    
+    return text
+
+def _add_emotional_reactions(text: str, role: str) -> str:
+    """Add emotional reactions"""
+    emotional_triggers = {
+        "dramatic": ["That's quite a dramatic shift! ", "This is significant! "],
+        "concerning": ["This is concerning. ", "That worries me slightly. "],
+        "positive": ["That's encouraging! ", "This is positive news. "],
+        "surprising": ["That's surprising! ", "I didn't expect that. "]
+    }
+    
+    for trigger, reactions in emotional_triggers.items():
+        if trigger in text.lower() and random.random() < 0.4:
+            reaction = random.choice(reactions)
+            text = f"{reaction}{text}"
+            break
+    
+    return text
+
+def _clean_repetition(text: str) -> str:
+    """Clean up repetitive phrases"""
+    text = re.sub(r'\b(Reco|Stat),\s+\1,?\s+', r'\1, ', text)
+    text = re.sub(r'\b(\w+)\s+\1\b', r'\1', text)
+    return text
+
+# ============ Type Definitions ============
+class PodcastState(TypedDict):
+    messages: List[Dict[str, Any]]
+    current_speaker: str
+    topic: str
+    context: Dict[str, Any]
+    interrupted: bool
+    audio_segments: List[str]
+    conversation_history: List[Dict[str, str]]
+    current_turn: int
+    max_turns: int
+    session_id: str
+
+# ============ Tool Definitions ============
+def get_metric_tools():
+    return [
+        {
+            "name": "analyze_metric_trend",
+            "description": "Analyze trends in specific metrics over time",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "metric_name": {"type": "string"},
+                    "time_period": {"type": "string"},
+                    "analysis_type": {"type": "string", "enum": ["trend", "seasonality", "volatility"]}
+                },
+                "required": ["metric_name", "time_period"]
+            }
+        }
+    ]
+
+async def execute_tools(tool_calls: List[Dict]) -> List[Dict]:
+    """Execute tool calls and return results"""
+    results = []
+    for call in tool_calls:
+        try:
+            if call["name"] == "analyze_metric_trend":
+                result = {
+                    "metric": call["parameters"]["metric_name"],
+                    "period": call["parameters"]["time_period"],
+                    "analysis_type": call["parameters"].get("analysis_type", "trend"),
+                    "trend": random.choice(["upward", "downward", "stable"]),
+                    "confidence": round(random.uniform(0.7, 0.95), 2),
+                    "notes": "Analysis completed successfully"
+                }
+                results.append({
+                    "tool": "analyze_metric_trend",
+                    "result": result,
+                    "success": True
+                })
+        except Exception as e:
+            results.append({
+                "tool": call["name"],
+                "result": f"Error: {str(e)}",
+                "success": False
+            })
+    
+    return results
+
+# ============ SIMPLIFIED LLM CLIENT ============
+async def llm(system: str, prompt: str, max_tokens: int = 150, temperature: float = 0.45) -> str:
+    """Simplified LLM call for demo"""
+    # In real implementation, use your Azure OpenAI client
+    responses = [
+        "Based on the metric trends, I recommend implementing a 3-month rolling average for better stability.",
+        "The data shows concerning volatility; we should apply outlier detection before making recommendations.",
+        "Looking at the seasonal patterns, a weighted moving average would provide more accurate forecasts.",
+        "The correlation analysis suggests we need to validate data quality before proceeding with recommendations."
+    ]
+    await asyncio.sleep(0.1)  # Simulate API call
+    return random.choice(responses)
+
+async def llm_with_tools(system: str, context: Dict, tools: List[Dict], conversation_history: List[Dict]):
+    """LLM call with tool support"""
+    response = await llm(system, json.dumps(context), 150, 0.45)
+    return type('Obj', (), {'content': response, 'tool_calls': []})
+
+# ============ SIMPLIFIED AUDIO FUNCTIONS ============
+async def generate_audio(text: str, role: str) -> str:
+    """Generate audio for text - SIMULATED for demo"""
+    # In real implementation, use your Azure Speech client
+    temp_file = f"/tmp/{role}_{uuid.uuid4().hex}.wav"
+    # Create empty audio file for demo
+    with wave.open(temp_file, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(b'')  # Empty audio for demo
+    return temp_file
+
+# ============ Agent Nodes ============
+async def nexus_intro_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Nexus introduction"""
+    intro_text = (
+        "Hello and welcome to Optum MultiAgent Conversation, where intelligence meets collaboration. "
+        "I'm Agent Nexus, your host and guide through today's episode. "
+        "In this podcast, we bring together specialized agents to explore the world of metrics, data, and decision-making. "
+        "Let's meet today's experts."
+    )
+    
+    audio_segment = await generate_audio(intro_text, "NEXUS")
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "assistant", "content": intro_text, "speaker": "Nexus"}]),
+        "audio_segments": state["audio_segments"] + [audio_segment],
+        "current_speaker": "Reco"
+    }
+
+async def reco_intro_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Reco introduction"""
+    intro_text = (
+        "Hi everyone, I'm Agent Reco, your go-to for metric recommendations. "
+        "I specialize in identifying the most impactful metrics for performance tracking, optimization, and strategic alignment."
+    )
+    
+    audio_segment = await generate_audio(intro_text, "RECO")
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "assistant", "content": intro_text, "speaker": "Reco"}]),
+        "audio_segments": state["audio_segments"] + [audio_segment],
+        "current_speaker": "Stat"
+    }
+
+async def stat_intro_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Stat introduction"""
+    intro_text = (
+        "Hello! I'm Agent Stat, focused on metric data. "
+        "I dive deep into data sources, trends, and statistical integrity to ensure our metrics are not just smart—but solid."
+    )
+    
+    audio_segment = await generate_audio(intro_text, "STAT")
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "assistant", "content": intro_text, "speaker": "Stat"}]),
+        "audio_segments": state["audio_segments"] + [audio_segment],
+        "current_speaker": "Nexus"
+    }
+
+async def nexus_topic_intro_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Nexus introduces the topic"""
+    topic_intro = "Today we'll discuss metric analysis trends and data validation techniques for operational excellence."
+    
+    audio_segment = await generate_audio(topic_intro, "NEXUS")
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "assistant", "content": topic_intro, "speaker": "Nexus"}]),
+        "audio_segments": state["audio_segments"] + [audio_segment],
+        "current_speaker": "Reco",
+        "current_turn": 1
+    }
+
+async def reco_turn_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Reco's turn with tool calling"""
+    tools = get_metric_tools()
+    
+    # Generate response with tool calling
+    response = await llm_with_tools(
+        system="You are Agent Reco, a metrics recommendation expert.",
+        context={"topic": state["topic"], "turn": state["current_turn"]},
+        tools=tools,
+        conversation_history=state["conversation_history"]
+    )
+    
+    response_text = response.content
+    response_text = ensure_complete_response(response_text)
+    
+    # Add conversation dynamics
+    response_text = _add_conversation_dynamics(
+        response_text, "RECO", state["current_speaker"], 
+        state["context"], state["current_turn"], state["conversation_history"]
+    )
+    response_text = _add_emotional_reactions(response_text, "RECO")
+    response_text = _clean_repetition(response_text)
+    
+    audio_segment = await generate_audio(response_text, "RECO")
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "assistant", "content": response_text, "speaker": "Reco"}]),
+        "audio_segments": state["audio_segments"] + [audio_segment],
+        "conversation_history": state["conversation_history"] + [
+            {"role": "assistant", "content": response_text, "speaker": "Reco"}
+        ],
+        "current_speaker": "Stat",
+        "current_turn": state["current_turn"] + 1,
+        "interrupted": False
+    }
+
+async def stat_turn_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Stat's turn with tool calling"""
+    tools = get_metric_tools()
+    
+    # Generate response with tool calling
+    response = await llm_with_tools(
+        system="You are Agent Stat, a data integrity expert.",
+        context={"topic": state["topic"], "turn": state["current_turn"]},
+        tools=tools,
+        conversation_history=state["conversation_history"]
+    )
+    
+    response_text = response.content
+    response_text = ensure_complete_response(response_text)
+    
+    # Add conversation dynamics
+    response_text = _add_conversation_dynamics(
+        response_text, "STAT", state["current_speaker"], 
+        state["context"], state["current_turn"], state["conversation_history"]
+    )
+    response_text = _add_emotional_reactions(response_text, "STAT")
+    response_text = _clean_repetition(response_text)
+    
+    audio_segment = await generate_audio(response_text, "STAT")
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "assistant", "content": response_text, "speaker": "Stat"}]),
+        "audio_segments": state["audio_segments"] + [audio_segment],
+        "conversation_history": state["conversation_history"] + [
+            {"role": "assistant", "content": response_text, "speaker": "Stat"}
+        ],
+        "current_speaker": "Reco",
+        "current_turn": state["current_turn"] + 1,
+        "interrupted": False
+    }
+
+async def nexus_outro_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Nexus conclusion"""
+    outro_text = (
+        "And that brings us to the end of today's episode of Optum MultiAgent Conversation. "
+        "A big thank you to Agent Reco and Agent Stat for their insights. "
+        "Thank you for tuning in. Stay curious, stay data-driven!"
+    )
+    
+    audio_segment = await generate_audio(outro_text, "NEXUS")
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "assistant", "content": outro_text, "speaker": "Nexus"}]),
+        "audio_segments": state["audio_segments"] + [audio_segment],
+        "current_speaker": "END"
+    }
+
+# ============ Conditional Nodes ============
+def should_continue(state: PodcastState) -> Literal["continue", "end"]:
+    """Determine whether to continue or end"""
+    if state["current_turn"] >= state["max_turns"]:
+        return "end"
+    return "continue"
+
+# ============ Graph Construction ============
+def create_podcast_graph() -> StateGraph:
+    """Create the LangGraph for podcast generation"""
+    builder = StateGraph(PodcastState)
+    
+    # Add nodes
+    builder.add_node("nexus_intro", nexus_intro_node)
+    builder.add_node("reco_intro", reco_intro_node)
+    builder.add_node("stat_intro", stat_intro_node)
+    builder.add_node("nexus_topic_intro", nexus_topic_intro_node)
+    builder.add_node("reco_turn", reco_turn_node)
+    builder.add_node("stat_turn", stat_turn_node)
+    builder.add_node("nexus_outro", nexus_outro_node)
+    
+    # Set entry point
+    builder.set_entry_point("nexus_intro")
+    
+    # Define workflow
+    builder.add_edge("nexus_intro", "reco_intro")
+    builder.add_edge("reco_intro", "stat_intro")
+    builder.add_edge("stat_intro", "nexus_topic_intro")
+    builder.add_edge("nexus_topic_intro", "reco_turn")
+    
+    # Conversation flow
+    builder.add_conditional_edges(
+        "reco_turn",
+        should_continue,
+        {"continue": "stat_turn", "end": "nexus_outro"}
+    )
+    
+    builder.add_conditional_edges(
+        "stat_turn",
+        should_continue,
+        {"continue": "reco_turn", "end": "nexus_outro"}
+    )
+    
+    builder.add_edge("nexus_outro", END)
+    
+    return builder.compile()
+
+# ============ Main Function ============
+async def generate_podcast(topic: str, max_turns: int = 4, session_id: str = None) -> Dict[str, Any]:
+    """Generate a complete podcast"""
+    session_id = session_id or f"podcast_{uuid.uuid4().hex[:8]}"
+    
+    # Initialize state
+    initial_state = PodcastState(
+        messages=[],
+        current_speaker="Nexus",
+        topic=topic,
+        context={},
+        interrupted=False,
+        audio_segments=[],
+        conversation_history=[],
+        current_turn=0,
+        max_turns=max_turns,
+        session_id=session_id
+    )
+    
+    # Create and run graph
+    graph = create_podcast_graph()
+    final_state = await graph.ainvoke(initial_state)
+    
+    return {
+        "session_id": session_id,
+        "conversation_history": final_state["conversation_history"],
+        "total_turns": final_state["current_turn"],
+        "audio_segments": final_state["audio_segments"]
+    }
+
+# ============ FastAPI Endpoint ============
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+app = FastAPI()
+
+class PodcastRequest(BaseModel):
+    topic: str
+    max_turns: int = 4
+    session_id: Optional[str] = None
+
+@app.post("/generate-podcast")
+async def api_generate_podcast(request: PodcastRequest):
+    try:
+        result = await generate_podcast(
+            topic=request.topic,
+            max_turns=request.max_turns,
+            session_id=request.session_id
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": "langgraph-podcast"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8002, reload=True)
