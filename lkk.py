@@ -1,5 +1,6 @@
 import os, sys, re, wave, json, tempfile, asyncio, datetime, random, atexit, time
 from pathlib import Path
+from typing import Dict, List, Any, Optional
 from dotenv import load_dotenv; load_dotenv()
 
 # ------------------------- temp tracking & cleanup -------------------------
@@ -143,7 +144,7 @@ def _inflect(text: str, role: str) -> tuple[str, str]:
     elif re.search(r'\bhowever\b|\bbut\b', text, re.I):
         try:
             p = int(pitch.replace('%', ''))
-            pitch = f"{p-2}%"
+            pitch = f"{p-2%}"
         except:
             pitch = "-2%"
     elif any(word in text.lower() for word in ['surprising', 'shocking', 'unexpected', 'dramatic']):
@@ -532,7 +533,7 @@ SYSTEM_STAT = (
     "You are responding to Agent Reco in a fast back-and-forth discussion.\n"
     "\n"
     "CONSTRAINTS (HARD):\n"
-    "• Speak in COMPLETE sentences (≈15–30 words). Plain text only—no lists, no hashtags, no code, no filenames. "
+        "• Speak in COMPLETE sentences (≈15–30 words). Plain text only—no lists, no hashtags, no code, no filenames. "
     "• Respond explicitly to Reco—agree, qualify, or refute—and add one concrete check, statistic, or risk in the same sentence. "
     "• Bring a specific datum when feasible (e.g., 12-month range 155.2–531.3, YTD avg 351.4, MoM −42.6%); never invent values. "
     "• Vary your openers; do NOT start with fillers (Hold on, Actually, Well, Look, So, Right, Okay, Absolutely, You know, Listen, Wait). "
@@ -597,6 +598,51 @@ NEXUS_OUTRO = (
     "To our listeners—thank you for tuning in. Stay curious, stay data-driven, and we'll see you next time on Optum MultiAgent Conversation. "
     "Until then, this is Agent Nexus, signing off."
 )
+
+# ------------------------- FastAPI Server --------------------------
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn
+
+app = FastAPI()
+
+class GenerateRequest(BaseModel):
+    system_prompt: str
+    user_prompt: str
+    max_tokens: int = 150
+    temperature: float = 0.45
+
+class AudioRequest(BaseModel):
+    text: str
+    voice: str
+
+@app.post("/generate-response")
+async def generate_response(request: GenerateRequest):
+    """API endpoint for generating AI responses"""
+    try:
+        response = await llm(
+            request.system_prompt,
+            request.user_prompt,
+            request.max_tokens,
+            request.temperature
+        )
+        return {"text": response, "success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/generate-audio")
+async def generate_audio_endpoint(request: AudioRequest):
+    """API endpoint for generating audio"""
+    try:
+        ssml = text_to_ssml(request.text, request.voice)
+        audio_file = synth(ssml)
+        return {"audio_url": f"/audio/{os.path.basename(audio_file)}", "success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": "podcast-engine", "port": 8001}
 
 # ------------------------- MAIN -------------------------------------------
 async def run_podcast():
@@ -699,9 +745,13 @@ async def run_podcast():
 
 # ------------------------- entry ------------------------------------------
 if __name__ == "__main__":
-    try:
-        asyncio.run(run_podcast())
-    except Exception as e:
-        print(f"X Error: {e}")
-        import traceback
-        traceback.print_exc()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+        uvicorn.run(app, host="0.0.0.0", port=8001, reload=True)
+    else:
+        try:
+            asyncio.run(run_podcast())
+        except Exception as e:
+            print(f"X Error: {e}")
+            import traceback
+            traceback.print_exc()
