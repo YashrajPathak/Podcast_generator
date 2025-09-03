@@ -1,9 +1,3 @@
-podcast_fixed_openings.py — Exact scripted openings/closings + humanlike one-sentence discussion
-
-No music/beeps. Azure OpenAI + Azure Speech.
-
-pip install -U azure-cognitiveservices-speech azure-identity openai python-dotenv
-
 import os, sys, re, wave, json, tempfile, asyncio, datetime, random, atexit, time
 from pathlib import Path
 from dotenv import load_dotenv; load_dotenv()
@@ -49,7 +43,7 @@ def _soften(text: str) -> str:
     t = t.replace("debate", "discussion").replace("Debate", "Discussion")
     return t
 
-def _ensure_complete_sentence(text: str) -> str:
+def ensure_complete_sentence(text: str) -> str:
     """Ensure the response is a complete sentence without artificial truncation"""
     t = re.sub(r'[`*_#>]+', ' ', text).strip()
     t = re.sub(r'\s{2,}', ' ', t)
@@ -57,7 +51,6 @@ def _ensure_complete_sentence(text: str) -> str:
     # Ensure it ends with proper punctuation
     if t and t[-1] not in {'.', '!', '?'}:
         t += '.'
-    
     return t
 
 def _looks_ok(text: str) -> bool:
@@ -68,18 +61,18 @@ def llm_safe(system: str, user: str, max_tokens: int, temperature: float) -> str
         out = _llm_sync(system, user, max_tokens, temperature)
         if not _looks_ok(out):
             out = _llm_sync(system, user, max_tokens=max(80, max_tokens//2), temperature=min(0.8, temperature+0.1))
-        return _ensure_complete_sentence(out)
+        return ensure_complete_sentence(out)
     except BadRequestError as e:
         soft_sys = _soften(system) + " Always keep a professional, neutral tone and comply with safety policies."
         soft_user = _soften(user)
         try:
             out = _llm_sync(soft_sys, soft_user, max_tokens=max(80, max_tokens-20), temperature=max(0.1, temperature-0.2))
-            return _ensure_complete_sentence(out)
+            return ensure_complete_sentence(out)
         except Exception:
             minimal_system = "You are a professional analyst; produce one safe, neutral sentence grounded in the provided context."
             minimal_user = "Summarize cross-metric trends and propose one action in a single safe sentence."
             out = _llm_sync(minimal_system, minimal_user, max_tokens=100, temperature=0.2)
-            return _ensure_complete_sentence(out)
+            return ensure_complete_sentence(out)
 
 async def llm(system: str, user: str, max_tokens: int = 130, temperature: float = 0.45) -> str:
     return await asyncio.to_thread(llm_safe, system, user, max_tokens, temperature)
@@ -349,6 +342,9 @@ def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context:
     """Add strategic conversational elements including selective name usage"""
     other_agent = "Stat" if role == "RECO" else "Reco" if role == "STAT" else ""
     
+    # Track if we've already added a conversational element
+    added_element = False
+    
     # Strategic name usage - only at important moments
     should_use_name = (
         # When emphasizing something important
@@ -365,16 +361,23 @@ def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context:
         (random.random() < 0.2 and any(word in text.lower() for word in ['agree', 'right', 'correct', 'valid']))
     )
     
-    if other_agent and should_use_name and random.random() < 0.7:  # 70% chance even when appropriate
+    if other_agent and should_use_name and random.random() < 0.7 and not added_element:
         address_formats = [
             f"{other_agent}, ",
             f"You know, {other_agent}, ",
-            f"Let me ask you, {other_agent}, ",
         ]
         text = f"{random.choice(address_formats)}{text.lower()}"
+        added_element = True
     
-    # Add variety to interruptions and acknowledgments
-    if random.random() < INTERRUPTION_CHANCE and role != "NEXUS" and last_speaker and turn_count > 1:
+    # Add emotional reactions more selectively (only if no other element added)
+    surprise_words = ['surprising', 'shocking', 'unexpected', 'dramatic', 'remarkable', 'concerning']
+    if not added_element and random.random() < 0.25 and any(word in text.lower() for word in surprise_words):
+        emphatics = ["Surprisingly, ", "Interestingly, ", "Remarkably, ", "Unexpectedly, "]
+        text = f"{random.choice(emphatics)}{text}"
+        added_element = True
+    
+    # Add variety to interruptions and acknowledgments (only if no other element added)
+    if not added_element and random.random() < INTERRUPTION_CHANCE and role != "NEXUS" and last_speaker and turn_count > 1:
         if random.random() < 0.5:
             # Acknowledge previous point with variety
             acknowledgments = [
@@ -393,15 +396,10 @@ def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context:
                 "Another way to look at this is "
             ]
             text = f"{random.choice(interruptions)}{text}"
+        added_element = True
     
-    # Add emotional reactions more selectively
-    surprise_words = ['surprising', 'shocking', 'unexpected', 'dramatic', 'remarkable', 'concerning']
-    if random.random() < 0.25 and any(word in text.lower() for word in surprise_words):
-        emphatics = ["Surprisingly, ", "Interestingly, ", "Remarkably, ", "Unexpectedly, "]
-        text = f"{random.choice(emphatics)}{text}"
-    
-    # Add agreement or disagreement with more natural phrasing
-    if random.random() < 0.35 and role != "NEXUS" and turn_count > 1:
+    # Add agreement or disagreement with more natural phrasing (only if no other element added)
+    if not added_element and random.random() < 0.35 and role != "NEXUS" and turn_count > 1:
         if random.random() < AGREE_DISAGREE_RATIO:
             # Agreement with variety
             agreements = [
@@ -432,6 +430,29 @@ def _clean_repetition(text: str) -> str:
     # Remove repeated phrases
     text = re.sub(r'\b(Given that|If we|The safer read|The safer interpretation),\s+\1', r'\1', text)
     return text
+
+# Add the Nexus topic introduction function here
+async def generate_nexus_topic_intro(context: str) -> str:
+    """Generate Nexus's introduction of the metrics and topics for discussion"""
+    topic_system = (
+        "You are Agent Nexus, the host of Optum MultiAgent Conversation. "
+        "Your role is to introduce the key metrics and topics that Agents Reco and Stat will discuss. "
+        "Review the provided data context and highlight 2-3 most interesting or important metrics trends. "
+        "Keep it concise (2-3 sentences), professional, and engaging. "
+        "Focus on the most significant patterns that would spark an interesting discussion between metrics experts. "
+        "Mention specific metrics like ASA, call duration, processing time, or volume changes when relevant. "
+        "Set the stage for a productive conversation between our recommendation specialist and data integrity expert."
+    )
+    
+    topic_user = f"""
+    Data Context: {context}
+    
+    Based on this data, identify the 2-3 most interesting metric trends or patterns that would make for 
+    a compelling discussion between a metrics recommendation specialist (Reco) and a data integrity expert (Stat).
+    Provide a brief introduction that sets the stage for their conversation.
+    """
+    
+    return await llm(topic_system, topic_user, max_tokens=120, temperature=0.4)
 
 def _add_emotional_reactions(text: str, role: str) -> str:
     """Add occasional emotional reactions to make dialogue more human"""
@@ -513,7 +534,7 @@ SYSTEM_STAT = (
     "CONSTRAINTS (HARD):\n"
     "• Speak in COMPLETE sentences (≈15–30 words). Plain text only—no lists, no hashtags, no code, no filenames. "
     "• Respond explicitly to Reco—agree, qualify, or refute—and add one concrete check, statistic, or risk in the same sentence. "
-        "• Bring a specific datum when feasible (e.g., 12-month range 155.2–531.3, YTD avg 351.4, MoM −42.6%); never invent values. "
+    "• Bring a specific datum when feasible (e.g., 12-month range 155.2–531.3, YTD avg 351.4, MoM −42.6%); never invent values. "
     "• Vary your openers; do NOT start with fillers (Hold on, Actually, Well, Look, So, Right, Okay, Absolutely, You know, Listen, Wait). "
     "• One idea per sentence; at most one comma and one semicolon; make the logic testable.\n"
     "\n"
@@ -604,12 +625,22 @@ async def run_podcast():
     ssml = text_to_ssml(STAT_INTRO, "STAT")
     segments.append(synth(ssml))
     
-    # Generate dynamic conversation
+    # Agent Nexus introduces the topics and metrics
+    print("Generating Nexus topic introduction...")
+    nexus_topic_intro = await generate_nexus_topic_intro(context)
+    script_lines.append("Agent Nexus:" + nexus_topic_intro)
+    ssml = text_to_ssml(nexus_topic_intro, "NEXUS")
+    segments.append(synth(ssml))
+    
+    # Add the topic introduction to conversation history
+    conversation_history.append(f"Nexus: {nexus_topic_intro}")
+    
+    # Generate dynamic conversation between Reco and Stat
     for i in range(turns):
         print(f"Generating turn {i+1}/{turns}...")
         
         # Agent Reco's turn
-        reco_prompt = f"Context: {context}\n\nPrevious conversation: {conversation_history[-2:] if conversation_history else 'None'}\n\nProvide your recommendation based on the data."
+        reco_prompt = f"Context: {context}\n\nNexus just introduced these topics: {nexus_topic_intro}\n\nPrevious conversation: {conversation_history[-2:] if len(conversation_history) > 1 else 'None'}\n\nProvide your recommendation based on the data and topics introduced."
         reco_response = await llm(SYSTEM_RECO, reco_prompt)
         reco_response = vary_opening(reco_response, "RECO", last_openings)
         reco_response = _add_conversation_dynamics(reco_response, "RECO", last_speaker, context, i, conversation_history)
@@ -627,7 +658,7 @@ async def run_podcast():
         time.sleep(0.2)
         
         # Agent Stat's turn
-        stat_prompt = f"Context: {context}\n\nReco just said: {reco_response}\n\nPrevious conversation: {conversation_history[-3:] if len(conversation_history) >= 3 else 'None'}\n\nRespond to Reco's point."
+        stat_prompt = f"Context: {context}\n\nNexus introduced these topics: {nexus_topic_intro}\n\nReco just said: {reco_response}\n\nPrevious conversation: {conversation_history[-3:] if len(conversation_history) >= 3 else 'None'}\n\nRespond to Reco's point focusing on data integrity aspects."
         stat_response = await llm(SYSTEM_STAT, stat_prompt)
         stat_response = vary_opening(stat_response, "STAT", last_openings)
         stat_response = _add_conversation_dynamics(stat_response, "STAT", last_speaker, context, i, conversation_history)
