@@ -1,0 +1,189 @@
+import os
+import re
+import wave
+import json
+import uuid
+import asyncio
+import random
+import tempfile
+from pathlib import Path
+from typing import Dict, List, Any, Optional, TypedDict, Literal
+from datetime import datetime
+
+# LangGraph imports
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
+from langgraph.visualize import draw_async, serve_async
+
+# ============ CORE FUNCTIONS ============
+
+def ensure_complete_response(text: str) -> str:
+    """Ensure response is a complete sentence"""
+    text = text.strip()
+    if text and text[-1] not in {'.', '!', '?'}:
+        text += '.'
+    return text
+
+def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context: str, turn_count: int, conversation_history: list) -> str:
+    """Add conversational elements"""
+    # ... keep your existing implementation ...
+    return text
+
+def _add_emotional_reactions(text: str, role: str) -> str:
+    """Add emotional reactions"""
+    # ... keep your existing implementation ...
+    return text
+
+def _clean_repetition(text: str) -> str:
+    """Clean up repetitive phrases"""
+    # ... keep your existing implementation ...
+    return text
+
+# ============ Type Definitions ============
+
+class PodcastState(TypedDict):
+    messages: List[Dict[str, Any]]
+    current_speaker: str
+    topic: str
+    context: Dict[str, Any]
+    interrupted: bool
+    audio_segments: List[str]
+    conversation_history: List[Dict[str, str]]
+    current_turn: int
+    max_turns: int
+    session_id: str
+    node_history: List[Dict[str, Any]]
+    current_node: str
+
+# ============ Visualization Functions ============
+
+async def visualize_graph_langgraph(graph: StateGraph, state: PodcastState, filename_prefix: str):
+    """Visualize the graph using LangGraph CLI"""
+    try:
+        visualization_path = f"{filename_prefix}.png"
+        
+        await draw_async(
+            graph,
+            config=state,
+            output_file=visualization_path,
+            dpi=300,
+            format="png"
+        )
+        
+        print(f"Graph visualization saved to: {visualization_path}")
+        return visualization_path
+        
+    except Exception as e:
+        print(f"Visualization error: {e}")
+        return None
+
+async def serve_graph_ui(graph: StateGraph, state: PodcastState):
+    """Serve the graph visualization via web interface"""
+    await serve_async(graph, config=state, port=8080)
+
+# ============ Rest of your code remains the same ============
+
+# Keep all your existing functions: get_metric_tools, execute_tools, 
+# analyze_metric_trend, llm, llm_with_tools, generate_audio,
+# all the node functions, should_continue, create_podcast_graph, etc.
+
+async def generate_podcast(topic: str, max_turns: int = 4, session_id: str = None) -> Dict[str, Any]:
+    """Generate a complete podcast"""
+    session_id = session_id or f"podcast_{uuid.uuid4().hex[:8]}"
+    
+    # Create initial state
+    initial_state: PodcastState = {
+        "messages": [],
+        "current_speaker": "NEXUS",
+        "topic": topic,
+        "context": {},
+        "interrupted": False,
+        "audio_segments": [],
+        "conversation_history": [],
+        "current_turn": 0,
+        "max_turns": max_turns,
+        "session_id": session_id,
+        "node_history": [],
+        "current_node": "start"
+    }
+    
+    # Create graph
+    graph = create_podcast_graph()
+    
+    # Visualize the graph structure
+    print("Generating graph visualization...")
+    await visualize_graph_langgraph(graph, initial_state, f"structure_{session_id}")
+    
+    # Execute the graph
+    print("Executing podcast generation...")
+    final_state = await graph.ainvoke(initial_state)
+    
+    # Visualize the execution path
+    await visualize_graph_langgraph(graph, final_state, f"execution_{session_id}")
+    
+    return {
+        "session_id": session_id,
+        "audio_segments": final_state["audio_segments"],
+        "conversation_history": final_state["conversation_history"],
+        "node_history": final_state["node_history"],
+        "graph_visualization": f"graph_execution_{session_id}.png"
+    }
+
+# ============ FastAPI Endpoint ============
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn
+
+app = FastAPI()
+
+class PodcastRequest(BaseModel):
+    topic: str
+    max_turns: int = 4
+    session_id: Optional[str] = None
+
+@app.post("/generate-podcast")
+async def api_generate_podcast(request: PodcastRequest):
+    try:
+        result = await generate_podcast(
+            topic=request.topic,
+            max_turns=request.max_turns,
+            session_id=request.session_id
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/graph-visualization/{session_id}")
+async def get_graph_visualization(session_id: str):
+    """Get the graph visualization for a session"""
+    structure_path = f"structure_{session_id}.png"
+    execution_path = f"execution_{session_id}.png"
+    
+    if os.path.exists(structure_path) and os.path.exists(execution_path):
+        return {
+            "structure_visualization": structure_path,
+            "execution_visualization": execution_path
+        }
+    else:
+        raise HTTPException(status_code=404, detail="Visualizations not found")
+
+@app.get("/serve-graph/{session_id}")
+async def serve_graph_ui_endpoint(session_id: str):
+    """Serve graph UI for a session"""
+    # You might need to store and retrieve the graph instance
+    # This is a simplified version
+    try:
+        graph = create_podcast_graph()
+        initial_state = {...}  # Create appropriate state
+        await serve_async(graph, config=initial_state, port=8080)
+        return {"status": "serving", "port": 8080}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": "langgraph-podcast", "port": 8002}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8002, reload=True)
