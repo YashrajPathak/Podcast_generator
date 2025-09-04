@@ -293,12 +293,16 @@ async def health():
     return {"status": "healthy", "service": "langgraph-podcast", "port": 8002}
 
 if __name__ == "__main__":
-    if len(sys.argv:=[]) or True:  # simple main
-        import sys
-        if len(sys.argv) > 1 and sys.argv[1] == "serve":
-            uvicorn.run(app, host="0.0.0.0", port=8002, reload=True)
-        else:
-            try:
-                asyncio.run(generate_podcast("ASA metrics analysis", 4))
-            except Exception as e:
-                print("Error:", e)
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+        uvicorn.run(app, host="0.0.0.0", port=8002, reload=True)
+    else:
+        topic = input("Enter podcast topic (default: ASA metrics analysis): ").strip() or "ASA metrics analysis"
+        try:
+            turns = int(input("Enter number of turns (default: 4): ").strip() or "4")
+        except:
+            turns = 4
+        try:
+            asyncio.run(generate_podcast(topic, turns))
+        except Exception as e:
+            print("Error:", e)
