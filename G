@@ -9,11 +9,15 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Any, Optional, TypedDict, Literal
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # LangGraph imports
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
-from langgraph.visualize import draw_async, serve_async
+from langgraph.visualize import draw_async
 
 # ============ CORE FUNCTIONS ============
 
@@ -26,17 +30,42 @@ def ensure_complete_response(text: str) -> str:
 
 def _add_conversation_dynamics(text: str, role: str, last_speaker: str, context: str, turn_count: int, conversation_history: list) -> str:
     """Add conversational elements"""
-    # ... keep your existing implementation ...
+    # Simplified implementation - replace with your actual logic
+    if turn_count > 2 and random.random() < 0.3:
+        other_agent = "Stat" if role == "RECO" else "Reco"
+        if random.random() < 0.5:
+            text = f"{other_agent}, {text.lower()}"
+    
+    # Add emotional reactions occasionally
+    if random.random() < 0.2:
+        reactions = ["That's interesting!", "I see.", "Fascinating!"]
+        text = f"{random.choice(reactions)} {text}"
+    
     return text
 
 def _add_emotional_reactions(text: str, role: str) -> str:
     """Add emotional reactions"""
-    # ... keep your existing implementation ...
+    # Simplified implementation
+    emotional_triggers = {
+        "dramatic": ["That's quite dramatic!", "This is significant!"],
+        "concerning": ["This worries me.", "That's concerning."],
+        "positive": ["That's encouraging!", "Great news!"],
+        "surprising": ["Surprising!", "I didn't expect that!"]
+    }
+    
+    for trigger, reactions in emotional_triggers.items():
+        if trigger in text.lower() and random.random() < 0.4:
+            text = f"{random.choice(reactions)} {text}"
+            break
+    
     return text
 
 def _clean_repetition(text: str) -> str:
     """Clean up repetitive phrases"""
-    # ... keep your existing implementation ...
+    # Remove duplicate words
+    text = re.sub(r'\b(\w+)\s+\1\b', r'\1', text)
+    # Remove repeated phrases
+    text = re.sub(r'\b(Given that|If we|The safer read),\s+\1', r'\1', text)
     return text
 
 # ============ Type Definitions ============
@@ -55,7 +84,340 @@ class PodcastState(TypedDict):
     node_history: List[Dict[str, Any]]
     current_node: str
 
-# ============ Visualization Functions ============
+# ============ SIMULATED LLM AND AUDIO FUNCTIONS ============
+
+async def llm(system: str, prompt: str, max_tokens: int = 150, temperature: float = 0.45) -> str:
+    """Simulated LLM call - replace with your actual Azure OpenAI implementation"""
+    # This is a placeholder - replace with your actual Azure OpenAI code
+    await asyncio.sleep(0.1)  # Simulate API call
+    
+    # Sample responses based on context
+    responses = {
+        "ASA": [
+            "Based on the ASA metrics, I recommend implementing a rolling average to smooth out the volatility.",
+            "The ASA data shows significant improvements; we should validate these results with additional quality metrics.",
+            "Given the ASA trends, a control chart would help distinguish real improvements from random variation."
+        ],
+        "call duration": [
+            "Call duration metrics suggest we're handling inquiries more efficiently, but we should verify resolution rates.",
+            "The decrease in call duration could indicate either efficiency gains or simpler inquiries; we need to investigate further.",
+            "With call duration trending downward, we might need to adjust our staffing models accordingly."
+        ],
+        "processing time": [
+            "Processing time volatility indicates inconsistent workflows that need standardization.",
+            "The processing time data suggests seasonal patterns that we should account for in our planning.",
+            "Given the fluctuations in processing time, we should implement better workload balancing."
+        ]
+    }
+    
+    # Find the most relevant response based on prompt content
+    response_key = "ASA"  # default
+    for key in responses:
+        if key in prompt.lower():
+            response_key = key
+            break
+    
+    return random.choice(responses[response_key])
+
+async def generate_audio(text: str, role: str) -> str:
+    """Simulated audio generation - replace with your actual Azure Speech code"""
+    # This is a placeholder - replace with your actual Azure Speech code
+    await asyncio.sleep(0.05)  # Simulate TTS processing
+    
+    # Create a temporary WAV file with silent audio
+    fd, tmp_path = tempfile.mkstemp(suffix='.wav')
+    os.close(fd)
+    
+    with wave.open(tmp_path, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        # Generate 0.5 seconds of silent audio per word (simulated)
+        duration = max(1, len(text.split()) * 0.5)
+        frames = int(24000 * duration)
+        wf.writeframes(b'\x00' * frames * 2)
+    
+    return tmp_path
+
+def wav_len(path: str) -> float:
+    """Get duration of WAV file"""
+    try:
+        with wave.open(path, 'rb') as wf:
+            return wf.getnframes() / wf.getframerate()
+    except:
+        return 1.0  # Fallback duration
+
+def write_master(segments: List[str], output_path: str) -> str:
+    """Combine audio segments into final file"""
+    if not segments:
+        # Create empty file if no segments
+        with wave.open(output_path, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(24000)
+            wf.writeframes(b'')
+        return output_path
+    
+    # Use the first segment as reference
+    with wave.open(segments[0], 'rb') as ref:
+        params = ref.getparams()
+    
+    with wave.open(output_path, 'wb') as output:
+        output.setparams(params)
+        for segment in segments:
+            try:
+                with wave.open(segment, 'rb') as segment_file:
+                    output.writeframes(segment_file.readframes(segment_file.getnframes()))
+            except:
+                continue  # Skip problematic segments
+    
+    return output_path
+
+# ============ AGENT PROMPTS AND FIXED LINES ============
+
+SYSTEM_RECO = (
+    "You are Agent Reco, a metrics recommendation specialist. "
+    "Provide concise, actionable recommendations based on data trends. "
+    "Keep responses to 1-2 sentences focused on practical next steps."
+)
+
+SYSTEM_STAT = (
+    "You are Agent Stat, a data integrity expert. "
+    "Provide cautious, evidence-based perspectives on data quality and trends. "
+    "Keep responses to 1-2 sentences focused on validation and risk assessment."
+)
+
+SYSTEM_NEXUS = (
+    "You are Agent Nexus, the podcast host. "
+    "Provide warm, engaging introductions and conclusions. "
+    "Keep responses concise and professional."
+)
+
+NEXUS_INTRO = (
+    "Hello and welcome to Optum MultiAgent Conversation, where intelligence meets collaboration. "
+    "I'm Agent Nexus, your host and guide through today's episode."
+)
+
+RECO_INTRO = (
+    "Hi everyone, I'm Agent Reco, your go-to for metric recommendations. "
+    "I specialize in identifying the most impactful metrics for performance tracking and optimization."
+)
+
+STAT_INTRO = (
+    "Hello! I'm Agent Stat, focused on metric data integrity. "
+    "I ensure our metrics are not just smart, but solid and reliable."
+)
+
+NEXUS_OUTRO = (
+    "And that brings us to the end of today's episode of Optum MultiAgent Conversation. "
+    "Thank you to our experts and thank you for tuning in. Stay curious, stay data-driven!"
+)
+
+# ============ NODE FUNCTIONS ============
+
+async def nexus_intro_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Nexus introduction node"""
+    print("🟣 Nexus: Introducing podcast...")
+    
+    audio_file = await generate_audio(NEXUS_INTRO, "NEXUS")
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "system", "content": NEXUS_INTRO}]),
+        "audio_segments": state["audio_segments"] + [audio_file],
+        "conversation_history": state["conversation_history"] + [{"speaker": "NEXUS", "text": NEXUS_INTRO}],
+        "current_speaker": "RECO",
+        "node_history": state["node_history"] + [{"node": "nexus_intro", "timestamp": datetime.now().isoformat()}],
+        "current_node": "nexus_intro"
+    }
+
+async def reco_intro_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Reco introduction node"""
+    print("🔵 Reco: Introducing self...")
+    
+    audio_file = await generate_audio(RECO_INTRO, "RECO")
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "system", "content": RECO_INTRO}]),
+        "audio_segments": state["audio_segments"] + [audio_file],
+        "conversation_history": state["conversation_history"] + [{"speaker": "RECO", "text": RECO_INTRO}],
+        "current_speaker": "STAT",
+        "node_history": state["node_history"] + [{"node": "reco_intro", "timestamp": datetime.now().isoformat()}],
+        "current_node": "reco_intro"
+    }
+
+async def stat_intro_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Stat introduction node"""
+    print("🟢 Stat: Introducing self...")
+    
+    audio_file = await generate_audio(STAT_INTRO, "STAT")
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "system", "content": STAT_INTRO}]),
+        "audio_segments": state["audio_segments"] + [audio_file],
+        "conversation_history": state["conversation_history"] + [{"speaker": "STAT", "text": STAT_INTRO}],
+        "current_speaker": "NEXUS",
+        "node_history": state["node_history"] + [{"node": "stat_intro", "timestamp": datetime.now().isoformat()}],
+        "current_node": "stat_intro"
+    }
+
+async def nexus_topic_intro_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Nexus introduces the topic"""
+    print("🟣 Nexus: Introducing topic...")
+    
+    topic_intro = await llm(
+        SYSTEM_NEXUS,
+        f"Introduce the topic of {state['topic']} in 1-2 engaging sentences.",
+        max_tokens=100,
+        temperature=0.4
+    )
+    
+    audio_file = await generate_audio(topic_intro, "NEXUS")
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "system", "content": topic_intro}]),
+        "audio_segments": state["audio_segments"] + [audio_file],
+        "conversation_history": state["conversation_history"] + [{"speaker": "NEXUS", "text": topic_intro}],
+        "current_speaker": "RECO",
+        "current_turn": 0,
+        "node_history": state["node_history"] + [{"node": "nexus_topic_intro", "timestamp": datetime.now().isoformat()}],
+        "current_node": "nexus_topic_intro"
+    }
+
+async def reco_turn_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Reco's turn"""
+    print("🔵 Reco: Taking turn...")
+    
+    # Get context for the response
+    context = state["context"].get("summary", "metrics analysis")
+    last_stat_msg = next((msg for msg in reversed(state["conversation_history"]) 
+                         if msg["speaker"] == "STAT"), None)
+    
+    prompt = f"Context: {context}. "
+    if last_stat_msg:
+        prompt += f"Respond to Stat's point: '{last_stat_msg['text']}'. Provide your recommendation:"
+    else:
+        prompt += "Start the discussion with your first recommendation:"
+    
+    response = await llm(SYSTEM_RECO, prompt, max_tokens=150, temperature=0.45)
+    response = _add_conversation_dynamics(response, "RECO", "STAT", context, 
+                                        state["current_turn"], state["conversation_history"])
+    
+    audio_file = await generate_audio(response, "RECO")
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "system", "content": response}]),
+        "audio_segments": state["audio_segments"] + [audio_file],
+        "conversation_history": state["conversation_history"] + [{"speaker": "RECO", "text": response}],
+        "current_speaker": "STAT",
+        "current_turn": state["current_turn"] + 0.5,
+        "node_history": state["node_history"] + [{"node": "reco_turn", "timestamp": datetime.now().isoformat()}],
+        "current_node": "reco_turn"
+    }
+
+async def stat_turn_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Stat's turn"""
+    print("🟢 Stat: Taking turn...")
+    
+    context = state["context"].get("summary", "metrics analysis")
+    last_reco_msg = next((msg for msg in reversed(state["conversation_history"]) 
+                         if msg["speaker"] == "RECO"), None)
+    
+    prompt = f"Context: {context}. "
+    if last_reco_msg:
+        prompt += f"Respond to Reco's recommendation: '{last_reco_msg['text']}'. Provide your data perspective:"
+    else:
+        prompt += "Provide your initial data integrity perspective:"
+    
+    response = await llm(SYSTEM_STAT, prompt, max_tokens=150, temperature=0.45)
+    response = _add_conversation_dynamics(response, "STAT", "RECO", context, 
+                                        state["current_turn"], state["conversation_history"])
+    
+    audio_file = await generate_audio(response, "STAT")
+    
+    # Determine next speaker
+    next_speaker = "RECO" if state["current_turn"] + 0.5 < state["max_turns"] else "NEXUS"
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "system", "content": response}]),
+        "audio_segments": state["audio_segments"] + [audio_file],
+        "conversation_history": state["conversation_history"] + [{"speaker": "STAT", "text": response}],
+        "current_speaker": next_speaker,
+        "current_turn": state["current_turn"] + 0.5,
+        "node_history": state["node_history"] + [{"node": "stat_turn", "timestamp": datetime.now().isoformat()}],
+        "current_node": "stat_turn"
+    }
+
+async def nexus_outro_node(state: PodcastState) -> Dict[str, Any]:
+    """Agent Nexus conclusion"""
+    print("🟣 Nexus: Concluding podcast...")
+    
+    audio_file = await generate_audio(NEXUS_OUTRO, "NEXUS")
+    
+    return {
+        "messages": add_messages(state["messages"], [{"role": "system", "content": NEXUS_OUTRO}]),
+        "audio_segments": state["audio_segments"] + [audio_file],
+        "conversation_history": state["conversation_history"] + [{"speaker": "NEXUS", "text": NEXUS_OUTRO}],
+        "current_speaker": "END",
+        "node_history": state["node_history"] + [{"node": "nexus_outro", "timestamp": datetime.now().isoformat()}],
+        "current_node": "nexus_outro"
+    }
+
+# ============ CONDITIONAL EDGES ============
+
+def should_continue(state: PodcastState) -> Literal["continue_conversation", "end_conversation"]:
+    """Determine whether to continue or end the conversation"""
+    if state["current_turn"] >= state["max_turns"]:
+        return "end_conversation"
+    return "continue_conversation"
+
+# ============ GRAPH CONSTRUCTION ============
+
+def create_podcast_graph() -> StateGraph:
+    """Create the podcast generation graph"""
+    builder = StateGraph(PodcastState)
+    
+    # Add nodes
+    builder.add_node("nexus_intro", nexus_intro_node)
+    builder.add_node("reco_intro", reco_intro_node)
+    builder.add_node("stat_intro", stat_intro_node)
+    builder.add_node("nexus_topic_intro", nexus_topic_intro_node)
+    builder.add_node("reco_turn", reco_turn_node)
+    builder.add_node("stat_turn", stat_turn_node)
+    builder.add_node("nexus_outro", nexus_outro_node)
+    
+    # Set starting point
+    builder.set_entry_point("nexus_intro")
+    
+    # Add edges
+    builder.add_edge("nexus_intro", "reco_intro")
+    builder.add_edge("reco_intro", "stat_intro")
+    builder.add_edge("stat_intro", "nexus_topic_intro")
+    builder.add_edge("nexus_topic_intro", "reco_turn")
+    
+    # Conditional edges for conversation flow
+    builder.add_conditional_edges(
+        "reco_turn",
+        should_continue,
+        {
+            "continue_conversation": "stat_turn",
+            "end_conversation": "nexus_outro"
+        }
+    )
+    
+    builder.add_conditional_edges(
+        "stat_turn", 
+        should_continue,
+        {
+            "continue_conversation": "reco_turn",
+            "end_conversation": "nexus_outro"
+        }
+    )
+    
+    builder.add_edge("nexus_outro", END)
+    
+    return builder.compile()
+
+# ============ VISUALIZATION FUNCTIONS ============
 
 async def visualize_graph_langgraph(graph: StateGraph, state: PodcastState, filename_prefix: str):
     """Visualize the graph using LangGraph CLI"""
@@ -77,15 +439,7 @@ async def visualize_graph_langgraph(graph: StateGraph, state: PodcastState, file
         print(f"Visualization error: {e}")
         return None
 
-async def serve_graph_ui(graph: StateGraph, state: PodcastState):
-    """Serve the graph visualization via web interface"""
-    await serve_async(graph, config=state, port=8080)
-
-# ============ Rest of your code remains the same ============
-
-# Keep all your existing functions: get_metric_tools, execute_tools, 
-# analyze_metric_trend, llm, llm_with_tools, generate_audio,
-# all the node functions, should_continue, create_podcast_graph, etc.
+# ============ MAIN PODCAST GENERATION ============
 
 async def generate_podcast(topic: str, max_turns: int = 4, session_id: str = None) -> Dict[str, Any]:
     """Generate a complete podcast"""
@@ -96,7 +450,11 @@ async def generate_podcast(topic: str, max_turns: int = 4, session_id: str = Non
         "messages": [],
         "current_speaker": "NEXUS",
         "topic": topic,
-        "context": {},
+        "context": {
+            "summary": f"Analysis of {topic} metrics including ASA, call duration, and processing time",
+            "files": ["simulated_data.json"],
+            "timestamp": datetime.now().isoformat()
+        },
         "interrupted": False,
         "audio_segments": [],
         "conversation_history": [],
@@ -121,15 +479,37 @@ async def generate_podcast(topic: str, max_turns: int = 4, session_id: str = Non
     # Visualize the execution path
     await visualize_graph_langgraph(graph, final_state, f"execution_{session_id}")
     
+    # Create final audio file
+    output_file = f"podcast_{session_id}.wav"
+    write_master(final_state["audio_segments"], output_file)
+    
+    # Save conversation log
+    log_file = f"conversation_{session_id}.json"
+    with open(log_file, 'w') as f:
+        json.dump({
+            "conversation_history": final_state["conversation_history"],
+            "node_history": final_state["node_history"],
+            "metadata": {
+                "topic": topic,
+                "turns": max_turns,
+                "session_id": session_id,
+                "generated_at": datetime.now().isoformat()
+            }
+        }, f, indent=2)
+    
+    total_duration = sum(wav_len(seg) for seg in final_state["audio_segments"])
+    
     return {
         "session_id": session_id,
-        "audio_segments": final_state["audio_segments"],
-        "conversation_history": final_state["conversation_history"],
-        "node_history": final_state["node_history"],
-        "graph_visualization": f"graph_execution_{session_id}.png"
+        "audio_file": output_file,
+        "conversation_log": log_file,
+        "duration": total_duration,
+        "turns": max_turns,
+        "graph_visualization": f"execution_{session_id}.png",
+        "success": True
     }
 
-# ============ FastAPI Endpoint ============
+# ============ FASTAPI ENDPOINT ============
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -168,22 +548,43 @@ async def get_graph_visualization(session_id: str):
     else:
         raise HTTPException(status_code=404, detail="Visualizations not found")
 
-@app.get("/serve-graph/{session_id}")
-async def serve_graph_ui_endpoint(session_id: str):
-    """Serve graph UI for a session"""
-    # You might need to store and retrieve the graph instance
-    # This is a simplified version
-    try:
-        graph = create_podcast_graph()
-        initial_state = {...}  # Create appropriate state
-        await serve_async(graph, config=initial_state, port=8080)
-        return {"status": "serving", "port": 8080}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "langgraph-podcast", "port": 8002}
 
+# ============ COMMAND LINE INTERFACE ============
+
+async def main():
+    """Command line interface for podcast generation"""
+    print("🎙️  Optum MultiAgent Conversation Podcast Generator")
+    print("=" * 50)
+    
+    topic = input("Enter podcast topic (e.g., 'ASA metrics analysis'): ").strip() or "metrics analysis"
+    try:
+        turns = int(input("Enter number of conversation turns (2-8): ").strip() or "4")
+        turns = max(2, min(8, turns))
+    except:
+        turns = 4
+    
+    print(f"\nGenerating podcast about '{topic}' with {turns} turns...")
+    
+    result = await generate_podcast(topic, turns)
+    
+    print(f"\n✅ Podcast generation complete!")
+    print(f"   Audio file: {result['audio_file']}")
+    print(f"   Duration: {result['duration']:.1f} seconds")
+    print(f"   Conversation log: {result['conversation_log']}")
+    print(f"   Graph visualization: {result['graph_visualization']}")
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8002, reload=True)
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+        uvicorn.run(app, host="0.0.0.0", port=8002, reload=True)
+    else:
+        try:
+            asyncio.run(main())
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
