@@ -15,10 +15,7 @@ def ensure_complete_response(text: str) -> str:
     return text
 
 def save_graph_ascii(graph, state: Dict[str, Any], filename_prefix: str) -> str:
-    """
-    Save an ASCII diagram of the compiled graph into <filename_prefix>.txt
-    Works without extra packages or API keys.
-    """
+    """Save ASCII diagram of graph into <prefix>.txt (no external deps)."""
     try:
         ascii_map = graph.get_graph().draw_ascii()
         path = f"{filename_prefix}.txt"
@@ -96,6 +93,34 @@ NEXUS_INTRO = "Hello and welcome to Optum MultiAgent Conversation. I'm Agent Nex
 RECO_INTRO  = "Hi, I'm Agent Reco, focused on practical metric recommendations."
 STAT_INTRO  = "Hello, I'm Agent Stat, focused on data integrity and sound interpretation."
 NEXUS_OUTRO = "That concludes today's conversation. Thanks for listening and stay data-driven."
+
+# ------------------------- dynamic context builder ------------------------
+def build_context_from_files() -> str:
+    ctx = {}
+    if Path("data.json").exists():
+        try:
+            data = json.loads(Path("data.json").read_text())
+            ctx["mom%"] = data.get("mom%")
+            ctx["12m_avg"] = data.get("12monthAvg")
+            ctx["vov_desc"] = data.get("vovDescription")
+        except Exception as e:
+            print(f"⚠️ Could not parse data.json: {e}")
+    if Path("metric_data.json").exists():
+        try:
+            metrics = json.loads(Path("metric_data.json").read_text())
+            ctx["metrics"] = [m.get("metric_name","") for m in metrics if "metric_name" in m]
+        except Exception as e:
+            print(f"⚠️ Could not parse metric_data.json: {e}")
+    summary_parts = []
+    if ctx.get("metrics"):
+        summary_parts.append("Metrics: " + ", ".join(ctx["metrics"]))
+    if ctx.get("mom%"):
+        summary_parts.append(f"MoM change {ctx['mom%']}")
+    if ctx.get("12m_avg"):
+        summary_parts.append(f"12m avg {ctx['12m_avg']}")
+    if ctx.get("vov_desc"):
+        summary_parts.append(f"Volatility desc {ctx['vov_desc']}")
+    return " | ".join(summary_parts) if summary_parts else "Metrics context"
 
 # ------------------------- nodes ------------------------------------------
 async def nexus_intro_node(state: PodcastState) -> Dict[str, Any]:
@@ -220,11 +245,12 @@ def create_podcast_graph():
 # ------------------------- run & API --------------------------------------
 async def generate_podcast(topic: str, max_turns: int = 4, session_id: Optional[str] = None) -> Dict[str, Any]:
     session_id = session_id or f"pod_{uuid.uuid4().hex[:8]}"
+    context_summary = build_context_from_files()
     initial: PodcastState = {
         "messages": [],
         "current_speaker": "NEXUS",
         "topic": topic,
-        "context": {"summary": f"Analysis of {topic} metrics (ASA, duration, processing time)" },
+        "context": {"summary": context_summary},
         "interrupted": False,
         "audio_segments": [],
         "conversation_history": [],
@@ -297,7 +323,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "serve":
         uvicorn.run(app, host="0.0.0.0", port=8002, reload=True)
     else:
-        topic = input("Enter podcast topic (default: ASA metrics analysis): ").strip() or "ASA metrics analysis"
+        topic = input("Enter podcast topic (default: Metrics Analysis): ").strip() or "Metrics Analysis"
         try:
             turns = int(input("Enter number of turns (default: 4): ").strip() or "4")
         except:
