@@ -1,0 +1,38 @@
+(.venv) PS C:\Users\ypathak1\podcast_generator> python neww.py
+🎧 LangGraph + lkk Orchestrator (single CLI)
+==================================================
+JSON files in folder: ['data.json', 'metric_data.json']
+Type one of: data.json, metric_data.json, both, then Enter:
+both
+Enter topic (blank = infer from data): 
+Enter number of conversation turns (2–12): 10
+
+Generating with file_choice='both', topic='auto', turns=10…
+
+Graph ASCII saved to: structure_pod_046d1ece.txt
+Error: Recursion limit of 25 reached without hitting a stop condition. You can increase the limit by setting the `recursion_limit` config key.
+For troubleshooting, visit: https://python.langchain.com/docs/troubleshooting/errors/GRAPH_RECURSION_LIMIT
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\neww.py", line 333, in <module>
+    asyncio.run(_cli_main())
+  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\neww.py", line 323, in _cli_main
+    result = await generate_podcast(topic, turns, file_choice=choice)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\neww.py", line 271, in generate_podcast
+    final_state = await graph.ainvoke(initial)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\langgraph\pregel\main.py", line 3088, in ainvoke
+    async for chunk in self.astream(
+  File "C:\Users\ypathak1\podcast_generator\.venv\Lib\site-packages\langgraph\pregel\main.py", line 2964, in astream
+    raise GraphRecursionError(msg)
+langgraph.errors.GraphRecursionError: Recursion limit of 25 reached without hitting a stop condition. You can increase the limit by setting the `recursion_limit` config key.
+For troubleshooting, visit: https://python.langchain.com/docs/troubleshooting/errors/GRAPH_RECURSION_LIMIT
