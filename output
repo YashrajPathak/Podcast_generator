@@ -1,49 +1,86 @@
 (.venv) PS C:\Users\ypathak1\podcast_generator> python neww.py
 🎧 LangGraph + lkk Orchestrator (single CLI)
 ==================================================
-JSON files in folder: ['data.json', 'graph_convo_pod_61847dcd.json', 'metric_data.json']
+JSON files in folder: ['data.json', 'graph_convo_pod_61847dcd.json', 'graph_convo_pod_c68e8e7c.json', 'metric_data.json']
 Type one of: data.json, metric_data.json, both, then Enter:
 both
 Enter topic (blank = infer from data): 
 Enter number of conversation turns (2–12): 10
-Recursion limit (Enter for 60): 5
+Recursion limit (Enter for 60): 60
 
-Generating with file_choice='both', topic='auto', turns=10, recursion_limit=5…
+Generating with file_choice='both', topic='auto', turns=10, recursion_limit=60…
 
-Graph ASCII saved to: structure_pod_c68e8e7c.txt
-🔎 Live LangGraph event stream (also saved to timeline_pod_c68e8e7c.log )
-[2025-09-04T15:26:16] ON CHAIN START - LangGraph
-[2025-09-04T15:26:16] ON CHAIN START - nexus_intro
+Graph ASCII saved to: structure_pod_1cbd711d.txt
+Mermaid saved: graph_pod_1cbd711d.mmd
+───────────────────────────────────────────────────────────────── Live LangGraph Events ─────────────────────────────────────────────────────────────────► START LangGraph
+► START nexus_intro
 Nexus intro generated.
-[2025-09-04T15:26:17] ON CHAIN END - nexus_intro 
-[2025-09-04T15:26:17] ON CHAIN START - reco_intro
+Event stream error: Object of type SystemMessage is not JSON serializable
+
+               Node Summary
+┏━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━┓
+┃ Node        ┃ Calls ┃ Total s ┃ Last s ┃
+┡━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━┩
+│ LangGraph   │     1 │    0.00 │   0.00 │
+│ nexus_intro │     1 │    0.00 │   0.00 │
+└─────────────┴───────┴─────────┴────────┘
+Nexus intro generated.
 Reco intro generated.
-[2025-09-04T15:26:18] ON CHAIN END - reco_intro  
-[2025-09-04T15:26:18] ON CHAIN START - stat_intro
 Stat intro generated.
-[2025-09-04T15:26:21] ON CHAIN END - stat_intro
-[2025-09-04T15:26:21] ON CHAIN START - nexus_topic_intro
+Reco intro generated.
 Generating Nexus topic introduction...
-[2025-09-04T15:26:25] ON CHAIN END - nexus_topic_intro
-[2025-09-04T15:26:25] ON CHAIN START - reco_turn
+Stat intro generated.
+Generating Nexus topic introduction...
 Generating turn 1/10… (Reco)
-[2025-09-04T15:26:27] ON CHAIN START - should_continue
-[2025-09-04T15:26:27] ON CHAIN END - should_continue
-[2025-09-04T15:26:27] ON CHAIN END - reco_turn      
-⚠️ Event stream error: Recursion limit of 5 reached without hitting a stop condition. You can increase the limit by setting the `recursion_limit` config 
-key.
-For troubleshooting, visit: https://python.langchain.com/docs/troubleshooting/errors/GRAPH_RECURSION_LIMIT
-Graph ASCII saved to: execution_pod_c68e8e7c.txt
+Generating turn 2/10… (Stat)
+Generating turn 1/10… (Reco)
+Generating turn 2/10… (Reco)
+Generating turn 2/10… (Stat)
+Generating turn 3/10… (Stat)
+Generating turn 2/10… (Reco)
+Generating turn 3/10… (Reco)
+Generating turn 3/10… (Stat)
+Generating turn 4/10… (Stat)
+Generating turn 3/10… (Reco)
+Generating turn 4/10… (Reco)
+Generating turn 4/10… (Stat)
+Generating turn 5/10… (Stat)
+Generating turn 4/10… (Reco)
+Generating turn 5/10… (Reco)
+Generating turn 5/10… (Stat)
+Generating turn 6/10… (Stat)
+Generating turn 5/10… (Reco)
+Generating turn 6/10… (Reco)
+Generating turn 6/10… (Stat)
+Generating turn 7/10… (Stat)
+Generating turn 6/10… (Reco)
+Generating turn 7/10… (Reco)
+Generating turn 7/10… (Stat)
+Generating turn 8/10… (Stat)
+Generating turn 7/10… (Reco)
+Generating turn 8/10… (Reco)
+Generating turn 8/10… (Stat)
+Generating turn 9/10… (Stat)
+Generating turn 8/10… (Reco)
+Generating turn 9/10… (Reco)
+Generating turn 9/10… (Stat)
+Generating turn 10/10… (Stat)
+Generating turn 9/10… (Reco)
+Generating turn 10/10… (Reco)
+Generating turn 10/10… (Stat)
+Generating turn 11/10… (Stat)
+Generating turn 10/10… (Reco)
+Nexus outro generated.
+Graph ASCII saved to: execution_pod_1cbd711d.txt
 
 Podcast generated successfully!
-Audio: podcast_20250904_152627.wav
-Script: podcast_script_20250904_152627.txt
+Audio: podcast_20250904_153756.wav
+Script: podcast_script_20250904_153756.txt
 
 ✅ Podcast generation complete!
-   Audio file:        podcast_20250904_152627.wav
-   Duration (sec):    108.78
-   Conversation log:  graph_convo_pod_c68e8e7c.json
-   Graph structure:   structure_pod_c68e8e7c.txt
-   Graph ASCII:       execution_pod_c68e8e7c.txt
-   Timeline:          timeline_pod_c68e8e7c.log
-(.venv) PS C:\Users\ypathak1\podcast_generator> 
+   Audio file:        podcast_20250904_153756.wav
+   Duration (sec):    404.18
+   Conversation log:  graph_convo_pod_1cbd711d.json
+   Graph structure:   structure_pod_1cbd711d.txt
+   Graph ASCII:       execution_pod_1cbd711d.txt
+   Timeline:          timeline_pod_1cbd711d.log
