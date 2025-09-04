@@ -1,6 +1,6 @@
 # graph.py
 # LangGraph Orchestrator that calls into lkk.py (your podcast engine) for LLM + TTS.
-# One CLI, no duplicate prompts. Keep lkk.py and data.json / metric_data.json in the same folder.
+# One CLI, same progress prints and outputs as lkk.py, plus LangGraph round-robin control.
 
 import os, sys, re, json, uuid, asyncio, datetime, atexit
 from pathlib import Path
@@ -37,11 +37,14 @@ def ensure_complete_response(text: str) -> str:
         t += '.'
     return t
 
-def save_graph_ascii(graph, state: Dict[str, Any], filename_prefix: str) -> str:
-    """Write ASCII graph (no extra deps) and dump state keys for debugging."""
+def _graph_ascii_safe(graph, state: Dict[str, Any], filename_prefix: str) -> str:
+    """
+    Try to save an ASCII diagram; if the backend needs grandalf/graphviz and fails,
+    write a minimal text summary instead.
+    """
+    path = f"{filename_prefix}.txt"
     try:
         ascii_map = graph.get_graph().draw_ascii()
-        path = f"{filename_prefix}.txt"
         with open(path, "w", encoding="utf-8") as f:
             f.write(ascii_map + "\n")
             f.write("\n--- state keys ---\n")
@@ -49,8 +52,16 @@ def save_graph_ascii(graph, state: Dict[str, Any], filename_prefix: str) -> str:
         print(f"Graph ASCII saved to: {path}")
         return path
     except Exception as e:
-        print(f"ASCII visualization error: {e}")
-        return ""
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("ASCII visualization unavailable (no grandalf/graphviz). Minimal summary:\n\n")
+                f.write("Nodes: nexus_intro -> reco_intro -> stat_intro -> nexus_topic_intro -> (reco_turn <-> stat_turn)* -> nexus_outro -> END\n")
+                f.write("\n--- state keys ---\n")
+                f.write(", ".join(sorted(state.keys())) + "\n")
+            print(f"(fallback) Graph summary saved to: {path}")
+        except:
+            print("ASCII visualization error:", e)
+        return path
 
 def wav_len(path: str) -> float:
     try:
@@ -95,6 +106,7 @@ class PodcastState(TypedDict):
     session_id: str
     node_history: List[Dict[str, Any]]
     current_node: str
+    script_lines: List[str]
 
 # ------------------------- nodes (use lkk for LLM+TTS) --------------------
 async def _tts(text: str, role: str) -> str:
@@ -106,10 +118,12 @@ async def _tts(text: str, role: str) -> str:
 async def nexus_intro_node(state: PodcastState) -> Dict[str, Any]:
     line = podcast.NEXUS_INTRO
     audio = await _tts(line, "NEXUS")
+    print("Nexus intro generated.")
     return {
         "messages": add_messages(state["messages"], [{"role": "system", "content": line}]),
         "audio_segments": state["audio_segments"] + [audio],
         "conversation_history": state["conversation_history"] + [{"speaker":"NEXUS","text":line}],
+        "script_lines": state["script_lines"] + [f"Agent Nexus:{line}"],
         "current_speaker": "RECO",
         "node_history": state["node_history"] + [{"node":"nexus_intro","ts": datetime.datetime.now().isoformat()}],
         "current_node": "nexus_intro"
@@ -118,10 +132,12 @@ async def nexus_intro_node(state: PodcastState) -> Dict[str, Any]:
 async def reco_intro_node(state: PodcastState) -> Dict[str, Any]:
     line = podcast.RECO_INTRO
     audio = await _tts(line, "RECO")
+    print("Reco intro generated.")
     return {
         "messages": add_messages(state["messages"], [{"role": "system", "content": line}]),
         "audio_segments": state["audio_segments"] + [audio],
         "conversation_history": state["conversation_history"] + [{"speaker":"RECO","text":line}],
+        "script_lines": state["script_lines"] + [f"Agent Reco:{line}"],
         "current_speaker": "STAT",
         "node_history": state["node_history"] + [{"node":"reco_intro","ts": datetime.datetime.now().isoformat()}],
         "current_node": "reco_intro"
@@ -130,16 +146,19 @@ async def reco_intro_node(state: PodcastState) -> Dict[str, Any]:
 async def stat_intro_node(state: PodcastState) -> Dict[str, Any]:
     line = podcast.STAT_INTRO
     audio = await _tts(line, "STAT")
+    print("Stat intro generated.")
     return {
         "messages": add_messages(state["messages"], [{"role": "system", "content": line}]),
         "audio_segments": state["audio_segments"] + [audio],
         "conversation_history": state["conversation_history"] + [{"speaker":"STAT","text":line}],
+        "script_lines": state["script_lines"] + [f"Agent Stat:{line}"],
         "current_speaker": "NEXUS",
         "node_history": state["node_history"] + [{"node":"stat_intro","ts": datetime.datetime.now().isoformat()}],
         "current_node": "stat_intro"
     }
 
 async def nexus_topic_intro_node(state: PodcastState) -> Dict[str, Any]:
+    print("Generating Nexus topic introduction...")
     topic_line = await podcast.generate_nexus_topic_intro(state["context"]["summary"])
     topic_line = ensure_complete_response(topic_line)
     audio = await _tts(topic_line, "NEXUS")
@@ -147,6 +166,7 @@ async def nexus_topic_intro_node(state: PodcastState) -> Dict[str, Any]:
         "messages": add_messages(state["messages"], [{"role": "system", "content": topic_line}]),
         "audio_segments": state["audio_segments"] + [audio],
         "conversation_history": state["conversation_history"] + [{"speaker":"NEXUS","text":topic_line}],
+        "script_lines": state["script_lines"] + [f"Agent Nexus:{topic_line}"],
         "current_speaker": "RECO",
         "current_turn": 0.0,
         "node_history": state["node_history"] + [{"node":"nexus_topic_intro","ts": datetime.datetime.now().isoformat()}],
@@ -156,6 +176,11 @@ async def nexus_topic_intro_node(state: PodcastState) -> Dict[str, Any]:
 _last_openings: Dict[str, str] = {}
 
 async def reco_turn_node(state: PodcastState) -> Dict[str, Any]:
+    # progress print like lkk.py
+    total_pairs = int(state["max_turns"])
+    current_pair = int(state["current_turn"]) + 1  # current_turn increments by 0.5 per node
+    print(f"Generating turn {current_pair}/{total_pairs}… (Reco)")
+
     last_stat = next((m for m in reversed(state["conversation_history"]) if m["speaker"]=="STAT"), None)
     prompt = (
         f"Context: {state['context'].get('summary','metrics')}.\n"
@@ -164,13 +189,14 @@ async def reco_turn_node(state: PodcastState) -> Dict[str, Any]:
     )
     line = await podcast.llm(podcast.SYSTEM_RECO, prompt)
     line = podcast.vary_opening(line, "RECO", _last_openings)
-    line = podcast._add_conversation_dynamics(line, "RECO", "STAT", state["context"].get("summary",""), int(state['current_turn']), state["conversation_history"])  # keep original signature
+    line = podcast._add_conversation_dynamics(line, "RECO", "STAT", state["context"].get("summary",""), int(state['current_turn']), state["conversation_history"])
     line = podcast._clean_repetition(ensure_complete_response(line))
     audio = await _tts(line, "RECO")
     return {
         "messages": add_messages(state["messages"], [{"role":"system","content": line}]),
         "audio_segments": state["audio_segments"] + [audio],
         "conversation_history": state["conversation_history"] + [{"speaker":"RECO","text": line}],
+        "script_lines": state["script_lines"] + [f"Agent Reco:{line}"],
         "current_speaker": "STAT",
         "current_turn": state["current_turn"] + 0.5,
         "node_history": state["node_history"] + [{"node":"reco_turn","ts": datetime.datetime.now().isoformat()}],
@@ -178,6 +204,10 @@ async def reco_turn_node(state: PodcastState) -> Dict[str, Any]:
     }
 
 async def stat_turn_node(state: PodcastState) -> Dict[str, Any]:
+    total_pairs = int(state["max_turns"])
+    current_pair = int(state["current_turn"] + 0.5) + 1  # after reco, we're in same pair for stat
+    print(f"Generating turn {current_pair}/{total_pairs}… (Stat)")
+
     last_reco = next((m for m in reversed(state["conversation_history"]) if m["speaker"]=="RECO"), None)
     prompt = (
         f"Context: {state['context'].get('summary','metrics')}.\n"
@@ -194,6 +224,7 @@ async def stat_turn_node(state: PodcastState) -> Dict[str, Any]:
         "messages": add_messages(state["messages"], [{"role":"system","content": line}]),
         "audio_segments": state["audio_segments"] + [audio],
         "conversation_history": state["conversation_history"] + [{"speaker":"STAT","text": line}],
+        "script_lines": state["script_lines"] + [f"Agent Stat:{line}"],
         "current_speaker": next_speaker,
         "current_turn": state["current_turn"] + 0.5,
         "node_history": state["node_history"] + [{"node":"stat_turn","ts": datetime.datetime.now().isoformat()}],
@@ -203,10 +234,12 @@ async def stat_turn_node(state: PodcastState) -> Dict[str, Any]:
 async def nexus_outro_node(state: PodcastState) -> Dict[str, Any]:
     line = podcast.NEXUS_OUTRO
     audio = await _tts(line, "NEXUS")
+    print("Nexus outro generated.")
     return {
         "messages": add_messages(state["messages"], [{"role":"system","content": line}]),
         "audio_segments": state["audio_segments"] + [audio],
         "conversation_history": state["conversation_history"] + [{"speaker":"NEXUS","text": line}],
+        "script_lines": state["script_lines"] + [f"Agent Nexus:{line}"],
         "current_speaker": "END",
         "node_history": state["node_history"] + [{"node":"nexus_outro","ts": datetime.datetime.now().isoformat()}],
         "current_node": "nexus_outro"
@@ -258,6 +291,7 @@ async def generate_podcast(topic: Optional[str] = None, max_turns: int = 6, file
         "interrupted": False,
         "audio_segments": [],
         "conversation_history": [],
+        "script_lines": [],
         "current_turn": 0.0,
         "max_turns": max_turns,
         "session_id": session_id,
@@ -266,14 +300,23 @@ async def generate_podcast(topic: Optional[str] = None, max_turns: int = 6, file
     }
 
     graph = create_podcast_graph()
-    save_graph_ascii(graph, initial, f"structure_{session_id}")
+    _graph_ascii_safe(graph, initial, f"structure_{session_id}")
 
-    final_state = await graph.ainvoke(initial)
-    save_graph_ascii(graph, final_state, f"execution_{session_id}")
+    # Size recursion limit to comfortably cover intros + 2*turns + outro + END
+    recursion_limit = 2 * max_turns + 12
+    final_state = await graph.ainvoke(initial, config={"recursion_limit": recursion_limit})
+    _graph_ascii_safe(graph, final_state, f"execution_{session_id}")
 
-    out_wav = f"graph_podcast_{session_id}.wav"
+    # Match lkk.py output file names
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_wav = f"podcast_{timestamp}.wav"
     write_master(final_state["audio_segments"], out_wav)
 
+    script_file = f"podcast_script_{timestamp}.txt"
+    with open(script_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(final_state["script_lines"]))
+
+    # Also keep a JSON log (extra, helpful)
     log_file = f"graph_convo_{session_id}.json"
     Path(log_file).write_text(json.dumps({
         "conversation_history": final_state["conversation_history"],
@@ -285,6 +328,11 @@ async def generate_podcast(topic: Optional[str] = None, max_turns: int = 6, file
     }, indent=2), encoding="utf-8")
 
     total_duration = sum(wav_len(p) for p in final_state["audio_segments"])
+
+    # lkk-style success prints
+    print("\nPodcast generated successfully!")
+    print(f"Audio: {out_wav}")
+    print(f"Script: {script_file}")
 
     return {
         "session_id": session_id,
@@ -321,14 +369,12 @@ async def _cli_main():
         turns = 6
     print(f"\nGenerating with file_choice='{choice}', topic='{topic or 'auto'}', turns={turns}…\n")
     result = await generate_podcast(topic, turns, file_choice=choice)
-    print("\n✅ Podcast generation complete!")
-    print(f"   Audio file:        {result['audio_file']}")
-    print(f"   Duration (sec):    {result['duration_seconds']}")
-    print(f"   Conversation log:  {result['conversation_log']}")
-    print(f"   Graph ASCII:       {result['graph_visualization']}")
+    # Extra summary like lkk
+    print(f"\nDuration (sec): {result['duration_seconds']}")
+    print(f"Conversation log: {result['conversation_log']}")
+    print(f"Graph ASCII:      {result['graph_visualization']}")
 
 if __name__ == "__main__":
-    # Run as a CLI orchestrator; you no longer need to run lkk.py separately.
     try:
         asyncio.run(_cli_main())
     except Exception as e:
