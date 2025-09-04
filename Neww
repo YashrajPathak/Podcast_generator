@@ -1,8 +1,10 @@
 # graph.py
 # LangGraph Orchestrator that calls into lkk.py (your podcast engine) for LLM + TTS.
-# One CLI, same progress prints and outputs as lkk.py, plus LangGraph live event stream.
+# One CLI, same progress prints and outputs as lkk.py, plus LangGraph round-robin control
+# and a rich live event stream (no LangSmith/LangGraph Cloud required).
 
 import os, sys, re, json, uuid, asyncio, datetime, atexit
+from time import perf_counter
 from pathlib import Path
 from typing import Dict, List, Any, Optional, TypedDict, Literal
 
@@ -17,6 +19,35 @@ except Exception as e:
 # ---- LangGraph core -------------------------------------------------------
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
+
+# ---- Optional pretty console (falls back to plain prints if missing) -----
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.progress import Progress, BarColumn, TimeElapsedColumn, TimeRemainingColumn, TextColumn
+    _RICH = True
+except Exception:
+    _RICH = False
+    class Console:
+        def print(self, *a, **k): print(*a)
+        def rule(self, *a, **k): print("-" * 50)
+    class Table:
+        def __init__(self, title=None): self.rows=[]; self.title=title
+        def add_column(self, *a, **k): pass
+        def add_row(self, *cols): self.rows.append(cols)
+    class Progress:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *exc): pass
+        def add_task(self, *a, **k): return 1
+        def update(self, *a, **k): pass
+    class BarColumn: ...
+    class TimeElapsedColumn: ...
+    class TimeRemainingColumn: ...
+    class TextColumn:
+        def __init__(self, *a, **k): pass
+
+console = Console()
 
 # ------------------------- temp tracking & cleanup -------------------------
 TMP: List[str] = []
@@ -39,7 +70,7 @@ def ensure_complete_response(text: str) -> str:
 
 def _graph_ascii_safe(graph, state: Dict[str, Any], filename_prefix: str) -> str:
     """
-    Try to save an ASCII diagram; if the backend needs grandalf/graphviz and fails,
+    Try to save an ASCII diagram; if backend needs grandalf/graphviz and fails,
     write a minimal text summary instead.
     """
     path = f"{filename_prefix}.txt"
@@ -55,8 +86,7 @@ def _graph_ascii_safe(graph, state: Dict[str, Any], filename_prefix: str) -> str
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write("ASCII visualization unavailable. Minimal summary:\n\n")
-                f.write("Nodes: nexus_intro -> reco_intro -> stat_intro -> nexus_topic_intro -> "
-                        "(reco_turn <-> stat_turn)* -> nexus_outro -> END\n")
+                f.write("Nodes: nexus_intro -> reco_intro -> stat_intro -> nexus_topic_intro -> (reco_turn <-> stat_turn)* -> nexus_outro -> END\n")
                 f.write("\n--- state keys ---\n")
                 f.write(", ".join(sorted(state.keys())) + "\n")
             print(f"(fallback) Graph summary saved to: {path}")
@@ -177,7 +207,6 @@ async def nexus_topic_intro_node(state: PodcastState) -> Dict[str, Any]:
 _last_openings: Dict[str, str] = {}
 
 async def reco_turn_node(state: PodcastState) -> Dict[str, Any]:
-    # lkk-style progress
     total_pairs = int(state["max_turns"])
     current_pair = int(state["current_turn"]) + 1  # current_turn increments by 0.5 per node
     print(f"Generating turn {current_pair}/{total_pairs}… (Reco)")
@@ -190,10 +219,7 @@ async def reco_turn_node(state: PodcastState) -> Dict[str, Any]:
     )
     line = await podcast.llm(podcast.SYSTEM_RECO, prompt)
     line = podcast.vary_opening(line, "RECO", _last_openings)
-    line = podcast._add_conversation_dynamics(line, "RECO", "STAT",
-                                              state["context"].get("summary",""),
-                                              int(state['current_turn']),
-                                              state["conversation_history"])
+    line = podcast._add_conversation_dynamics(line, "RECO", "STAT", state["context"].get("summary",""), int(state['current_turn']), state["conversation_history"])
     line = podcast._clean_repetition(ensure_complete_response(line))
     audio = await _tts(line, "RECO")
     return {
@@ -209,7 +235,7 @@ async def reco_turn_node(state: PodcastState) -> Dict[str, Any]:
 
 async def stat_turn_node(state: PodcastState) -> Dict[str, Any]:
     total_pairs = int(state["max_turns"])
-    current_pair = int(state["current_turn"] + 0.5) + 1  # same pair for Stat
+    current_pair = int(state["current_turn"] + 0.5) + 1  # after reco, still same pair for stat
     print(f"Generating turn {current_pair}/{total_pairs}… (Stat)")
 
     last_reco = next((m for m in reversed(state["conversation_history"]) if m["speaker"]=="RECO"), None)
@@ -220,10 +246,7 @@ async def stat_turn_node(state: PodcastState) -> Dict[str, Any]:
     )
     line = await podcast.llm(podcast.SYSTEM_STAT, prompt)
     line = podcast.vary_opening(line, "STAT", _last_openings)
-    line = podcast._add_conversation_dynamics(line, "STAT", "RECO",
-                                              state["context"].get("summary",""),
-                                              int(state['current_turn']),
-                                              state["conversation_history"])
+    line = podcast._add_conversation_dynamics(line, "STAT", "RECO", state["context"].get("summary",""), int(state['current_turn']), state["conversation_history"])
     line = podcast._clean_repetition(ensure_complete_response(line))
     audio = await _tts(line, "STAT")
     next_speaker = "RECO" if state["current_turn"] + 0.5 < state["max_turns"] else "NEXUS"
@@ -285,31 +308,92 @@ def create_podcast_graph():
 
 # ------------------------- live event stream -------------------------------
 async def _run_with_events(graph, initial, recursion_limit: int, session_id: str):
-    """Stream LangGraph events to terminal + timeline file, and return the final state."""
-    timeline_path = f"timeline_{session_id}.log"
-    print("🔎 Live LangGraph event stream (also saved to", timeline_path, ")")
+    """
+    Stream LangGraph events to terminal (colored if rich is installed) and
+    save both TXT and JSONL timelines. Returns (final_state, timeline_txt_path).
+    """
+    timeline_path_txt = f"timeline_{session_id}.log"
+    timeline_path_jsonl = f"timeline_{session_id}.jsonl"
+    node_stats: Dict[str, Dict[str, Any]] = {}
     final_state = None
-    try:
-        with open(timeline_path, "w", encoding="utf-8") as log:
+
+    console.rule("[bold cyan]Live LangGraph Events" if _RICH else "Live LangGraph Events")
+    with open(timeline_path_txt, "w", encoding="utf-8") as log_txt, \
+         open(timeline_path_jsonl, "w", encoding="utf-8") as log_jsonl, \
+         Progress(
+             TextColumn("[progress.description]{task.description}"),
+             BarColumn(),
+             "[progress.percentage]{task.percentage:>3.0f}%",
+             TimeElapsedColumn(),
+             TimeRemainingColumn(),
+             transient=True,
+         ) if _RICH else Progress() as progress:
+
+        turns_task = None
+        try:
             async for ev in graph.astream_events(
                 initial, version="v1", config={"recursion_limit": recursion_limit}
             ):
                 et = ev.get("event")
                 name = ev.get("name") or ev.get("data", {}).get("name") or ev.get("metadata", {}).get("node")
                 ts = datetime.datetime.now().isoformat(timespec="seconds")
-                if et in ("on_chain_start","on_chain_end","on_node_start","on_node_end"):
-                    line = f"[{ts}] {et.replace('_',' ').upper()} - {name or '-'}\n"
-                    print(line.strip())
-                    log.write(line); log.flush()
+
+                # Write plain text
+                line = f"[{ts}] {et.replace('_',' ').upper()} - {name or '-'}\n"
+                log_txt.write(line); log_txt.flush()
+
+                # Write JSONL
+                log_jsonl.write(json.dumps({"ts": ts, "event": et, "name": name, "data": ev.get("data")}, ensure_ascii=False) + "\n")
+                log_jsonl.flush()
+
+                # Pretty console output + timing
+                if et in ("on_chain_start", "on_node_start"):
+                    console.print(f"[bold green]► START[/] {name or '—'}" if _RICH else f"START {name or '—'}")
+                    node_stats.setdefault(name or "—", {}).setdefault("count", 0)
+                    node_stats[name or "—"]["count"] += 1
+                    node_stats[name or "—"]["_t0"] = perf_counter()
+                    # Create progress bar for turns after topic intro
+                    if _RICH and name == "reco_turn" and turns_task is None:
+                        max_pairs = int(initial.get("max_turns", 6))
+                        turns_task = progress.add_task("Conversation turns", total=max_pairs*2)  # reco+stat nodes
+                elif et in ("on_chain_end", "on_node_end"):
+                    console.print(f"[bold yellow]✔ END[/]   {name or '—'}" if _RICH else f"END   {name or '—'}")
+                    s = node_stats.get(name or "—", {})
+                    if "_t0" in s:
+                        dt = perf_counter() - s["_t0"]
+                        s["elapsed"] = s.get("elapsed", 0.0) + dt
+                        s["last_dt"] = dt
+                        s.pop("_t0", None)
+                    if _RICH and turns_task is not None and name in ("reco_turn", "stat_turn"):
+                        progress.update(turns_task, advance=1)
+                    # Stream the last message line live
+                    out = ev.get("data", {}).get("output")
+                    if out and isinstance(out, dict):
+                        last = out.get("conversation_history", [])[-1:] or []
+                        for msg in last:
+                            if isinstance(msg, dict) and "speaker" in msg and "text" in msg:
+                                console.print(f"[dim]{msg['speaker']}:[/] {msg['text']}" if _RICH else f"{msg['speaker']}: {msg['text']}")
+
                 if et == "on_chain_end":
                     final_state = ev.get("data", {}).get("output")
-    except Exception as e:
-        print("⚠️ Event stream error:", e)
+
+        except Exception as e:
+            console.print(f"[bold red]Event stream error:[/] {e}" if _RICH else f"Event stream error: {e}")
+
+    # Summary table
+    table = Table(title="Node Summary")
+    table.add_column("Node"); table.add_column("Calls", justify="right")
+    table.add_column("Total s", justify="right"); table.add_column("Last s", justify="right")
+    for node, s in node_stats.items():
+        table.add_row(node, str(s.get("count", 0)),
+                      f"{s.get('elapsed', 0.0):.2f}", f"{s.get('last_dt', 0.0):.2f}")
+    console.print(table)
 
     if final_state is None:
-        # Fallback: run once to get the final state if event output wasn’t populated
+        # Fallback: get final state once if the event stream didn't carry it
         final_state = await graph.ainvoke(initial, config={"recursion_limit": recursion_limit})
-    return final_state, timeline_path
+
+    return final_state, timeline_path_txt
 
 # ------------------------- main API ---------------------------------------
 async def generate_podcast(topic: Optional[str] = None,
@@ -340,6 +424,14 @@ async def generate_podcast(topic: Optional[str] = None,
     graph = create_podcast_graph()
     structure_path = _graph_ascii_safe(graph, initial, f"structure_{session_id}")
 
+    # Optionally also emit a Mermaid diagram file (nice in editors/Markdown)
+    try:
+        mermaid = graph.get_graph().draw_mermaid()
+        Path(f"graph_{session_id}.mmd").write_text(mermaid, encoding="utf-8")
+        print(f"Mermaid saved: graph_{session_id}.mmd")
+    except Exception:
+        pass
+
     # === run with live event stream ===
     final_state, timeline_path = await _run_with_events(graph, initial, recursion_limit, session_id)
 
@@ -354,7 +446,7 @@ async def generate_podcast(topic: Optional[str] = None,
     with open(script_file, "w", encoding="utf-8") as f:
         f.write("\n".join(final_state["script_lines"]))
 
-    # Also keep a JSON log (extra)
+    # Also keep a JSON log (extra, helpful)
     log_file = f"graph_convo_{session_id}.json"
     Path(log_file).write_text(json.dumps({
         "conversation_history": final_state["conversation_history"],
@@ -412,8 +504,7 @@ async def _cli_main():
     except:
         recursion_limit = 60
 
-    print(f"\nGenerating with file_choice='{choice}', topic='{topic or 'auto'}', "
-          f"turns={turns}, recursion_limit={recursion_limit}…\n")
+    print(f"\nGenerating with file_choice='{choice}', topic='{topic or 'auto'}', turns={turns}, recursion_limit={recursion_limit}…\n")
     result = await generate_podcast(topic, turns, file_choice=choice, recursion_limit=recursion_limit)
 
     print("\n✅ Podcast generation complete!")
@@ -430,4 +521,3 @@ if __name__ == "__main__":
     except Exception as e:
         print("Error:", e)
         import traceback; traceback.print_exc()
-```0
