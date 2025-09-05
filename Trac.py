@@ -1,3 +1,17 @@
+# build + compile
+builder = create_podcast_graph()
+graph = builder.compile()  # <-- compile to get a CompiledGraph
+
+# use the compiled graph everywhere below
+structure_path = _graph_ascii_safe(graph, initial, f"structure_{session_id}")
+try:
+    mermaid = graph.get_graph().draw_mermaid()
+    Path(f"graph_{session_id}.mmd").write_text(mermaid, encoding="utf-8")
+except Exception:
+    pass
+
+final_state, timeline_path = await _run_with_events(graph, initial, recursion_limit, session_id)
+execution_path = _graph_ascii_safe(graph, final_state, f"execution_{session_id}")
 # --- LangGraph Studio hook (local UI) ---
 try:
     from langgraph.checkpoint.sqlite import SqliteSaver
