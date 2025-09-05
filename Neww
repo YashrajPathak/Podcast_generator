@@ -1,9 +1,8 @@
 # graph.py
 # LangGraph Orchestrator that calls into lkk.py (your podcast engine) for LLM + TTS.
-# One CLI, same progress prints and outputs as lkk.py, plus LangGraph round-robin control
-# and a rich live event stream (no LangSmith/LangGraph Cloud required).
+# Same CLI feel as lkk.py + live event stream + Mermaid export (+ optional Studio UI, no LangSmith needed)
 
-import os, sys, re, json, uuid, asyncio, datetime, atexit
+import os, sys, re, json, uuid, asyncio, datetime, atexit, webbrowser
 from time import perf_counter
 from pathlib import Path
 from typing import Dict, List, Any, Optional, TypedDict, Literal
@@ -68,14 +67,10 @@ def ensure_complete_response(text: str) -> str:
         t += '.'
     return t
 
-def _graph_ascii_safe(graph, state: Dict[str, Any], filename_prefix: str) -> str:
-    """
-    Try to save an ASCII diagram; if backend needs grandalf/graphviz and fails,
-    write a minimal text summary instead.
-    """
+def _graph_ascii_safe(compiled_graph, state: Dict[str, Any], filename_prefix: str) -> str:
     path = f"{filename_prefix}.txt"
     try:
-        ascii_map = graph.get_graph().draw_ascii()
+        ascii_map = compiled_graph.get_graph().draw_ascii()
         with open(path, "w", encoding="utf-8") as f:
             f.write(ascii_map + "\n")
             f.write("\n--- state keys ---\n")
@@ -94,6 +89,38 @@ def _graph_ascii_safe(graph, state: Dict[str, Any], filename_prefix: str) -> str
             print("ASCII visualization error:", e)
         return path
 
+def _write_mermaid_bundle(compiled_graph, session_id: str) -> Optional[str]:
+    try:
+        mermaid = compiled_graph.get_graph().draw_mermaid()
+    except Exception:
+        return None
+    mmd_path = Path(f"graph_{session_id}.mmd")
+    mmd_path.write_text(mermaid, encoding="utf-8")
+    print(f"Mermaid saved: {mmd_path.name}")
+    html = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>LangGraph · {session_id}</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <style>body{{margin:0;padding:16px;font-family:system-ui;}} .wrap{{max-width:1200px;margin:auto;}}</style>
+</head>
+<body>
+<div class="wrap">
+  <h3>LangGraph Diagram — {session_id}</h3>
+  <div class="mermaid">{mermaid}</div>
+</div>
+<script>mermaid.initialize({{startOnLoad:true, securityLevel:"loose"}});</script>
+</body>
+</html>"""
+    html_path = Path(f"graph_{session_id}.html")
+    html_path.write_text(html, encoding="utf-8")
+    try:
+        webbrowser.open_new_tab(html_path.resolve().as_uri())
+    except Exception:
+        pass
+    return str(html_path)
+
 def wav_len(path: str) -> float:
     try:
         with podcast.wave.open(path, "rb") as r:
@@ -110,7 +137,6 @@ def list_json_files() -> List[str]:
     return [p.name for p in Path(".").iterdir() if p.is_file() and p.suffix.lower() == ".json"]
 
 def load_context(choice: str) -> tuple[str, dict]:
-    """Defer to lkk’s loader to keep behavior identical (no hardcoding)."""
     return podcast.load_context(choice)
 
 def infer_topic_from_metrics(context_text: str) -> str:
@@ -208,9 +234,8 @@ _last_openings: Dict[str, str] = {}
 
 async def reco_turn_node(state: PodcastState) -> Dict[str, Any]:
     total_pairs = int(state["max_turns"])
-    current_pair = int(state["current_turn"]) + 1  # current_turn increments by 0.5 per node
+    current_pair = int(state["current_turn"]) + 1
     print(f"Generating turn {current_pair}/{total_pairs}… (Reco)")
-
     last_stat = next((m for m in reversed(state["conversation_history"]) if m["speaker"]=="STAT"), None)
     prompt = (
         f"Context: {state['context'].get('summary','metrics')}.\n"
@@ -235,9 +260,8 @@ async def reco_turn_node(state: PodcastState) -> Dict[str, Any]:
 
 async def stat_turn_node(state: PodcastState) -> Dict[str, Any]:
     total_pairs = int(state["max_turns"])
-    current_pair = int(state["current_turn"] + 0.5) + 1  # after reco, still same pair for stat
+    current_pair = int(state["current_turn"] + 0.5) + 1
     print(f"Generating turn {current_pair}/{total_pairs}… (Stat)")
-
     last_reco = next((m for m in reversed(state["conversation_history"]) if m["speaker"]=="RECO"), None)
     prompt = (
         f"Context: {state['context'].get('summary','metrics')}.\n"
@@ -279,7 +303,7 @@ async def nexus_outro_node(state: PodcastState) -> Dict[str, Any]:
 def should_continue(state: PodcastState) -> Literal["continue_conversation","end_conversation"]:
     return "end_conversation" if state["current_turn"] >= state["max_turns"] else "continue_conversation"
 
-def create_podcast_graph():
+def _build_compiled_graph():
     builder = StateGraph(PodcastState)
     builder.add_node("nexus_intro",        nexus_intro_node)
     builder.add_node("reco_intro",         reco_intro_node)
@@ -288,13 +312,11 @@ def create_podcast_graph():
     builder.add_node("reco_turn",          reco_turn_node)
     builder.add_node("stat_turn",          stat_turn_node)
     builder.add_node("nexus_outro",        nexus_outro_node)
-
     builder.set_entry_point("nexus_intro")
     builder.add_edge("nexus_intro", "reco_intro")
     builder.add_edge("reco_intro", "stat_intro")
     builder.add_edge("stat_intro", "nexus_topic_intro")
     builder.add_edge("nexus_topic_intro", "reco_turn")
-
     builder.add_conditional_edges("reco_turn", should_continue, {
         "continue_conversation": "stat_turn",
         "end_conversation": "nexus_outro",
@@ -304,31 +326,44 @@ def create_podcast_graph():
         "end_conversation": "nexus_outro",
     })
     builder.add_edge("nexus_outro", END)
-    return builder
+    return builder.compile()
 
 # --- LangGraph Studio hook (local UI) ---
+_STUDIO_AVAILABLE = False
 try:
-    from langgraph.checkpoint.sqlite import SqliteSaver
-except ImportError:
-    # fallback if your version exposes it here
-    from langgraph.checkpoint import SqliteSaver
+    from langgraph.checkpoint.sqlite import SqliteSaver   # langgraph>=0.2
+    _STUDIO_AVAILABLE = True
+except Exception:
+    try:
+        from langgraph.checkpoint import SqliteSaver      # some distros
+        _STUDIO_AVAILABLE = True
+    except Exception:
+        SqliteSaver = None                                # type: ignore
+        _STUDIO_AVAILABLE = False
 
 def build_app():
-    builder = create_podcast_graph()
-    checkpointer = SqliteSaver.from_conn_string("sqlite:///ui_checkpoints.sqlite")
-    return builder.compile(checkpointer=checkpointer)
+    """Exposes `app` for `langgraph dev` (Studio UI)."""
+    compiled = _build_compiled_graph()
+    if _STUDIO_AVAILABLE:
+        try:
+            checkpointer = SqliteSaver.from_conn_string("ui_checkpoints.sqlite")
+            compiled = compiled.with_config(checkpointer=checkpointer)
+        except Exception:
+            pass
+    return compiled
 
-app = build_app()   # <-- Studio looks for this symbol
+app = build_app()   # Studio looks for this symbol
+
 # ------------------------- live event stream -------------------------------
-async def _run_with_events(graph, initial, recursion_limit: int, session_id: str):
+async def _run_with_events(compiled_graph, initial, recursion_limit: int, session_id: str):
     """
-    Stream LangGraph events to terminal (colored if rich is installed) and
-    save both TXT and JSONL timelines. Returns (final_state, timeline_txt_path).
+    Stream LangGraph events to terminal and save TXT/JSONL timelines.
+    Returns (final_state, timeline_txt_path).
     """
     timeline_path_txt = f"timeline_{session_id}.log"
     timeline_path_jsonl = f"timeline_{session_id}.jsonl"
     node_stats: Dict[str, Dict[str, Any]] = {}
-    final_state = None
+    final_state: Optional[Dict[str, Any]] = None
 
     console.rule("[bold cyan]Live LangGraph Events" if _RICH else "Live LangGraph Events")
     with open(timeline_path_txt, "w", encoding="utf-8") as log_txt, \
@@ -344,31 +379,38 @@ async def _run_with_events(graph, initial, recursion_limit: int, session_id: str
 
         turns_task = None
         try:
-            async for ev in graph.astream_events(
+            async for ev in compiled_graph.astream_events(
                 initial, version="v1", config={"recursion_limit": recursion_limit}
             ):
                 et = ev.get("event")
                 name = ev.get("name") or ev.get("data", {}).get("name") or ev.get("metadata", {}).get("node")
                 ts = datetime.datetime.now().isoformat(timespec="seconds")
 
-                # Write plain text
+                # plain text
                 line = f"[{ts}] {et.replace('_',' ').upper()} - {name or '-'}\n"
                 log_txt.write(line); log_txt.flush()
 
-                # Write JSONL
-                log_jsonl.write(json.dumps({"ts": ts, "event": et, "name": name, "data": ev.get("data")}, ensure_ascii=False) + "\n")
+                # JSONL (safe)
+                def _safe(obj):
+                    try:
+                        json.dumps(obj)
+                        return obj
+                    except Exception:
+                        return str(obj)
+                payload = { "ts": ts, "event": et, "name": name,
+                            "data": {k: _safe(v) for k,v in (ev.get("data") or {}).items()} }
+                log_jsonl.write(json.dumps(payload, ensure_ascii=False) + "\n")
                 log_jsonl.flush()
 
-                # Pretty console output + timing
+                # pretty + timing
                 if et in ("on_chain_start", "on_node_start"):
                     console.print(f"[bold green]► START[/] {name or '—'}" if _RICH else f"START {name or '—'}")
                     node_stats.setdefault(name or "—", {}).setdefault("count", 0)
                     node_stats[name or "—"]["count"] += 1
                     node_stats[name or "—"]["_t0"] = perf_counter()
-                    # Create progress bar for turns after topic intro
                     if _RICH and name == "reco_turn" and turns_task is None:
                         max_pairs = int(initial.get("max_turns", 6))
-                        turns_task = progress.add_task("Conversation turns", total=max_pairs*2)  # reco+stat nodes
+                        turns_task = progress.add_task("Conversation turns", total=max_pairs*2)
                 elif et in ("on_chain_end", "on_node_end"):
                     console.print(f"[bold yellow]✔ END[/]   {name or '—'}" if _RICH else f"END   {name or '—'}")
                     s = node_stats.get(name or "—", {})
@@ -379,16 +421,13 @@ async def _run_with_events(graph, initial, recursion_limit: int, session_id: str
                         s.pop("_t0", None)
                     if _RICH and turns_task is not None and name in ("reco_turn", "stat_turn"):
                         progress.update(turns_task, advance=1)
-                    # Stream the last message line live
                     out = ev.get("data", {}).get("output")
                     if out and isinstance(out, dict):
+                        final_state = out  # keep latest output seen
                         last = out.get("conversation_history", [])[-1:] or []
                         for msg in last:
                             if isinstance(msg, dict) and "speaker" in msg and "text" in msg:
                                 console.print(f"[dim]{msg['speaker']}:[/] {msg['text']}" if _RICH else f"{msg['speaker']}: {msg['text']}")
-
-                if et == "on_chain_end":
-                    final_state = ev.get("data", {}).get("output")
 
         except Exception as e:
             console.print(f"[bold red]Event stream error:[/] {e}" if _RICH else f"Event stream error: {e}")
@@ -402,9 +441,10 @@ async def _run_with_events(graph, initial, recursion_limit: int, session_id: str
                       f"{s.get('elapsed', 0.0):.2f}", f"{s.get('last_dt', 0.0):.2f}")
     console.print(table)
 
-    if final_state is None:
-        # Fallback: get final state once if the event stream didn't carry it
-        final_state = await graph.ainvoke(initial, config={"recursion_limit": recursion_limit})
+    # >>>>>>> CRITICAL FIX HERE <<<<<<<
+    # Event stream outputs can be trimmed; ensure we have full state with audio_segments.
+    if not isinstance(final_state, dict) or "audio_segments" not in final_state:
+        final_state = await compiled_graph.ainvoke(initial, config={"recursion_limit": recursion_limit})
 
     return final_state, timeline_path_txt
 
@@ -434,43 +474,45 @@ async def generate_podcast(topic: Optional[str] = None,
         "current_node": "start",
     }
 
-    graph = create_podcast_graph()
-    structure_path = _graph_ascii_safe(graph, initial, f"structure_{session_id}")
+    compiled_graph = _build_compiled_graph()
+    structure_path = _graph_ascii_safe(compiled_graph, initial, f"structure_{session_id}")
 
-    # Optionally also emit a Mermaid diagram file (nice in editors/Markdown)
-    try:
-        mermaid = graph.get_graph().draw_mermaid()
-        Path(f"graph_{session_id}.mmd").write_text(mermaid, encoding="utf-8")
-        print(f"Mermaid saved: graph_{session_id}.mmd")
-    except Exception:
-        pass
+    _write_mermaid_bundle(compiled_graph, session_id)  # .mmd + .html + auto-open
 
     # === run with live event stream ===
-    final_state, timeline_path = await _run_with_events(graph, initial, recursion_limit, session_id)
+    final_state, timeline_path = await _run_with_events(compiled_graph, initial, recursion_limit, session_id)
 
-    execution_path = _graph_ascii_safe(graph, final_state, f"execution_{session_id}")
+    execution_path = _graph_ascii_safe(compiled_graph, final_state, f"execution_{session_id}")
 
     # Match lkk.py output file names
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     out_wav = f"podcast_{timestamp}.wav"
-    write_master(final_state["audio_segments"], out_wav)
+
+    # Guard against missing segments (shouldn't happen after the fix, but safe)
+    segments = final_state.get("audio_segments", [])
+    if not isinstance(segments, list):
+        segments = []
+    if segments:
+        write_master(segments, out_wav)
+    else:
+        print("⚠️ No audio segments found; skipping master write.")
 
     script_file = f"podcast_script_{timestamp}.txt"
     with open(script_file, "w", encoding="utf-8") as f:
-        f.write("\n".join(final_state["script_lines"]))
+        f.write("\n".join(final_state.get("script_lines", [])))
 
-    # Also keep a JSON log (extra, helpful)
+    # Also keep a JSON log
     log_file = f"graph_convo_{session_id}.json"
     Path(log_file).write_text(json.dumps({
-        "conversation_history": final_state["conversation_history"],
-        "node_history": final_state["node_history"],
+        "conversation_history": final_state.get("conversation_history", []),
+        "node_history": final_state.get("node_history", []),
         "topic": resolved_topic,
         "turns": max_turns,
         "session_id": session_id,
         "files": meta.get("files", []),
     }, indent=2), encoding="utf-8")
 
-    total_duration = sum(wav_len(p) for p in final_state["audio_segments"])
+    total_duration = sum(wav_len(p) for p in segments)
 
     # lkk-style success prints
     print("\nPodcast generated successfully!")
