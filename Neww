@@ -304,15 +304,19 @@ def create_podcast_graph():
         "end_conversation": "nexus_outro",
     })
     builder.add_edge("nexus_outro", END)
-    return builder.compile()
+    return builder
 
 # --- LangGraph Studio hook (local UI) ---
-from langgraph.checkpoint.sqlite import SqliteSaver
+try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
+except ImportError:
+    # fallback if your version exposes it here
+    from langgraph.checkpoint import SqliteSaver
 
 def build_app():
     builder = create_podcast_graph()
-    memory = SqliteSaver.from_conn_string("ui_checkpoints.sqlite")
-    return builder.compile(checkpointer=memory)
+    checkpointer = SqliteSaver.from_conn_string("sqlite:///ui_checkpoints.sqlite")
+    return builder.compile(checkpointer=checkpointer)
 
 app = build_app()   # <-- Studio looks for this symbol
 # ------------------------- live event stream -------------------------------
