@@ -1,7 +1,6 @@
-(.venv) PS C:\Users\ypathak1\podcast_generator> python neww.py
 🎧 LangGraph + lkk Orchestrator (single CLI)
 ==================================================
-JSON files in folder: ['data.json', 'graph_convo_pod_61847dcd.json', 'graph_convo_pod_c68e8e7c.json', 'metric_data.json']
+JSON files in folder: ['data.json', 'graph_convo_pod_1cbd711d.json', 'graph_convo_pod_61847dcd.json', 'graph_convo_pod_be014b1c.json', 'graph_convo_pod_c68e8e7c.json', 'metric_data.json']
 Type one of: data.json, metric_data.json, both, then Enter:
 both
 Enter topic (blank = infer from data): 
@@ -10,77 +9,206 @@ Recursion limit (Enter for 60): 60
 
 Generating with file_choice='both', topic='auto', turns=10, recursion_limit=60…
 
-Graph ASCII saved to: structure_pod_1cbd711d.txt
-Mermaid saved: graph_pod_1cbd711d.mmd
-───────────────────────────────────────────────────────────────── Live LangGraph Events ─────────────────────────────────────────────────────────────────► START LangGraph
+Graph ASCII saved to: structure_pod_a18b75f1.txt
+Mermaid saved: graph_pod_a18b75f1.mmd
+───────────────────────────────────────────────────────────────── Live LangGraph Events ─────────────────────────────────────────────────────────────────
+► START LangGraph  
 ► START nexus_intro
 Nexus intro generated.
-Event stream error: Object of type SystemMessage is not JSON serializable
-
-               Node Summary
-┏━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━┓
-┃ Node        ┃ Calls ┃ Total s ┃ Last s ┃
-┡━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━┩
-│ LangGraph   │     1 │    0.00 │   0.00 │
-│ nexus_intro │     1 │    0.00 │   0.00 │
-└─────────────┴───────┴─────────┴────────┘
-Nexus intro generated.
+✔ END   nexus_intro
+NEXUS: Hello and welcome to Optum MultiAgent Conversation, where intelligence meets collaboration. I'm Agent Nexus, your host and guide through today's  
+episode. In this podcast, we bring together specialized agents to explore the world of metrics, data, and decision-making. Let's meet today's experts.   
+► START reco_intro
 Reco intro generated.
+✔ END   reco_intro
+RECO: Hi everyone, I'm Agent Reco, your go-to for metric recommendations. I specialize in identifying the most impactful metrics for performance
+tracking, optimization, and strategic alignment.
+► START stat_intro
 Stat intro generated.
-Reco intro generated.
+✔ END   stat_intro
+STAT: Hello! I'm Agent Stat, focused on metric data. I dive deep into data sources, trends, and statistical integrity to ensure our metrics are not just 
+smart—but solid.
+► START nexus_topic_intro
 Generating Nexus topic introduction...
-Stat intro generated.
-Generating Nexus topic introduction...
+✔ END   nexus_topic_intro
+NEXUS: Welcome to today's discussion on the intriguing trends emerging from our latest metrics analysis. Notably, the Average Speed of Answer (ASA) 
+experienced a dramatic fluctuation, peaking at 7,406 seconds in December 2024 before plummeting to 697 seconds by January 2025, highlighting significant 
+operational shifts. Additionally, the Average Call Duration has consistently decreased, dropping from 16 minutes in.
+► START reco_turn
 Generating turn 1/10… (Reco)
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   0% 0:00:01 -:--:--► START should_continue
+✔ END   should_continue
+✔ END   reco_turn
+RECO: Based on the last month, Hello, Agent Stat! Given your focus on statistical integrity, reconciling ASA trends with a control chart will help       
+pinpoint genuine shifts amid recent volatility.
+► START stat_turn
 Generating turn 2/10… (Stat)
-Generating turn 1/10… (Reco)
+Conversation turns ━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   5% 0:00:04 -:--:--► START should_continue
+✔ END   should_continue
+✔ END   stat_turn
+STAT: Relative to seasonality, Agent Reco, I'd recommend applying a P-chart to the ASA data, given the sharp drop to 697 in January 2025; verify 
+timestamp alignment to ensure accurate variance interpretation.
+► START reco_turn
 Generating turn 2/10… (Reco)
-Generating turn 2/10… (Stat)
+Conversation turns ━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  10% 0:00:06 0:00:56► START should_continue
+✔ END   should_continue
+✔ END   reco_turn
+RECO: Stat, if we accept your timestamp concern, reconciling timezone differences first is crucial, then apply a three-month rolling average to stabilizeasa trend insights.
+► START stat_turn
 Generating turn 3/10… (Stat)
-Generating turn 2/10… (Reco)
+Conversation turns ━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  15% 0:00:08 0:00:40► START should_continue
+✔ END   should_continue
+✔ END   stat_turn
+STAT: You know, Reco, reconciling timezone differences is indeed crucial, reco; verify source consistency, then apply a three-month rolling average,     
+ensuring no data gaps during asa recalculation.
+► START reco_turn
 Generating turn 3/10… (Reco)
-Generating turn 3/10… (Stat)
+Conversation turns ━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  20% 0:00:09 0:00:37► START should_continue
+✔ END   should_continue
+Conversation turns ━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  20% 0:00:10 0:00:37✔ END   reco_turn
+RECO: From a planning view, If we verify source consistency, applying a three-month rolling average to ASA will smooth extreme volatility and highlight  
+genuine trends without data gaps.
+► START stat_turn
 Generating turn 4/10… (Stat)
-Generating turn 3/10… (Reco)
+Conversation turns ━━━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  25% 0:00:13 0:00:32► START should_continue
+✔ END   should_continue
+✔ END   stat_turn
+Conversation turns ━━━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  25% 0:00:13 0:00:32STAT: From the integrity check, Before applying the rolling average, Reco, ensure the ASA timestamps align across datasets and recalculate with outlier
+caps to avoid misrepresenting trends; then, validate against seasonal patterns.
+► START reco_turn
 Generating turn 4/10… (Reco)
-Generating turn 4/10… (Stat)
+Conversation turns ━━━━━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━  30% 0:00:14 0:00:33► START should_continue
+✔ END   should_continue
+✔ END   reco_turn
+RECO: If timestamps align and outliers are capped, use a 3-month rolling average for ASA to smooth irregularities and confirm seasonality impacts before 
+adjusting staffing levels.
+Conversation turns ━━━━━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━  30% 0:00:14 0:00:33► START stat_turn
 Generating turn 5/10… (Stat)
-Generating turn 4/10… (Reco)
+Conversation turns ━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━  35% 0:00:16 0:00:29► START should_continue
+✔ END   should_continue
+✔ END   stat_turn
+STAT: Reco, given the variance profile, the data implies using a 3-month rolling average for asa might mask recent volatility; run a stationarity check  
+first to ensure seasonality isn't confounded by structural shifts.
+► START reco_turn
 Generating turn 5/10… (Reco)
-Generating turn 5/10… (Stat)
+Conversation turns ━━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━  40% 0:00:18 0:00:26► START should_continue
+✔ END   should_continue
+Conversation turns ━━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━  40% 0:00:18 0:00:26✔ END   reco_turn
+RECO: Stat, against ytd context, if we run a stationarity check and confirm structural shifts, consider using a control chart to monitor asa volatility  
+without masking critical trends.
+► START stat_turn
 Generating turn 6/10… (Stat)
-Generating turn 5/10… (Reco)
+Conversation turns ━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━  45% 0:00:21 0:00:24► START should_continue
+✔ END   should_continue
+✔ END   stat_turn
+STAT: Reco, the data implies asa volatility is significant, but ensure stationarity first; apply a p-chart and verify if the january 2025 drop is a data 
+entry error before further analysis.
+Conversation turns ━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━━━━━━  50% 0:00:21 0:00:22► START reco_turn
 Generating turn 6/10… (Reco)
-Generating turn 6/10… (Stat)
+Conversation turns ━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━━━━━━  50% 0:00:22 0:00:22► START should_continue
+✔ END   should_continue
+✔ END   reco_turn
+RECO: I see what you're saying, to confirm stationarity and rule out data entry errors, validate timestamp consistency and apply a control chart to trackasa trends before setting improvement targets.
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━━━━  55% 0:00:22 0:00:19► START stat_turn
 Generating turn 7/10… (Stat)
-Generating turn 6/10… (Reco)
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━━━━  55% 0:00:26 0:00:19► START should_continue
+✔ END   should_continue
+✔ END   stat_turn
+STAT: You're right about that, from the control limits, before moving forward, ensure timestamp consistency across all entries and apply a p-chart to asadata to distinguish real shifts from noise, then reassess improvement targets.
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━━  60% 0:00:26 0:00:18► START reco_turn
 Generating turn 7/10… (Reco)
-Generating turn 7/10… (Stat)
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━━  60% 0:00:27 0:00:18► START should_continue
+✔ END   should_continue
+✔ END   reco_turn
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━━  60% 0:00:27 0:00:18RECO: If timestamp consistency is confirmed, implementing a three-month rolling average for ASA alongside the p-chart will help stabilize the improvement
+targets effectively.
+► START stat_turn
 Generating turn 8/10… (Stat)
-Generating turn 7/10… (Reco)
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━  65% 0:00:29 0:00:16► START should_continue
+✔ END   should_continue
+✔ END   stat_turn
+STAT: The data implies a three-month rolling average might mask recent ASA volatility; validate variance trends and run a control chart for each month 
+before adjusting targets.
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━  65% 0:00:29 0:00:16► START reco_turn
 Generating turn 8/10… (Reco)
-Generating turn 8/10… (Stat)
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━  70% 0:00:30 0:00:13► START should_continue
+✔ END   should_continue
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━━━  70% 0:00:30 0:00:13✔ END   reco_turn
+RECO: You know, Stat, that approach makes sense; ensure the control chart highlights any special cause variation, and then recalibrate staffing levels tostabilize asa within acceptable limits.
+► START stat_turn
 Generating turn 9/10… (Stat)
-Generating turn 8/10… (Reco)
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━  75% 0:00:32 0:00:11► START should_continue
+✔ END   should_continue
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━━━  75% 0:00:32 0:00:11✔ END   stat_turn
+STAT: You know, Reco, the safer read is to first confirm timestamp alignment and validate data integrity, then apply a control chart to distinguish      
+special cause variations before adjusting staffing levels.
+► START reco_turn
 Generating turn 9/10… (Reco)
-Generating turn 9/10… (Stat)
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━  80% 0:00:34 0:00:08► START should_continue
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━━━  80% 0:00:34 0:00:08✔ END   should_continue
+✔ END   reco_turn
+RECO: I have a slightly different view, given that, if we confirm timestamp alignment and data integrity, applying a control chart will pinpoint special 
+cause variations; then, adjust staffing levels based on validated patterns.
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━  85% 0:00:34 0:00:06► START stat_turn
 Generating turn 10/10… (Stat)
-Generating turn 9/10… (Reco)
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━  85% 0:00:36 0:00:06► START should_continue
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━  85% 0:00:36 0:00:06✔ END   should_continue
+✔ END   stat_turn
+STAT: That makes sense, before adjusting staffing, test for stationarity using seasonal decomposition to ensure variations aren't seasonal artifacts; 
+confirm schema keys for data integrity first.
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━  90% 0:00:36 0:00:05► START reco_turn
 Generating turn 10/10… (Reco)
-Generating turn 10/10… (Stat)
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━  90% 0:00:38 0:00:05► START should_continue
+✔ END   should_continue
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━  90% 0:00:38 0:00:05✔ END   reco_turn
+RECO: You know, Stat, looking at this, testing for stationarity with seasonal decomposition is wise; once schema keys are verified, apply a control chartto monitor asa stability before staffing changes.
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━  95% 0:00:38 0:00:02► START stat_turn
 Generating turn 11/10… (Stat)
-Generating turn 10/10… (Reco)
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━  95% 0:00:40 0:00:02► START should_continue
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━  95% 0:00:41 0:00:02✔ END   should_continue
+✔ END   stat_turn
+STAT: Statistically speaking, The data implies ASA values are volatile, with a swing from 7406.0 to 697.0; confirm schema keys, then use a P-chart to 
+assess variance before adjusting staffing.
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:41 0:00:00► START nexus_outro
 Nexus outro generated.
-Graph ASCII saved to: execution_pod_1cbd711d.txt
-
-Podcast generated successfully!
-Audio: podcast_20250904_153756.wav
-Script: podcast_script_20250904_153756.txt
-
-✅ Podcast generation complete!
-   Audio file:        podcast_20250904_153756.wav
-   Duration (sec):    404.18
-   Conversation log:  graph_convo_pod_1cbd711d.json
-   Graph structure:   structure_pod_1cbd711d.txt
-   Graph ASCII:       execution_pod_1cbd711d.txt
-   Timeline:          timeline_pod_1cbd711d.log
+Conversation turns ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:41 0:00:00✔ END   nexus_outro
+NEXUS: And that brings us to the end of today's episode of Optum MultiAgent Conversation. A big thank you to Agent Reco for guiding us through the art ofmetric recommendations, and to Agent Stat for grounding us in the power of metric data. Your insights today have not only informed but inspired.
+Together, you've shown how collaboration between agents can unlock deeper understanding and smarter decisions. To our listeners—thank you for tuning in. 
+Stay curious, stay data-driven, and we'll see you next time on Optum MultiAgent Conversation. Until then, this is Agent Nexus, signing off.
+✔ END   LangGraph
+                  Node Summary
+┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━┓
+┃ Node              ┃ Calls ┃ Total s ┃ Last s ┃
+┡━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━┩
+│ LangGraph         │     1 │   52.04 │  52.04 │
+│ nexus_intro       │     1 │    1.60 │   1.60 │
+│ reco_intro        │     1 │    0.73 │   0.73 │
+│ stat_intro        │     1 │    1.30 │   1.30 │
+│ nexus_topic_intro │     1 │    5.58 │   5.58 │
+│ reco_turn         │    10 │   16.19 │   1.57 │
+│ should_continue   │    20 │    0.36 │   0.03 │
+│ stat_turn         │    10 │   24.10 │   2.53 │
+│ nexus_outro       │     1 │    1.34 │   1.34 │
+└───────────────────┴───────┴─────────┴────────┘
+Graph ASCII saved to: execution_pod_a18b75f1.txt
+Error: 'audio_segments'
+Traceback (most recent call last):
+  File "C:\Users\ypathak1\podcast_generator\neww.py", line 589, in <module>
+    asyncio.run(_cli_main())
+  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\neww.py", line 577, in _cli_main
+    result = await generate_podcast(topic, turns, file_choice=choice, recursion_limit=recursion_limit)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ypathak1\podcast_generator\neww.py", line 512, in generate_podcast
+    write_master(final_state["audio_segments"], out_wav)
+                 ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+KeyError: 'audio_segments'
+(.venv) PS C:\Users\ypathak1\podcast_generator> 
