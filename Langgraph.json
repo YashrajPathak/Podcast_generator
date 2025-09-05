@@ -2,8 +2,12 @@
   "graphs": {
     "podcast": "neww:app"
   },
+  "dependencies": [
+    "neww.py",
+    "lkk.py"
+  ],
   "server": {
-    "host": "0.0.0.0",
+    "host": "127.0.0.1",
     "port": 2024
   }
 }
