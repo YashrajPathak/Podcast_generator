@@ -1,3 +1,14 @@
+# --- LangGraph Studio hook (local UI) ---
+try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
+except ImportError:
+    # fallback if your version exposes it here
+    from langgraph.checkpoint import SqliteSaver
+
+def build_app():
+    builder = create_podcast_graph()
+    checkpointer = SqliteSaver.from_conn_string("sqlite:///ui_checkpoints.sqlite")
+    return builder.compile(checkpointer=checkpointer)
 Got it 👍
 Here’s a clean Excel-style table content you can directly copy into Excel/Google Sheets to track all updates from agent1.py till your current podcast_fixed_openings.py and graph.py.
 
