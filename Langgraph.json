@@ -1,9 +1,9 @@
 {
   "graphs": {
-    "podcast": {
-      "entrypoint": "neww:app"
-    }
+    "podcast": "neww:app"
   },
-  "host": "0.0.0.0",
-  "port": 2024
+  "server": {
+    "host": "0.0.0.0",
+    "port": 2024
+  }
 }
