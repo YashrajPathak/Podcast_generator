@@ -305,7 +305,15 @@ def create_podcast_graph():
     })
     builder.add_edge("nexus_outro", END)
     return builder.compile()
+# --- LangGraph Studio hook (local UI) ---
+from langgraph.checkpoint.sqlite import SqliteSaver
 
+def build_app():
+    builder = create_podcast_graph()
+    memory = SqliteSaver.from_conn_string("ui_checkpoints.sqlite")
+    return builder.compile(checkpointer=memory)
+
+app = build_app()   # <-- Studio looks for this symbol
 # ------------------------- live event stream -------------------------------
 async def _run_with_events(graph, initial, recursion_limit: int, session_id: str):
     """
