@@ -168,7 +168,7 @@ class PodcastState(TypedDict):
 # ------------------------- nodes (use lkk for LLM+TTS) --------------------
 async def _tts(text: str, role: str) -> str:
     ssml = podcast.text_to_ssml(text, role)
-    path = podcast.synth(ssml)
+    path = await asyncio.to_thread(podcast.synth, ssml)
     TMP.append(path)
     return path
 
