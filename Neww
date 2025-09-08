@@ -2,10 +2,12 @@
 # LangGraph Orchestrator that calls into lkk.py (your podcast engine) for LLM + TTS.
 # Same CLI feel as lkk.py + live event stream + Mermaid export (+ optional Studio UI, no LangSmith needed)
 
-import os, sys, re, json, uuid, asyncio, datetime, atexit, webbrowser
+import os, sys, re, json, uuid, asyncio, datetime, atexit, webbrowser, threading
 from time import perf_counter
 from pathlib import Path
 from typing import Dict, List, Any, Optional, TypedDict, Literal
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import socket
 
 # ---- import your podcast engine (filename must be lkk.py) -----------------
 try:
@@ -59,6 +61,72 @@ def _cleanup():
         except Exception:
             pass
 
+# ------------------------- WebSocket Server for Real-time Updates ----------
+try:
+    import websockets
+    _WEBSOCKETS_AVAILABLE = True
+except ImportError:
+    _WEBSOCKETS_AVAILABLE = False
+    print("⚠️  websockets module not available. Real-time visualization disabled.")
+    print("   Install with: pip install websockets")
+
+# WebSocket server for real-time updates
+class WebSocketServer:
+    def __init__(self, port=8003):
+        self.port = port
+        self.connections = set()
+        self.server = None
+        
+    async def handler(self, websocket):
+        self.connections.add(websocket)
+        try:
+            await websocket.wait_closed()
+        finally:
+            self.connections.remove(websocket)
+            
+    async def broadcast(self, data):
+        if not self.connections:
+            return
+            
+        message = json.dumps(data)
+        for connection in self.connections.copy():
+            try:
+                await connection.send(message)
+            except Exception:
+                self.connections.remove(connection)
+                
+    async def start_server(self):
+        if not _WEBSOCKETS_AVAILABLE:
+            return
+            
+        self.server = await websockets.serve(self.handler, "localhost", self.port)
+        print(f"WebSocket server running on ws://localhost:{self.port}")
+        
+    async def stop_server(self):
+        if self.server:
+            self.server.close()
+            await self.server.wait_closed()
+
+# Global WebSocket server instance
+_ws_server = WebSocketServer()
+
+# ------------------------- Visualization Server ----------------------------
+def start_visualization_server(html_content, port=8002):
+    class VisualizationHandler(SimpleHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/':
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                self.wfile.write(html_content.encode('utf-8'))
+            else:
+                super().do_GET()
+    
+    # Create a custom server that serves our HTML content
+    server = HTTPServer(('localhost', port), VisualizationHandler)
+    print(f"Visualization server running at http://localhost:{port}")
+    server.serve_forever()
+
 # ------------------------- tiny helpers -----------------------------------
 def ensure_complete_response(text: str) -> str:
     t = re.sub(r'[`*_#>]+', ' ', (text or "")).strip()
@@ -94,31 +162,111 @@ def _write_mermaid_bundle(compiled_graph, session_id: str) -> Optional[str]:
         mermaid = compiled_graph.get_graph().draw_mermaid()
     except Exception:
         return None
-    mmd_path = Path(f"graph_{session_id}.mmd")
-    mmd_path.write_text(mermaid, encoding="utf-8")
-    print(f"Mermaid saved: {mmd_path.name}")
+    
+    # Create the HTML content
     html = f"""<!doctype html>
 <html>
 <head>
   <meta charset="utf-8"/>
   <title>LangGraph · {session_id}</title>
   <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
-  <style>body{{margin:0;padding:16px;font-family:system-ui;}} .wrap{{max-width:1200px;margin:auto;}}</style>
+  <style>
+    body {{
+      margin: 0;
+      padding: 16px;
+      font-family: system-ui;
+      background: #0f172a;
+      color: #f8fafc;
+    }}
+    .wrap {{
+      max-width: 1200px;
+      margin: auto;
+    }}
+    .status {{
+      background: #1e293b;
+      padding: 16px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }}
+    .current-node {{
+      color: #3b82f6;
+      font-weight: bold;
+    }}
+    #updates {{
+      max-height: 200px;
+      overflow-y: auto;
+      background: #1e293b;
+      padding: 8px;
+      border-radius: 4px;
+      margin-top: 16px;
+    }}
+    .update {{
+      margin: 4px 0;
+      padding: 4px;
+      border-left: 3px solid #3b82f6;
+    }}
+  </style>
 </head>
 <body>
 <div class="wrap">
   <h3>LangGraph Diagram — {session_id}</h3>
-  <div class="mermaid">{mermaid}</div>
+  
+  <div class="status">
+    <h4>Current Status: <span id="current-status">Initializing</span></h4>
+    <div id="updates"></div>
+  </div>
+  
+  <div class="mermaid" id="mermaid-diagram">
+    {mermaid}
+  </div>
 </div>
-<script>mermaid.initialize({{startOnLoad:true, securityLevel:"loose"}});</script>
+
+<script>
+  mermaid.initialize({{startOnLoad: true, securityLevel: "loose", theme: "dark"}});
+  
+  // Function to update the visualization
+  function updateStatus(nodeName, eventType) {{
+    const statusEl = document.getElementById('current-status');
+    const updatesEl = document.getElementById('updates');
+    
+    statusEl.textContent = nodeName || 'Processing';
+    
+    if (nodeName) {{
+      const update = document.createElement('div');
+      update.className = 'update';
+      update.textContent = `[${{new Date().toLocaleTimeString()}}] ${{eventType.toUpperCase()}} - ${{nodeName}}`;
+      updatesEl.appendChild(update);
+      updatesEl.scrollTop = updatesEl.scrollHeight;
+    }}
+  }}
+  
+  // Set up WebSocket connection for real-time updates
+  const ws = new WebSocket('ws://localhost:8003/');
+  ws.onmessage = function(event) {{
+    const data = JSON.parse(event.data);
+    updateStatus(data.node, data.event);
+  }};
+</script>
 </body>
 </html>"""
+    
+    # Save HTML to file
     html_path = Path(f"graph_{session_id}.html")
     html_path.write_text(html, encoding="utf-8")
+    
+    # Start a thread with the visualization server
+    server_thread = threading.Thread(
+        target=start_visualization_server, 
+        args=(html, 8002),
+        daemon=True
+    )
+    server_thread.start()
+    
     try:
-        webbrowser.open_new_tab(html_path.resolve().as_uri())
+        webbrowser.open_new_tab(f"http://localhost:8002/")
     except Exception:
         pass
+    
     return str(html_path)
 
 def wav_len(path: str) -> float:
@@ -386,6 +534,14 @@ async def _run_with_events(compiled_graph, initial, recursion_limit: int, sessio
                 name = ev.get("name") or ev.get("data", {}).get("name") or ev.get("metadata", {}).get("node")
                 ts = datetime.datetime.now().isoformat(timespec="seconds")
 
+                # Send WebSocket update for real-time visualization
+                if _WEBSOCKETS_AVAILABLE:
+                    await _ws_server.broadcast({
+                        "node": name,
+                        "event": et,
+                        "timestamp": ts
+                    })
+
                 # plain text
                 line = f"[{ts}] {et.replace('_',' ').upper()} - {name or '-'}\n"
                 log_txt.write(line); log_txt.flush()
@@ -441,7 +597,6 @@ async def _run_with_events(compiled_graph, initial, recursion_limit: int, sessio
                       f"{s.get('elapsed', 0.0):.2f}", f"{s.get('last_dt', 0.0):.2f}")
     console.print(table)
 
-    # >>>>>>> CRITICAL FIX HERE <<<<<<<
     # Event stream outputs can be trimmed; ensure we have full state with audio_segments.
     if not isinstance(final_state, dict) or "audio_segments" not in final_state:
         final_state = await compiled_graph.ainvoke(initial, config={"recursion_limit": recursion_limit})
@@ -547,6 +702,11 @@ def _cli_choose_files() -> str:
 async def _cli_main():
     print("🎧 LangGraph + lkk Orchestrator (single CLI)")
     print("=" * 50)
+    
+    # Start WebSocket server for real-time visualization
+    if _WEBSOCKETS_AVAILABLE:
+        await _ws_server.start_server()
+    
     choice = _cli_choose_files()
     topic = input("Enter topic (blank = infer from data): ").strip() or None
     try:
@@ -569,6 +729,10 @@ async def _cli_main():
     print(f"   Graph structure:   {result['graph_structure']}")
     print(f"   Graph ASCII:       {result['graph_visualization']}")
     print(f"   Timeline:          {result['timeline']}")
+    
+    # Stop WebSocket server
+    if _WEBSOCKETS_AVAILABLE:
+        await _ws_server.stop_server()
 
 if __name__ == "__main__":
     try:
