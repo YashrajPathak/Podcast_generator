@@ -1,57 +1,114 @@
-# ------------------------- WebSocket Server for Real-time Updates ----------
-try:
-    import websockets
-    _WEBSOCKETS_AVAILABLE = True
-except ImportError:
-    _WEBSOCKETS_AVAILABLE = False
-    print("⚠️  websockets module not available. Real-time visualization disabled.")
-    print("   Install with: pip install websockets")
-
-# Global WebSocket connections
-_websocket_connections = set()
-_websocket_port = 8003
-
-# WebSocket server for real-time updates
-async def websocket_server(websocket, path):
-    _websocket_connections.add(websocket)
+def _write_mermaid_bundle(compiled_graph, session_id: str) -> Optional[str]:
     try:
-        await websocket.wait_closed()
-    finally:
-        _websocket_connections.remove(websocket)
-
-async def broadcast_websocket_message(data):
-    if not _websocket_connections:
-        return
-        
-    message = json.dumps(data)
-    for connection in _websocket_connections.copy():
-        try:
-            await connection.send(message)
-        except Exception:
-            _websocket_connections.remove(connection)
-
-# Start WebSocket server in background with port fallback
-def start_websocket_server():
-    if not _WEBSOCKETS_AVAILABLE:
-        return
-        
-    async def server_main():
-        global _websocket_port
-        for port in range(8003, 8010):  # Try ports 8003-8009
-            try:
-                server = await websockets.serve(websocket_server, "localhost", port)
-                _websocket_port = port
-                print(f"WebSocket server running on ws://localhost:{port}")
-                await server.wait_closed()
-                break
-            except OSError as e:
-                if "address already in use" in str(e).lower() or "access permissions" in str(e).lower():
-                    print(f"Port {port} unavailable, trying next port...")
-                    continue
-                else:
-                    raise
-        else:
-            print("⚠️  Could not find available port for WebSocket server")
+        mermaid = compiled_graph.get_graph().draw_mermaid()
+    except Exception:
+        return None
     
-    # Run WebSocket server in background
-    asyncio.create_task(server_main())
+    # Create the HTML content
+    html = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>LangGraph · {session_id}</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <style>
+    body {{
+      margin: 0;
+      padding: 16px;
+      font-family: system-ui;
+      background: #0f172a;
+      color: #f8fafc;
+    }}
+    .wrap {{
+      max-width: 1200px;
+      margin: auto;
+    }}
+    .status {{
+      background: #1e293b;
+      padding: 16px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }}
+    .current-node {{
+      color: #3b82f6;
+      font-weight: bold;
+    }}
+    #updates {{
+      max-height: 200px;
+      overflow-y: auto;
+      background: #1e293b;
+      padding: 8px;
+      border-radius: 4px;
+      margin-top: 16px;
+    }}
+    .update {{
+      margin: 4px 0;
+      padding: 4px;
+      border-left: 3px solid #3b82f6;
+    }}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h3>LangGraph Diagram — {session_id}</h3>
+  
+  <div class="status">
+    <h4>Current Status: <span id="current-status">Initializing</span></h4>
+    <div id="updates"></div>
+  </div>
+  
+  <div class="mermaid" id="mermaid-diagram">
+    {mermaid}
+  </div>
+</div>
+
+<script>
+  mermaid.initialize({{startOnLoad: true, securityLevel: "loose", theme: "dark"}});
+  
+  // Function to update the visualization
+  function updateStatus(nodeName, eventType) {{
+    const statusEl = document.getElementById('current-status');
+    const updatesEl = document.getElementById('updates');
+    
+    statusEl.textContent = nodeName || 'Processing';
+    
+    if (nodeName) {{
+      const update = document.createElement('div');
+      update.className = 'update';
+      update.textContent = `[${{new Date().toLocaleTimeString()}}] ${{eventType.toUpperCase()}} - ${{nodeName}}`;
+      updatesEl.appendChild(update);
+      updatesEl.scrollTop = updatesEl.scrollHeight;
+    }}
+  }}
+  
+  // Set up WebSocket connection for real-time updates
+  const ws = new WebSocket('ws://localhost:{_websocket_port}/');
+  ws.onmessage = function(event) {{
+    const data = JSON.parse(event.data);
+    updateStatus(data.node, data.event);
+  }};
+  
+  ws.onerror = function(error) {{
+    console.log('WebSocket Error:', error);
+  }};
+  
+  ws.onopen = function() {{
+    console.log('WebSocket connection established');
+  }};
+</script>
+</body>
+</html>"""
+    
+    # Save HTML to file
+    html_path = Path(f"graph_{session_id}.html")
+    html_path.write_text(html, encoding="utf-8")
+    
+    # Start the visualization server
+    start_visualization_server(html)
+    
+    try:
+        webbrowser.open_new_tab(f"http://localhost:8002/")
+    except Exception:
+        pass
+    
+    return str(html_path)
