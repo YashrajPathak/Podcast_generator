@@ -1,47 +1,80 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <mxfile host="app.diagrams.net">
-  <diagram name="Podcast Generator Architecture" id="podcast-arch-pro">
-    <mxGraphModel dx="1182" dy="683" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827">
+  <diagram name="Enhanced Podcast Generator Architecture" id="enhanced-podcast-arch">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" page="1" pageWidth="827" pageHeight="1169">
       <root>
         <mxCell id="0"/>
         <mxCell id="1" parent="0"/>
-
-        <!-- ENTRY -->
-        <mxCell id="A1" value="Entrypoints&#10;- graph.py (CLI)&#10;- lkk.py (CLI)&#10;- lkk.py (FastAPI)" style="swimlane;fillColor=#3b82f6;fontColor=#ffffff;strokeColor=#1e3a8a;" vertex="1" parent="1">
-          <mxGeometry x="40" y="40" width="220" height="120" as="geometry"/>
+        
+        <!-- ENTRY POINTS -->
+        <mxCell id="A1" value="Entry Points&#10;- graph.py (CLI)&#10;- lkk.py (CLI)&#10;- FastAPI Server&#10;- Web UI (Future)" style="rounded=1;fillColor=#3b82f6;fontColor=#ffffff;strokeColor=#1e3a8a;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="200" height="120" as="geometry"/>
         </mxCell>
 
-        <!-- CONTEXT -->
-        <mxCell id="B1" value="Context Manager&#10;- Choose JSON files&#10;- Load Context&#10;- Infer Topic" style="swimlane;fillColor=#eab308;strokeColor=#713f12;" vertex="1" parent="1">
-          <mxGeometry x="300" y="40" width="220" height="120" as="geometry"/>
+        <!-- CONFIG MANAGER -->
+        <mxCell id="B1" value="Configuration Manager&#10;- Environment Settings&#10;- Voice Parameters&#10;- LLM Parameters&#10;- Conversation Rules" style="rounded=1;fillColor=#8b5cf6;fontColor=#ffffff;strokeColor=#5b21b6;" vertex="1" parent="1">
+          <mxGeometry x="280" y="40" width="200" height="120" as="geometry"/>
         </mxCell>
 
-        <!-- ORCHESTRATION -->
-        <mxCell id="C1" value="LangGraph Orchestrator&#10;- Build Graph&#10;- Run with Events&#10;- Track State" style="swimlane;fillColor=#16a34a;fontColor=#ffffff;strokeColor=#14532d;" vertex="1" parent="1">
-          <mxGeometry x="560" y="40" width="240" height="120" as="geometry"/>
+        <!-- CONTEXT MANAGER -->
+        <mxCell id="C1" value="Context Manager&#10;- JSON File Selection&#10;- Data Loading & Parsing&#10;- Topic Inference&#10;- Data Validation" style="rounded=1;fillColor=#eab308;strokeColor=#713f12;" vertex="1" parent="1">
+          <mxGeometry x="520" y="40" width="200" height="120" as="geometry"/>
         </mxCell>
 
-        <!-- NODES -->
-        <mxCell id="D1" value="Conversation Nodes&#10;- Nexus Intro&#10;- Reco Intro&#10;- Stat Intro&#10;- Topic Intro&#10;- Reco/Stat Turns&#10;- Nexus Outro" style="swimlane;fillColor=#f97316;fontColor=#ffffff;strokeColor=#7c2d12;" vertex="1" parent="1">
-          <mxGeometry x="840" y="40" width="260" height="160" as="geometry"/>
+        <!-- ORCHESTRATOR -->
+        <mxCell id="D1" value="LangGraph Orchestrator&#10;- Graph Construction&#10;- State Management&#10;- Event Streaming&#10;- Error Recovery" style="rounded=1;fillColor=#16a34a;fontColor=#ffffff;strokeColor=#14532d;" vertex="1" parent="1">
+          <mxGeometry x="760" y="40" width="200" height="120" as="geometry"/>
         </mxCell>
 
-        <!-- ENGINE -->
-        <mxCell id="E1" value="Podcast Engine (lkk.py)&#10;- LLM (Azure OpenAI)&#10;- Text→SSML&#10;- Azure TTS Synth&#10;- Master Writer" style="swimlane;fillColor=#06b6d4;fontColor=#ffffff;strokeColor=#164e63;" vertex="1" parent="1">
-          <mxGeometry x="1140" y="40" width="260" height="160" as="geometry"/>
+        <!-- CONVERSATION MANAGER -->
+        <mxCell id="E1" value="Conversation Manager&#10;- Node Definitions&#10;- Turn Management&#10;- Flow Control&#10;- History Tracking" style="rounded=1;fillColor=#f97316;fontColor=#ffffff;strokeColor=#7c2d12;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="40" width="200" height="120" as="geometry"/>
         </mxCell>
 
-        <!-- OUTPUTS -->
-        <mxCell id="F1" value="Outputs&#10;- Final Audio (WAV)&#10;- Transcript (TXT)&#10;- Graph & Timeline&#10;- Visualization (HTML)" style="swimlane;fillColor=#84cc16;strokeColor=#000000;strokeColor=#3f6212;" vertex="1" parent="1">
-          <mxGeometry x="1440" y="40" width="260" height="160" as="geometry"/>
+        <!-- LLM SERVICE -->
+        <mxCell id="F1" value="LLM Service&#10;- Azure OpenAI Integration&#10;- Prompt Management&#10;- Response Validation&#10;- Fallback Handling" style="rounded=1;fillColor=#ec4899;fontColor=#ffffff;strokeColor=#9d174d;" vertex="1" parent="1">
+          <mxGeometry x="40" y="220" width="200" height="120" as="geometry"/>
         </mxCell>
 
-        <!-- ARROWS -->
+        <!-- TTS SERVICE -->
+        <mxCell id="G1" value="TTS Service&#10;- Azure Speech Integration&#10;- SSML Generation&#10;- Voice Parameterization&#10;- Audio Synthesis" style="rounded=1;fillColor=#06b6d4;fontColor=#ffffff;strokeColor=#164e63;" vertex="1" parent="1">
+          <mxGeometry x="280" y="220" width="200" height="120" as="geometry"/>
+        </mxCell>
+
+        <!-- AUDIO PROCESSOR -->
+        <mxCell id="H1" value="Audio Processor&#10;- Segment Management&#10;- Audio Concatenation&#10;- Normalization&#10;- Format Conversion" style="rounded=1;fillColor=#84cc16;strokeColor=#3f6212;" vertex="1" parent="1">
+          <mxGeometry x="520" y="220" width="200" height="120" as="geometry"/>
+        </mxCell>
+
+        <!-- MONITORING -->
+        <mxCell id="I1" value="Monitoring Service&#10;- Performance Metrics&#10;- Real-time Events&#10;- WebSocket Server&#10;- Visualization" style="rounded=1;fillColor=#ef4444;fontColor=#ffffff;strokeColor=#7f1d1d;" vertex="1" parent="1">
+          <mxGeometry x="760" y="220" width="200" height="120" as="geometry"/>
+        </mxCell>
+
+        <!-- OUTPUT MANAGER -->
+        <mxCell id="J1" value="Output Manager&#10;- File Generation&#10;- Format Management&#10;- Metadata Creation&#10;- Archive Management" style="rounded=1;fillColor=#14b8a6;fontColor=#ffffff;strokeColor=#0f766e;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="220" width="200" height="120" as="geometry"/>
+        </mxCell>
+
+        <!-- EXTERNAL SERVICES -->
+        <mxCell id="K1" value="External Services&#10;- Azure OpenAI&#10;- Azure Speech Service&#10;- (Future) Storage&#10;- (Future) CDN" style="rounded=1;fillColor=#64748b;fontColor=#ffffff;strokeColor=#334155;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="130" width="200" height="120" as="geometry"/>
+        </mxCell>
+
+        <!-- EDGES -->
         <mxCell id="edge1" edge="1" parent="1" source="A1" target="B1" style="endArrow=block;strokeColor=#000000;"/>
         <mxCell id="edge2" edge="1" parent="1" source="B1" target="C1" style="endArrow=block;strokeColor=#000000;"/>
         <mxCell id="edge3" edge="1" parent="1" source="C1" target="D1" style="endArrow=block;strokeColor=#000000;"/>
         <mxCell id="edge4" edge="1" parent="1" source="D1" target="E1" style="endArrow=block;strokeColor=#000000;"/>
         <mxCell id="edge5" edge="1" parent="1" source="E1" target="F1" style="endArrow=block;strokeColor=#000000;"/>
+        <mxCell id="edge6" edge="1" parent="1" source="E1" target="G1" style="endArrow=block;strokeColor=#000000;"/>
+        <mxCell id="edge7" edge="1" parent="1" source="F1" target="H1" style="endArrow=block;strokeColor=#000000;"/>
+        <mxCell id="edge8" edge="1" parent="1" source="G1" target="H1" style="endArrow=block;strokeColor=#000000;"/>
+        <mxCell id="edge9" edge="1" parent="1" source="H1" target="J1" style="endArrow=block;strokeColor=#000000;"/>
+        <mxCell id="edge10" edge="1" parent="1" source="D1" target="I1" style="endArrow=block;strokeColor=#000000;"/>
+        <mxCell id="edge11" edge="1" parent="1" source="F1" target="K1" style="endArrow=block;strokeColor=#6b7280;strokeWidth=2;dashed=1;"/>
+        <mxCell id="edge12" edge="1" parent="1" source="G1" target="K1" style="endArrow=block;strokeColor=#6b7280;strokeWidth=2;dashed=1;"/>
+        <mxCell id="edge13" edge="1" parent="1" source="I1" target="A1" style="endArrow=block;strokeColor=#6b7280;strokeWidth=2;dashed=1;"/>
       </root>
     </mxGraphModel>
   </diagram>
