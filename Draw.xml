@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <mxfile host="app.diagrams.net">
   <diagram name="Enhanced Podcast Generator Architecture" id="enhanced-podcast-arch">
-    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" page="1" pageWidth="827" pageHeight="1169">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" page="1" pageWidth="1600" pageHeight="1200">
       <root>
         <mxCell id="0"/>
         <mxCell id="1" parent="0"/>
@@ -12,52 +12,52 @@
         </mxCell>
 
         <!-- CONFIG MANAGER -->
-        <mxCell id="B1" value="Configuration Manager&#10;- Environment Settings&#10;- Voice Parameters&#10;- LLM Parameters&#10;- Conversation Rules" style="rounded=1;fillColor=#8b5cf6;fontColor=#ffffff;strokeColor=#5b21b6;" vertex="1" parent="1">
+        <mxCell id="B1" value="Configuration Manager&#10;- Env Settings&#10;- Voice Params&#10;- LLM Params&#10;- Rules" style="rounded=1;fillColor=#8b5cf6;fontColor=#ffffff;strokeColor=#5b21b6;" vertex="1" parent="1">
           <mxGeometry x="280" y="40" width="200" height="120" as="geometry"/>
         </mxCell>
 
         <!-- CONTEXT MANAGER -->
-        <mxCell id="C1" value="Context Manager&#10;- JSON File Selection&#10;- Data Loading & Parsing&#10;- Topic Inference&#10;- Data Validation" style="rounded=1;fillColor=#eab308;strokeColor=#713f12;" vertex="1" parent="1">
+        <mxCell id="C1" value="Context Manager&#10;- JSON Selection&#10;- Data Load&#10;- Topic Inference&#10;- Validation" style="rounded=1;fillColor=#eab308;strokeColor=#713f12;" vertex="1" parent="1">
           <mxGeometry x="520" y="40" width="200" height="120" as="geometry"/>
         </mxCell>
 
         <!-- ORCHESTRATOR -->
-        <mxCell id="D1" value="LangGraph Orchestrator&#10;- Graph Construction&#10;- State Management&#10;- Event Streaming&#10;- Error Recovery" style="rounded=1;fillColor=#16a34a;fontColor=#ffffff;strokeColor=#14532d;" vertex="1" parent="1">
+        <mxCell id="D1" value="LangGraph Orchestrator&#10;- Graph Build&#10;- State Mgmt&#10;- Event Stream&#10;- Recovery" style="rounded=1;fillColor=#16a34a;fontColor=#ffffff;strokeColor=#14532d;" vertex="1" parent="1">
           <mxGeometry x="760" y="40" width="200" height="120" as="geometry"/>
         </mxCell>
 
         <!-- CONVERSATION MANAGER -->
-        <mxCell id="E1" value="Conversation Manager&#10;- Node Definitions&#10;- Turn Management&#10;- Flow Control&#10;- History Tracking" style="rounded=1;fillColor=#f97316;fontColor=#ffffff;strokeColor=#7c2d12;" vertex="1" parent="1">
+        <mxCell id="E1" value="Conversation Manager&#10;- Nodes&#10;- Turn Mgmt&#10;- Flow Control&#10;- History" style="rounded=1;fillColor=#f97316;fontColor=#ffffff;strokeColor=#7c2d12;" vertex="1" parent="1">
           <mxGeometry x="1000" y="40" width="200" height="120" as="geometry"/>
         </mxCell>
 
         <!-- LLM SERVICE -->
-        <mxCell id="F1" value="LLM Service&#10;- Azure OpenAI Integration&#10;- Prompt Management&#10;- Response Validation&#10;- Fallback Handling" style="rounded=1;fillColor=#ec4899;fontColor=#ffffff;strokeColor=#9d174d;" vertex="1" parent="1">
+        <mxCell id="F1" value="LLM Service&#10;- Azure OpenAI&#10;- Prompt Mgmt&#10;- Validation&#10;- Fallback" style="rounded=1;fillColor=#ec4899;fontColor=#ffffff;strokeColor=#9d174d;" vertex="1" parent="1">
           <mxGeometry x="40" y="220" width="200" height="120" as="geometry"/>
         </mxCell>
 
         <!-- TTS SERVICE -->
-        <mxCell id="G1" value="TTS Service&#10;- Azure Speech Integration&#10;- SSML Generation&#10;- Voice Parameterization&#10;- Audio Synthesis" style="rounded=1;fillColor=#06b6d4;fontColor=#ffffff;strokeColor=#164e63;" vertex="1" parent="1">
+        <mxCell id="G1" value="TTS Service&#10;- Azure Speech&#10;- SSML Gen&#10;- Voice Params&#10;- Synthesis" style="rounded=1;fillColor=#06b6d4;fontColor=#ffffff;strokeColor=#164e63;" vertex="1" parent="1">
           <mxGeometry x="280" y="220" width="200" height="120" as="geometry"/>
         </mxCell>
 
         <!-- AUDIO PROCESSOR -->
-        <mxCell id="H1" value="Audio Processor&#10;- Segment Management&#10;- Audio Concatenation&#10;- Normalization&#10;- Format Conversion" style="rounded=1;fillColor=#84cc16;strokeColor=#3f6212;" vertex="1" parent="1">
+        <mxCell id="H1" value="Audio Processor&#10;- Segments&#10;- Concatenation&#10;- Normalize&#10;- Convert" style="rounded=1;fillColor=#84cc16;strokeColor=#3f6212;fontColor=#000000;" vertex="1" parent="1">
           <mxGeometry x="520" y="220" width="200" height="120" as="geometry"/>
         </mxCell>
 
         <!-- MONITORING -->
-        <mxCell id="I1" value="Monitoring Service&#10;- Performance Metrics&#10;- Real-time Events&#10;- WebSocket Server&#10;- Visualization" style="rounded=1;fillColor=#ef4444;fontColor=#ffffff;strokeColor=#7f1d1d;" vertex="1" parent="1">
+        <mxCell id="I1" value="Monitoring&#10;- Metrics&#10;- Events&#10;- WS Server&#10;- Visualization" style="rounded=1;fillColor=#ef4444;fontColor=#ffffff;strokeColor=#7f1d1d;" vertex="1" parent="1">
           <mxGeometry x="760" y="220" width="200" height="120" as="geometry"/>
         </mxCell>
 
         <!-- OUTPUT MANAGER -->
-        <mxCell id="J1" value="Output Manager&#10;- File Generation&#10;- Format Management&#10;- Metadata Creation&#10;- Archive Management" style="rounded=1;fillColor=#14b8a6;fontColor=#ffffff;strokeColor=#0f766e;" vertex="1" parent="1">
+        <mxCell id="J1" value="Output Manager&#10;- Files&#10;- Formats&#10;- Metadata&#10;- Archive" style="rounded=1;fillColor=#14b8a6;fontColor=#ffffff;strokeColor=#0f766e;" vertex="1" parent="1">
           <mxGeometry x="1000" y="220" width="200" height="120" as="geometry"/>
         </mxCell>
 
         <!-- EXTERNAL SERVICES -->
-        <mxCell id="K1" value="External Services&#10;- Azure OpenAI&#10;- Azure Speech Service&#10;- (Future) Storage&#10;- (Future) CDN" style="rounded=1;fillColor=#64748b;fontColor=#ffffff;strokeColor=#334155;" vertex="1" parent="1">
+        <mxCell id="K1" value="External Services&#10;- Azure OpenAI&#10;- Azure Speech&#10;- Storage (Future)&#10;- CDN (Future)" style="rounded=1;fillColor=#64748b;fontColor=#ffffff;strokeColor=#334155;" vertex="1" parent="1">
           <mxGeometry x="1240" y="130" width="200" height="120" as="geometry"/>
         </mxCell>
 
