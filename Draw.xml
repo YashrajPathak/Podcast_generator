@@ -1,180 +1,200 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <mxfile host="app.diagrams.net">
-  <diagram name="Corrected Podcast Flow" id="corrected-podcast-flow">
-    <mxGraphModel dx="1200" dy="900" grid="1" gridSize="10" page="1" pageWidth="1200" pageHeight="900">
+  <diagram name="Podcast Flow - TopDown" id="podcast-flow-topdown">
+    <mxGraphModel dx="1600" dy="1200" grid="1" gridSize="10" page="1" pageWidth="1600" pageHeight="1200">
       <root>
         <mxCell id="0"/>
         <mxCell id="1" parent="0"/>
 
-        <!-- Entry -->
-        <mxCell id="2" value="Entrypoints&#10;1) graph.py CLI (_cli_main) [graph 14.2]&#10;2) lkk.py CLI (run_podcast) [lkk 10.2]&#10;3) lkk.py FastAPI (serve) [lkk 9.1]" style="rounded=1;fillColor=#1f78b4;fontColor=#ffffff;strokeColor=#0b4f7a;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="40" y="40" width="300" height="110" as="geometry"/>
+        <!-- TOP: Entrypoint (user) -->
+        <mxCell id="entry" value="User / Orchestrator Trigger&#10;(CLI / API / Web UI)" style="shape=ellipse;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1f78b4;fontColor=#1f78b4;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="640" y="20" width="200" height="60" as="geometry"/>
         </mxCell>
 
-        <!-- Config & Context -->
-        <mxCell id="3" value="Config Manager&#10;- Env & voice params" style="rounded=1;fillColor=#8b5cf6;fontColor=#ffffff;strokeColor=#5b21b6;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="360" y="40" width="220" height="90" as="geometry"/>
+        <!-- API / Router -->
+        <mxCell id="api" value="API / Router&#10>(accept request, auth)" style="rounded=1;fillColor=#f0f9ff;strokeColor=#0b63a4;fontColor=#0b63a4;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="560" y="110" width="360" height="70" as="geometry"/>
         </mxCell>
 
-        <mxCell id="4" value="Context Manager&#10;- list_json_files()&#10;- load_context()&#10;- infer_topic_from_metrics()" style="rounded=1;fillColor=#f59e0b;fontColor=#000000;strokeColor=#92400e;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="360" y="150" width="220" height="110" as="geometry"/>
+        <!-- ORCHESTRATOR central -->
+        <mxCell id="orchestrator" value="LangGraph Orchestrator (graph.py)&#10;- build graph&#10;- run with events&#10;- state management" style="rounded=1;fillColor=#e6ffed;strokeColor=#1b9a37;fontColor=#144d28;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="560" y="210" width="360" height="130" as="geometry"/>
         </mxCell>
 
-        <!-- Orchestrator -->
-        <mxCell id="5" value="LangGraph Orchestrator&#10;- _build_compiled_graph() [graph 10.2]&#10;- generate_podcast() [graph 13.1]&#10;- _run_with_events() [graph 12.1]" style="rounded=1;fillColor=#16a34a;fontColor=#ffffff;strokeColor=#0f5132;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="620" y="40" width="320" height="140" as="geometry"/>
+        <!-- Left column: Context & Config -->
+        <mxCell id="config" value="Configuration Manager&#10;- env, voice params, LLM params" style="rounded=1;fillColor=#fff4e6;strokeColor=#c77dff;fontColor=#5b2b8a;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="120" y="210" width="300" height="90" as="geometry"/>
         </mxCell>
 
-        <!-- Nodes (vertical order) -->
-        <mxCell id="6" value="NEXUS_INTRO&#10;(nexus_intro_node) [graph 9.1]" style="rounded=1;fillColor=#e6550d;fontColor=#ffffff;strokeColor=#7a2b0a;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="40" y="200" width="220" height="60" as="geometry"/>
+        <mxCell id="context" value="Context Manager&#10;- list_json_files(), load_context()&#10;- infer topic, validate data" style="rounded=1;fillColor=#fffbe6;strokeColor=#d97706;fontColor=#6b3e03;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="120" y="310" width="300" height="90" as="geometry"/>
         </mxCell>
 
-        <mxCell id="7" value="RECO_INTRO&#10;(reco_intro_node) [graph 9.2]" style="rounded=1;fillColor=#f97316;fontColor=#ffffff;strokeColor=#7c2d12;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="300" y="200" width="220" height="60" as="geometry"/>
+        <!-- Right column: Engine pipeline -->
+        <mxCell id="engine_group" value="Podcast Engine (lkk.py)" style="rounded=1;fillColor=#eef9ff;strokeColor=#0ea5e9;fontColor=#054a5a;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="980" y="200" width="380" height="340" as="geometry"/>
         </mxCell>
 
-        <mxCell id="8" value="STAT_INTRO&#10;(stat_intro_node) [graph 9.3]" style="rounded=1;fillColor=#f97316;fontColor=#ffffff;strokeColor=#7c2d12;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="560" y="200" width="220" height="60" as="geometry"/>
+        <mxCell id="llm" value="LLM (Azure OpenAI)&#10;llm_safe / llm()" style="rounded=1;fillColor=#ffebf0;strokeColor=#db2777;fontColor=#6b0b3b;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="240" width="340" height="70" as="geometry"/>
         </mxCell>
 
-        <mxCell id="9" value="NEXUS_TOPIC_INTRO&#10;(nexus_topic_intro_node) [graph 9.4]&#10;calls generate_nexus_topic_intro() [lkk 7.3]" style="rounded=1;fillColor=#ff7f50;fontColor=#000000;strokeColor=#9b2c1b;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="820" y="200" width="320" height="80" as="geometry"/>
+        <mxCell id="ssml" value="SSML utils&#10;text_to_ssml(), _inflect(), clause pauses" style="rounded=1;fillColor=#e6fbff;strokeColor=#06b6d4;fontColor=#074c55;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="320" width="340" height="70" as="geometry"/>
         </mxCell>
 
-        <!-- Loop - Reco/Stat turns -->
-        <mxCell id="10" value="RECO_TURN&#10;(reco_turn_node) [graph 9.5]&#10-> llm(SYSTEM_RECO) [lkk 2.x]" style="rounded=1;fillColor=#ffb84d;fontColor=#000000;strokeColor=#8a4b00;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="40" y="300" width="360" height="90" as="geometry"/>
+        <mxCell id="tts" value="TTS Synth (Azure SDK)&#10;synth() -> wav segment" style="rounded=1;fillColor=#e6f7ff;strokeColor=#0891b2;fontColor=#063a46;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="400" width="340" height="70" as="geometry"/>
         </mxCell>
 
-        <mxCell id="11" value="STAT_TURN&#10;(stat_turn_node) [graph 9.6]&#10-> llm(SYSTEM_STAT) [lkk 2.x]" style="rounded=1;fillColor=#ffd580;fontColor=#000000;strokeColor=#8a4b00;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="440" y="300" width="360" height="90" as="geometry"/>
+        <mxCell id="audio_proc" value="Audio Processor&#10;segment management, concat, write_master()" style="rounded=1;fillColor=#f2ffe6;strokeColor=#84cc16;fontColor=#2b5f09;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="480" width="340" height="70" as="geometry"/>
         </mxCell>
 
-        <!-- Decision diamond -->
-        <mxCell id="12" value="should_continue?&#10;state.current_turn >= max_turns" style="shape=diamond;whiteSpace=wrap;rounded=0;fillColor=#ffffff;strokeColor=#333333;fontColor=#000000;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="820" y="320" width="120" height="90" as="geometry"/>
+        <!-- Middle: Node sequence (vertical) -->
+        <mxCell id="nexus_intro" value="NEXUS_INTRO&#10;(nexus_intro_node) [graph 9.1]" style="rounded=1;fillColor=#fff0e6;strokeColor=#f97316;fontColor=#6b2b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="360" width="300" height="60" as="geometry"/>
         </mxCell>
 
-        <mxCell id="13" value="NEXUS_OUTRO&#10;(nexus_outro_node) [graph 9.7]" style="rounded=1;fillColor=#ff6f61;fontColor=#ffffff;strokeColor=#8a2b25;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="980" y="300" width="260" height="90" as="geometry"/>
+        <mxCell id="reco_intro" value="RECO_INTRO&#10;(reco_intro_node) [graph 9.2]" style="rounded=1;fillColor=#fff6e6;strokeColor=#f97316;fontColor=#6b2b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="440" width="300" height="60" as="geometry"/>
         </mxCell>
 
-        <!-- Engine pipeline LLM -> SSML -> TTS -> Audio -->
-        <mxCell id="14" value="LLM (AzureOpenAI)&#10;llm_safe / llm() [lkk 2.x]" style="rounded=1;fillColor=#d53e79;fontColor=#ffffff;strokeColor=#7a173b;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="40" y="420" width="260" height="80" as="geometry"/>
+        <mxCell id="stat_intro" value="STAT_INTRO&#10;(stat_intro_node) [graph 9.3]" style="rounded=1;fillColor=#fff6e6;strokeColor=#f97316;fontColor=#6b2b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="520" width="300" height="60" as="geometry"/>
         </mxCell>
 
-        <mxCell id="15" value="SSML utils&#10;text_to_ssml(), _inflect(), _clause_pauses [lkk 3.x]" style="rounded=1;fillColor=#06b6d4;fontColor=#ffffff;strokeColor=#0f4c56;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="340" y="420" width="320" height="80" as="geometry"/>
+        <mxCell id="topic_intro" value="NEXUS_TOPIC_INTRO&#10;(nexus_topic_intro_node) [graph 9.4]&#10;calls generate_nexus_topic_intro()" style="rounded=1;fillColor=#fff1e6;strokeColor=#ff7f50;fontColor=#5b2b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="600" width="300" height="80" as="geometry"/>
         </mxCell>
 
-        <mxCell id="16" value="TTS Synth (Azure SDK)&#10;synth() -> wav segment [lkk 4.1]" style="rounded=1;fillColor=#0ea5e9;fontColor=#ffffff;strokeColor=#084b59;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="700" y="420" width="300" height="80" as="geometry"/>
+        <!-- Loop: Reco/Stat turns -->
+        <mxCell id="reco_turn" value="RECO_TURN (reco_turn_node) [graph 9.5]&#10-> prompt(SYSTEM_RECO)" style="rounded=1;fillColor=#fff8e6;strokeColor=#ffb84d;fontColor=#5b3a00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="720" width="380" height="90" as="geometry"/>
         </mxCell>
 
-        <mxCell id="17" value="Audio Processor&#10;segment management, write_master() [lkk 4.3]" style="rounded=1;fillColor=#7cfc00;fontColor=#000000;strokeColor=#3f6212;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="1040" y="420" width="320" height="80" as="geometry"/>
+        <mxCell id="stat_turn" value="STAT_TURN (stat_turn_node) [graph 9.6]&#10-> prompt(SYSTEM_STAT)" style="rounded=1;fillColor=#fffbe6;strokeColor=#ffd580;fontColor=#5b3a00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="460" y="720" width="380" height="90" as="geometry"/>
         </mxCell>
 
-        <!-- Outputs -->
-        <mxCell id="18" value="Outputs&#10;- podcast_YYYYMMDD.wav&#10;- podcast_script.txt&#10;- graph_convo.json&#10;- Mermaid HTML" style="rounded=1;fillColor=#8cc152;fontColor=#000000;strokeColor=#356b0b;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="1380" y="420" width="260" height="120" as="geometry"/>
+        <!-- Decision diamond for loop -->
+        <mxCell id="decide" value="should_continue?&#10;state.current_turn >= max_turns" style="shape=diamond;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#333333;fontColor=#000000;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="880" y="760" width="120" height="90" as="geometry"/>
         </mxCell>
 
-        <!-- Monitoring -->
-        <mxCell id="19" value="Monitoring / Viz&#10;- WebSocket server [graph 3.x]&#10;- timeline jsonl [graph 12.1]" style="rounded=1;fillColor=#ef4444;fontColor=#ffffff;strokeColor=#7f1d1d;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="820" y="540" width="320" height="120" as="geometry"/>
+        <mxCell id="outro" value="NEXUS_OUTRO&#10;(nexus_outro_node) [graph 9.7]" style="rounded=1;fillColor=#ffecee;strokeColor=#ff6f61;fontColor=#5b1a12;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="760" width="300" height="90" as="geometry"/>
         </mxCell>
 
-        <!-- External -->
-        <mxCell id="20" value="External Services&#10;- Azure OpenAI&#10;- Azure Speech Service&#10;- Storage/CDN (future)" style="rounded=1;fillColor=#64748b;fontColor=#ffffff;strokeColor=#334155;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="40" y="560" width="320" height="120" as="geometry"/>
+        <!-- Outputs bottom -->
+        <mxCell id="outputs" value="Outputs&#10;- podcast_YYYYMMDD.wav&#10;- podcast_script.txt&#10;- graph_convo_{session}.json&#10;- mermaid HTML" style="shape=cylinder;whiteSpace=wrap;fillColor=#f0fff0;strokeColor=#2f6b0b;fontColor=#12330a;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="640" y="900" width="320" height="80" as="geometry"/>
         </mxCell>
 
-        <!-- EDGES with explicit geometry (relative) and step labels -->
-        <mxCell id="e1" edge="1" parent="1" source="2" target="3" value="Step 1: entry -> config" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
+        <!-- Monitoring sticky note -->
+        <mxCell id="sticky" value="Note: Monitoring & WebSocket timeline feed logs (jsonl) used for live viz & debugging" style="rounded=1;fillColor=#fff6d6;strokeColor=#e1ad01;fontColor=#4a2b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="900" width="380" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- External services box -->
+        <mxCell id="external" value="External Services&#10;- Azure OpenAI (LLM)&#10;- Azure Speech (TTS)&#10;- Storage / CDN (optional)" style="rounded=1;fillColor=#f3f4f6;strokeColor=#475569;fontColor=#0f172a;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="40" width="360" height="120" as="geometry"/>
+        </mxCell>
+
+        <!-- EDGES / arrows with labels -->
+        <mxCell id="edge_entry_api" edge="1" parent="1" source="entry" target="api" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#0b4f7a;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <mxCell id="e2" edge="1" parent="1" source="3" target="4" value="Step 2: config -> context" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
+        <mxCell id="edge_api_orch" edge="1" parent="1" source="api" target="orchestrator" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#0b4f7a;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <mxCell id="e3" edge="1" parent="1" source="4" target="5" value="Step 3: context -> orchestrator" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
+        <mxCell id="edge_config_orch" edge="1" parent="1" source="config" target="orchestrator" style="edgeStyle=elbowEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#7b3fe4;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <mxCell id="e4" edge="1" parent="1" source="5" target="6" value="Start sequence" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
+        <mxCell id="edge_context_orch" edge="1" parent="1" source="context" target="orchestrator" style="edgeStyle=elbowEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#d97706;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <mxCell id="e5" edge="1" parent="1" source="6" target="7" value="then" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
+        <mxCell id="edge_orch_to_nodes" edge="1" parent="1" source="orchestrator" target="nexus_intro" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#0f5132;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <mxCell id="e6" edge="1" parent="1" source="7" target="8" value="then" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
+        <mxCell id="edge_n1_n2" edge="1" parent="1" source="nexus_intro" target="reco_intro" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#b85710;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <mxCell id="e7" edge="1" parent="1" source="8" target="9" value="then -> topic intro" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
+        <mxCell id="edge_n2_n3" edge="1" parent="1" source="reco_intro" target="stat_intro" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#b85710;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <!-- topic intro & turns -> LLM -->
-        <mxCell id="e8" edge="1" parent="1" source="9" target="14" value="LLM call: generate topic" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#6b21a8;">
+        <mxCell id="edge_n3_topic" edge="1" parent="1" source="stat_intro" target="topic_intro" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#b85710;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <mxCell id="e9" edge="1" parent="1" source="5" target="10" value="Start turns loop" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
+        <mxCell id="edge_topic_llm" edge="1" parent="1" source="topic_intro" target="llm" value="LLM: generate topic" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#7b1fa2;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <mxCell id="e10" edge="1" parent="1" source="10" target="11" value="next" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
+        <mxCell id="edge_orch_to_turns" edge="1" parent="1" source="orchestrator" target="reco_turn" value="start turns" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#0f5132;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <mxCell id="e11" edge="1" parent="1" source="11" target="12" value="check condition" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
+        <mxCell id="edge_reco_to_stat" edge="1" parent="1" source="reco_turn" target="stat_turn" value="next" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#b85710;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <mxCell id="e12" edge="1" parent="1" source="12" target="10" value="no: continue" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#0b6623;">
+        <mxCell id="edge_stat_to_decide" edge="1" parent="1" source="stat_turn" target="decide" value="check" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#b85710;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <mxCell id="e13" edge="1" parent="1" source="12" target="13" value="yes: outro" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#b22222;">
+        <mxCell id="edge_decide_loop" edge="1" parent="1" source="decide" target="reco_turn" value="no: continue" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#0d8f4a;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <!-- Reco/Stat -> LLM -> SSML -> TTS -> Audio -> Output -->
-        <mxCell id="e14" edge="1" parent="1" source="10" target="14" value="LLM call (Reco)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#6b21a8;">
-          <mxGeometry relative="1" as="geometry"/>
-        </mxCell>
-        <mxCell id="e15" edge="1" parent="1" source="11" target="14" value="LLM call (Stat)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#6b21a8;">
+        <mxCell id="edge_decide_outro" edge="1" parent="1" source="decide" target="outro" value="yes: outro" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#c02020;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <mxCell id="e16" edge="1" parent="1" source="14" target="15" value="LLM -> SSML" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
-          <mxGeometry relative="1" as="geometry"/>
-        </mxCell>
-        <mxCell id="e17" edge="1" parent="1" source="15" target="16" value="SSML -> TTS synth()" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
-          <mxGeometry relative="1" as="geometry"/>
-        </mxCell>
-        <mxCell id="e18" edge="1" parent="1" source="16" target="17" value="wav segment" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
-          <mxGeometry relative="1" as="geometry"/>
-        </mxCell>
-        <mxCell id="e19" edge="1" parent="1" source="17" target="18" value="write_master() -> final WAV" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#111111;">
+        <!-- Reco/Stat -> LLM path -->
+        <mxCell id="edge_reco_llm" edge="1" parent="1" source="reco_turn" target="llm" value="LLM call (Reco)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#7b1fa2;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
-        <!-- Monitoring & external -->
-        <mxCell id="e20" edge="1" parent="1" source="5" target="19" value="Event -> WebSocket" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#6b7280;dashed=1;">
+        <mxCell id="edge_stat_llm" edge="1" parent="1" source="stat_turn" target="llm" value="LLM call (Stat)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#7b1fa2;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
-        <mxCell id="e21" edge="1" parent="1" source="14" target="20" value="uses" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#6b7280;dashed=1;">
+
+        <!-- LLM -> SSML -> TTS -> Audio -> Outputs -->
+        <mxCell id="edge_llm_ssml" edge="1" parent="1" source="llm" target="ssml" value="LLM -> SSML" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#0b3b48;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
-        <mxCell id="e22" edge="1" parent="1" source="16" target="20" value="uses" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=1;strokeColor=#6b7280;dashed=1;">
+
+        <mxCell id="edge_ssml_tts" edge="1" parent="1" source="ssml" target="tts" value="SSML -> synth()" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#0b3b48;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="edge_tts_audio" edge="1" parent="1" source="tts" target="audio_proc" value="wav segment" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#0b3b48;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="edge_audio_outputs" edge="1" parent="1" source="audio_proc" target="outputs" value="write_master() -> final WAV" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;fontSize=11;strokeColor=#0b3b48;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- External dashed dependencies -->
+        <mxCell id="edge_llm_ext" edge="1" parent="1" source="llm" target="external" value="uses Azure OpenAI" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;strokeColor=#6b7280;dashed=1;fontSize=11;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="edge_tts_ext" edge="1" parent="1" source="tts" target="external" value="uses Azure Speech" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;strokeColor=#6b7280;dashed=1;fontSize=11;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Monitoring link -->
+        <mxCell id="edge_orch_mon" edge="1" parent="1" source="orchestrator" target="sticky" value="timeline logs → sticky note" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;strokeColor=#6b7280;dashed=1;fontSize=11;">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
 
