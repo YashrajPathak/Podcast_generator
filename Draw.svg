@@ -1,200 +1,126 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Podcast system flow - top-down, numbered steps, three agents, loop, LLM->SSML->TTS pipeline -->
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1600" viewBox="0 0 1200 1600">
+<!-- Podcast flow preview (save as podcast_flow.svg and open in browser) -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1400" viewBox="0 0 1600 1400">
   <style>
-    .box { fill:#ffffff; stroke:#1f2937; stroke-width:2; rx:8; }
-    .bigbox { fill:#f8fafc; stroke:#111827; stroke-width:2; rx:10; }
-    .accent-blue { fill:#e6f2ff; stroke:#1f78b4; stroke-width:2; }
-    .accent-green { fill:#ecfdf5; stroke:#16a34a; stroke-width:2; }
-    .accent-orange { fill:#fff7ed; stroke:#f97316; stroke-width:2; }
-    .accent-pink { fill:#fff0f6; stroke:#db2777; stroke-width:2; }
-    .text { font-family: Inter, Arial, sans-serif; fill:#0f172a; font-size:13px; }
-    .title { font-size:14px; font-weight:700; fill:#0b1320; }
-    .small { font-size:11px; fill:#111827; }
-    .step { font-weight:700; fill:#0b1320; font-size:12px; }
-    .arrow { stroke:#0f172a; stroke-width:3; fill:none; marker-end:url(#arrowhead); }
-    .dashed { stroke-dasharray:6 6; stroke:#6b7280; stroke-width:2; fill:none; marker-end:url(#arrowhead); }
-    .diamond { fill:#fff; stroke:#111827; stroke-width:2; }
-    .db { fill:#f3ffec; stroke:#2f6b0b; stroke-width:2; }
-    .sticky { fill:#fff7cc; stroke:#e1ad01; stroke-width:2; rx:6; }
+    rect{fill:#fff;stroke:#000;stroke-width:1.6}
+    ellipse{fill:#fff;stroke:#000;stroke-width:1.6}
+    text{font-family:Arial, Helvetica, sans-serif; font-size:12px; fill:#000}
+    .note{font-size:11px; fill:#333}
+    .diamond{fill:#fff;stroke:#000;stroke-width:1.6}
+    .cyl{fill:#fff;stroke:#000;stroke-width:1.6}
+    .dashed{stroke-dasharray:6 6; stroke:#666; stroke-width:1.2}
+    .arrow{stroke:#000; stroke-width:1.6; fill:none; marker-end:url(#a)}
   </style>
 
-  <!-- arrowhead -->
   <defs>
-    <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
-      <path d="M0,0 L10,4 L0,8 z" fill="#0f172a"/>
+    <marker id="a" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="strokeWidth" markerWidth="8" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#000" />
     </marker>
   </defs>
 
-  <!-- Top: user icon -->
-  <g transform="translate(480,20)">
-    <circle cx="120" cy="40" r="36" fill="#fff" stroke="#0b1320" stroke-width="2"/>
-    <circle cx="120" cy="30" r="12" fill="#0b1320"/>
-    <rect x="98" y="52" width="44" height="18" rx="8" fill="#0b1320" />
-    <text class="small" x="-50" y="100">Entrypoint: User / Scheduler / CLI / API</text>
-    <text class="small" x="-50" y="116">(Trigger to start podcast generation)</text>
+  <!-- Entrypoint -->
+  <ellipse cx="800" cy="56" rx="160" ry="32"/>
+  <text x="700" y="60">Entrypoint: User / Scheduler / CLI / API</text>
+
+  <!-- API -->
+  <rect x="680" y="112" width="320" height="84" rx="6"/>
+  <text x="700" y="142">API / Router (graph.py CLI / lkk.py FastAPI)</text>
+
+  <!-- Left Column -->
+  <rect x="120" y="220" width="280" height="88" rx="6"/>
+  <text x="140" y="250">Configuration Manager</text>
+  <text x="140" y="268" class="note">env vars, VOICE_*, VOICE_PLAN</text>
+
+  <rect x="120" y="332" width="280" height="88" rx="6"/>
+  <text x="140" y="362">Context Manager</text>
+  <text x="140" y="380" class="note">list_json_files(), load_context(), infer_topic</text>
+
+  <!-- Orchestrator -->
+  <rect x="400" y="220" width="480" height="120" rx="6"/>
+  <text x="420" y="250">LangGraph Orchestrator (graph.py)</text>
+  <text x="420" y="268" class="note">_build_compiled_graph(), generate_podcast(), _run_with_events()</text>
+
+  <!-- Nodes -->
+  <rect x="420" y="360" width="440" height="56" rx="6"/>
+  <text x="440" y="388">NEXUS_INTRO (nexus_intro_node)</text>
+
+  <rect x="420" y="432" width="440" height="56" rx="6"/>
+  <text x="440" y="460">RECO_INTRO (reco_intro_node)</text>
+
+  <rect x="420" y="504" width="440" height="56" rx="6"/>
+  <text x="440" y="532">STAT_INTRO (stat_intro_node)</text>
+
+  <rect x="420" y="576" width="520" height="80" rx="6"/>
+  <text x="440" y="606">NEXUS_TOPIC_INTRO (calls generate_nexus_topic_intro())</text>
+
+  <!-- Loop area -->
+  <rect x="220" y="680" width="360" height="92" rx="6"/>
+  <text x="240" y="714">RECO_TURN (reco_turn_node) → llm(SYSTEM_RECO)</text>
+
+  <rect x="720" y="680" width="360" height="92" rx="6"/>
+  <text x="740" y="714">STAT_TURN (stat_turn_node) → llm(SYSTEM_STAT)</text>
+
+  <!-- Decision diamond -->
+  <g transform="translate(520,800)">
+    <polygon points="80,0 160,64 80,128 0,64" class="diamond"/>
+    <text x="30" y="70">should_continue?</text>
+    <text x="30" y="88" class="note">(current_turn &lt; max_turns)</text>
   </g>
 
-  <!-- API/Router box -->
-  <rect x="300" y="140" width="600" height="80" class="accent-blue" rx="10"/>
-  <text class="title" x="360" y="172">API / Router</text>
-  <text class="small" x="360" y="192">Accepts request, selects JSON files, triggers orchestrator</text>
-  <text class="step" x="920" y="180">Step 1</text>
+  <!-- Outro -->
+  <rect x="520" y="928" width="420" height="88" rx="6"/>
+  <text x="540" y="968">NEXUS_OUTRO (nexus_outro_node)</text>
 
-  <!-- arrows: user -> api -->
-  <path class="arrow" d="M600,92 L600,140" marker-end="url(#arrowhead)"/>
+  <!-- Engine pipeline -->
+  <rect x="1200" y="220" width="300" height="80" rx="6"/>
+  <text x="1220" y="250">LLM Service (lkk.py): llm_safe(), llm()</text>
 
-  <!-- Left: Config & Context group -->
-  <rect x="40" y="260" width="340" height="120" class="bigbox"/>
-  <text class="title" x="60" y="290">Configuration Manager</text>
-  <text class="small" x="60" y="310">- Env vars (AZURE keys, voice, tenant)</text>
-  <text class="small" x="60" y="328">- Voice params, base SSML settings</text>
+  <rect x="1200" y="320" width="300" height="72" rx="6"/>
+  <text x="1220" y="350">SSML Generator: text_to_ssml(), _inflect()</text>
 
-  <rect x="40" y="390" width="340" height="120" class="bigbox"/>
-  <text class="title" x="60" y="420">Context Manager</text>
-  <text class="small" x="60" y="440">- list_json_files()</text>
-  <text class="small" x="60" y="458">- load_context(choice)</text>
-  <text class="small" x="60" y="476">- infer_topic_from_metrics()</text>
-  <text class="step" x="310" y="430">Step 2</text>
+  <rect x="1200" y="408" width="300" height="72" rx="6"/>
+  <text x="1220" y="438">TTS Synth: synth()</text>
 
-  <!-- Orchestrator central -->
-  <rect x="420" y="260" width="360" height="120" class="accent-green" rx="10"/>
-  <text class="title" x="452" y="294">LangGraph Orchestrator (graph.py)</text>
-  <text class="small" x="452" y="314">- _build_compiled_graph()</text>
-  <text class="small" x="452" y="332">- generate_podcast()</text>
-  <text class="small" x="452" y="350">- _run_with_events() & live event stream</text>
-  <text class="step" x="760" y="295">Step 3</text>
+  <rect x="1200" y="496" width="300" height="72" rx="6"/>
+  <text x="1220" y="526">Audio Processor: write_master(), wav_len()</text>
 
-  <!-- arrow: api -> orchestrator -->
-  <path class="arrow" d="M600,220 L600,260"/>
+  <!-- Outputs cylinder -->
+  <ellipse cx="780" cy="1060" rx="260" ry="32" class="cyl"/>
+  <rect x="520" y="1060" width="520" height="80" class="cyl" rx="6"/>
+  <ellipse cx="780" cy="1140" rx="260" ry="32" class="cyl"/>
+  <text x="560" y="1100">Outputs & Storage: podcast_YYYYMMDD.wav, podcast_script.txt, graph_convo.json, mermaid.html</text>
 
-  <!-- arrow: context/config -> orchestrator -->
-  <path class="arrow" d="M380,350 L420,350"/>
-  <path class="arrow" d="M380,420 L420,420"/>
+  <!-- Monitoring -->
+  <rect x="120" y="1040" width="280" height="120" rx="6"/>
+  <text x="140" y="1068">Monitoring: WebSocket timeline.jsonl, mermaid HTML</text>
 
-  <!-- Right: external services -->
-  <rect x="800" y="40" width="320" height="100" class="bigbox" rx="8"/>
-  <text class="title" x="820" y="72">External Services</text>
-  <text class="small" x="820" y="92">- Azure OpenAI (LLM)</text>
-  <text class="small" x="820" y="110">- Azure Speech (TTS)</text>
-  <text class="small" x="820" y="126">- Storage / CDN (optional)</text>
+  <!-- External services -->
+  <rect x="1450" y="120" width="240" height="96" rx="6" class="dashed"/>
+  <text x="1470" y="148">External: Azure OpenAI (LLM), Azure Speech (TTS)</text>
 
-  <!-- Middle vertical node sequence -->
-  <!-- Nexus Intro -->
-  <rect x="180" y="560" width="320" height="70" class="accent-orange" rx="8"/>
-  <text class="title" x="200" y="595">NEXUS_INTRO</text>
-  <text class="small" x="200" y="615">(nexus_intro_node) — uses NEXUS_INTRO text & TTS</text>
-  <text class="step" x="480" y="590">3.1</text>
+  <!-- Arrows -->
+  <path class="arrow" d="M800,88 L800,112"/>
+  <path class="arrow" d="M800,196 L800,220"/>
+  <path class="arrow" d="M400,264 L520,264"/>
+  <path class="arrow" d="M400,356 L420,356"/>
+  <path class="arrow" d="M640,656 L500,688"/>
+  <path class="arrow" d="M560,656 L720,688"/>
+  <path class="arrow" d="M840,656 L940,688"/>
+  <path class="arrow" d="M900,772 L680,800"/>
+  <path class="arrow" d="M600,896 L520,928"/>
+  <path class="arrow" d="M760,1016 L760,1040"/>
 
-  <!-- Reco Intro -->
-  <rect x="180" y="650" width="320" height="70" class="accent-orange" rx="8"/>
-  <text class="title" x="200" y="685">RECO_INTRO</text>
-  <text class="small" x="200" y="705">(reco_intro_node) — RECO persona intro</text>
-  <text class="step" x="480" y="675">3.2</text>
+  <!-- Engine arrows -->
+  <path class="arrow" d="M940,736 L1200,260"/>
+  <path class="arrow" d="M980,768 L1200,340"/>
+  <path class="arrow" d="M990,820 L1200,420"/>
+  <path class="arrow dashed" d="M1260,240 L1470,160"/>
+  <path class="arrow dashed" d="M1320,420 L1470,200"/>
 
-  <!-- Stat Intro -->
-  <rect x="180" y="740" width="320" height="70" class="accent-orange" rx="8"/>
-  <text class="title" x="200" y="775">STAT_INTRO</text>
-  <text class="small" x="200" y="795">(stat_intro_node) — STAT persona intro</text>
-  <text class="step" x="480" y="765">3.3</text>
-
-  <!-- Topic intro -->
-  <rect x="180" y="830" width="420" height="90" class="accent-orange" rx="8"/>
-  <text class="title" x="200" y="865">NEXUS_TOPIC_INTRO</text>
-  <text class="small" x="200" y="885">calls generate_nexus_topic_intro(context) — LLM call</text>
-  <text class="step" x="620" y="860">3.4</text>
-
-  <!-- arrow chain from orchestrator to nexus intro -->
-  <path class="arrow" d="M600,380 L360,560" />
-
-  <!-- Loop region: Reco / Stat turns -->
-  <rect x="520" y="940" width="320" height="110" class="box" rx="8"/>
-  <text class="title" x="540" y="972">Conversation Loop</text>
-  <text class="small" x="540" y="992">repeat: Reco turn → Stat turn until max_turns</text>
-
-  <!-- Reco Turn -->
-  <rect x="120" y="960" width="320" height="100" class="box" rx="8"/>
-  <text class="title" x="140" y="996">RECO_TURN</text>
-  <text class="small" x="140" y="1016">reco_turn_node → llm(SYSTEM_RECO) → post-process</text>
-  <text class="step" x="420" y="980">4.1</text>
-
-  <!-- Stat Turn -->
-  <rect x="460" y="960" width="320" height="100" class="box" rx="8"/>
-  <text class="title" x="480" y="996">STAT_TURN</text>
-  <text class="small" x="480" y="1016">stat_turn_node → llm(SYSTEM_STAT) → post-process</text>
-  <text class="step" x="820" y="980">4.2</text>
-
-  <!-- decision diamond -->
-  <g transform="translate(820,1080)">
-    <polygon points="40,0 80,40 40,80 0,40" class="diamond"/>
-    <text class="small" x=" -10" y="100">should_continue?</text>
-    <text class="small" x="-10" y="116">(current_turn >= max_turns)</text>
-  </g>
-
-  <!-- arrows for loop -->
-  <path class="arrow" d="M440,1060 L760,1060" />
-  <path class="arrow" d="M760,1060 L760,1120" />
-  <path class="arrow" d="M760,1160 L520,1160" />
-  <path class="arrow" d="M520,1160 L520,1040" marker-end="url(#arrowhead)"/>
-
-  <!-- arrow: reco -> llm -->
-  <path class="arrow" d="M260,1060 L140,720" />
-  <text class="small" x="220" y="880">LLM call (Reco)</text>
-
-  <!-- arrow: stat -> llm -->
-  <path class="arrow" d="M600,1060 L560,720" />
-  <text class="small" x="520" y="880">LLM call (Stat)</text>
-
-  <!-- Engine pipeline on right (LLM -> SSML -> TTS -> Audio) -->
-  <rect x="760" y="620" width="360" height="90" class="accent-pink" rx="8"/>
-  <text class="title" x="780" y="655">LLM</text>
-  <text class="small" x="780" y="675">llm_safe / llm() — AzureOpenAI</text>
-
-  <rect x="760" y="720" width="360" height="70" class="box" rx="8" style="fill:#e6fbff;stroke:#06b6d4"/>
-  <text class="title" x="780" y="755">SSML / Text→SSML</text>
-  <text class="small" x="780" y="775">text_to_ssml(), _inflect(), pauses</text>
-
-  <rect x="760" y="800" width="360" height="70" class="accent-blue" rx="8"/>
-  <text class="title" x="780" y="835">TTS Synth</text>
-  <text class="small" x="780" y="855">synth() — Azure Speech SDK → WAV segment</text>
-
-  <rect x="760" y="880" width="360" height="70" class="box" rx="8" style="fill:#f2ffe6;stroke:#84cc16"/>
-  <text class="title" x="780" y="915">Audio Processor</text>
-  <text class="small" x="780" y="935">segment management, write_master()</text>
-
-  <!-- arrows from LLM pipeline to outputs -->
-  <path class="arrow" d="M820,710 L540,820" />
-  <path class="arrow" d="M820,790 L540,580" />
-  <path class="arrow" d="M920,880 L1120,980" />
-
-  <!-- dashed arrows to external services -->
-  <path class="dashed" d="M900,650 L925,160" />
-  <path class="dashed" d="M920,820 L925,160" />
-  <text class="small" x="950" y="140">Azure OpenAI / Azure Speech</text>
-
-  <!-- Outro arrow -->
-  <path class="arrow" d="M820,1120 L1120,920" />
-  <rect x="940" y="980" width="200" height="80" class="accent-orange" rx="8"/>
-  <text class="title" x="960" y="1010">NEXUS_OUTRO</text>
-  <text class="small" x="960" y="1030">(nexus_outro_node)</text>
-
-  <!-- bottom outputs (DB cylinder-like) -->
-  <g transform="translate(420,1320)">
-    <ellipse cx="160" cy="20" rx="160" ry="20" class="db"/>
-    <rect x="0" y="20" width="320" height="80" class="db" rx="6"/>
-    <ellipse cx="160" cy="100" rx="160" ry="20" class="db"/>
-    <text class="title" x="100" y="55">Outputs & Storage</text>
-    <text class="small" x="40" y="75">podcast_YYYYMMDD.wav</text>
-    <text class="small" x="40" y="92">podcast_script.txt • graph_convo.json • mermaid.html</text>
-  </g>
-
-  <!-- sticky note -->
-  <rect x="40" y="1200" width="300" height="160" class="sticky"/>
-  <text class="small" x="60" y="1230">Note: Monitoring: WebSocket server (timeline jsonl), Mermaid HTML visual opens locally.</text>
-  <text class="small" x="60" y="1250">Highlight: key functions are labeled in boxes for quick reference.</text>
-
-  <!-- numbered step legend -->
-  <rect x="40" y="1450" width="1120" height="120" fill="#ffffff" stroke="#111827" stroke-width="1" rx="8"/>
-  <text class="small" x="60" y="1478"><tspan class="step">Steps (high level):</tspan> 1) Entrypoint → API; 2) Config & Context loading; 3) Orchestrator builds graph; 4) Node sequence: intros → topic intro; 5) Loop Reco/Stat turns (LLM calls) until condition; 6) LLM→SSML→TTS pipeline; 7) Audio assembly + outputs.</text>
+  <!-- LLM pipeline arrows -->
+  <path class="arrow" d="M1350,300 L1350,320"/>
+  <path class="arrow" d="M1350,392 L1350,408"/>
+  <path class="arrow" d="M1350,480 L1350,496"/>
+  <path class="arrow dashed" d="M1350,260 L1510,160"/>
 
 </svg>
