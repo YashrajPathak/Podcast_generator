@@ -1,126 +1,205 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Podcast flow preview (save as podcast_flow.svg and open in browser) -->
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1400" viewBox="0 0 1600 1400">
-  <style>
-    rect{fill:#fff;stroke:#000;stroke-width:1.6}
-    ellipse{fill:#fff;stroke:#000;stroke-width:1.6}
-    text{font-family:Arial, Helvetica, sans-serif; font-size:12px; fill:#000}
-    .note{font-size:11px; fill:#333}
-    .diamond{fill:#fff;stroke:#000;stroke-width:1.6}
-    .cyl{fill:#fff;stroke:#000;stroke-width:1.6}
-    .dashed{stroke-dasharray:6 6; stroke:#666; stroke-width:1.2}
-    .arrow{stroke:#000; stroke-width:1.6; fill:none; marker-end:url(#a)}
-  </style>
+<mxfile host="app.diagrams.net">
+  <diagram name="Podcast Generator Architecture" id="podcast-arch-pro">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" page="1" pageWidth="827" pageHeight="1169">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        
+        <!-- ENTRY POINTS -->
+        <mxCell id="A1" value="Entry Points" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="120" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="A2" value="graph.py (CLI)" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="110" width="120" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="A3" value="lkk.py (CLI)" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="150" width="120" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="A4" value="FastAPI Server" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="190" width="120" height="30" as="geometry"/>
+        </mxCell>
 
-  <defs>
-    <marker id="a" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="strokeWidth" markerWidth="8" markerHeight="6" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#000" />
-    </marker>
-  </defs>
+        <!-- CONFIGURATION -->
+        <mxCell id="B1" value="Configuration Manager" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="200" y="40" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="B2" value="Environment Variables" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="200" y="110" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="B3" value="Voice Parameters" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="200" y="150" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="B4" value="LLM Parameters" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="200" y="190" width="140" height="30" as="geometry"/>
+        </mxCell>
 
-  <!-- Entrypoint -->
-  <ellipse cx="800" cy="56" rx="160" ry="32"/>
-  <text x="700" y="60">Entrypoint: User / Scheduler / CLI / API</text>
+        <!-- CONTEXT MANAGER -->
+        <mxCell id="C1" value="Context Manager" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="380" y="40" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="C2" value="JSON File Selection" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="380" y="110" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="C3" value="Data Loading & Parsing" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="380" y="150" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="C4" value="Topic Inference" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="380" y="190" width="140" height="30" as="geometry"/>
+        </mxCell>
 
-  <!-- API -->
-  <rect x="680" y="112" width="320" height="84" rx="6"/>
-  <text x="700" y="142">API / Router (graph.py CLI / lkk.py FastAPI)</text>
+        <!-- ORCHESTRATOR -->
+        <mxCell id="D1" value="LangGraph Orchestrator" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="560" y="40" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="D2" value="Graph Construction" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="560" y="110" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="D3" value="State Management" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="560" y="150" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="D4" value="Event Streaming" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="560" y="190" width="140" height="30" as="geometry"/>
+        </mxCell>
 
-  <!-- Left Column -->
-  <rect x="120" y="220" width="280" height="88" rx="6"/>
-  <text x="140" y="250">Configuration Manager</text>
-  <text x="140" y="268" class="note">env vars, VOICE_*, VOICE_PLAN</text>
+        <!-- CONVERSATION MANAGER -->
+        <mxCell id="E1" value="Conversation Manager" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="740" y="40" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="E2" value="Node Definitions" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="740" y="110" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="E3" value="Turn Management" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="740" y="150" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="E4" value="Flow Control" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="740" y="190" width="140" height="30" as="geometry"/>
+        </mxCell>
 
-  <rect x="120" y="332" width="280" height="88" rx="6"/>
-  <text x="140" y="362">Context Manager</text>
-  <text x="140" y="380" class="note">list_json_files(), load_context(), infer_topic</text>
+        <!-- LLM SERVICE -->
+        <mxCell id="F1" value="LLM Service" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="280" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="F2" value="Azure OpenAI Integration" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="350" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="F3" value="Prompt Management" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="390" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="F4" value="Response Validation" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="430" width="140" height="30" as="geometry"/>
+        </mxCell>
 
-  <!-- Orchestrator -->
-  <rect x="400" y="220" width="480" height="120" rx="6"/>
-  <text x="420" y="250">LangGraph Orchestrator (graph.py)</text>
-  <text x="420" y="268" class="note">_build_compiled_graph(), generate_podcast(), _run_with_events()</text>
+        <!-- TTS SERVICE -->
+        <mxCell id="G1" value="TTS Service" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="220" y="280" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="G2" value="Azure Speech Integration" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="220" y="350" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="G3" value="SSML Generation" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="220" y="390" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="G4" value="Audio Synthesis" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="220" y="430" width="140" height="30" as="geometry"/>
+        </mxCell>
 
-  <!-- Nodes -->
-  <rect x="420" y="360" width="440" height="56" rx="6"/>
-  <text x="440" y="388">NEXUS_INTRO (nexus_intro_node)</text>
+        <!-- AUDIO PROCESSOR -->
+        <mxCell id="H1" value="Audio Processor" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="280" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="H2" value="Segment Management" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="350" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="H3" value="Audio Concatenation" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="390" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="H4" value="Format Conversion" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="430" width="140" height="30" as="geometry"/>
+        </mxCell>
 
-  <rect x="420" y="432" width="440" height="56" rx="6"/>
-  <text x="440" y="460">RECO_INTRO (reco_intro_node)</text>
+        <!-- MONITORING -->
+        <mxCell id="I1" value="Monitoring Service" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="580" y="280" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="I2" value="Performance Metrics" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="580" y="350" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="I3" value="Real-time Events" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="580" y="390" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="I4" value="WebSocket Server" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="580" y="430" width="140" height="30" as="geometry"/>
+        </mxCell>
 
-  <rect x="420" y="504" width="440" height="56" rx="6"/>
-  <text x="440" y="532">STAT_INTRO (stat_intro_node)</text>
+        <!-- OUTPUT MANAGER -->
+        <mxCell id="J1" value="Output Manager" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="760" y="280" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="J2" value="File Generation" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="760" y="350" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="J3" value="Format Management" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="760" y="390" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="J4" value="Metadata Creation" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="760" y="430" width="140" height="30" as="geometry"/>
+        </mxCell>
 
-  <rect x="420" y="576" width="520" height="80" rx="6"/>
-  <text x="440" y="606">NEXUS_TOPIC_INTRO (calls generate_nexus_topic_intro())</text>
+        <!-- EXTERNAL SERVICES -->
+        <mxCell id="K1" value="External Services" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="940" y="40" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="K2" value="Azure OpenAI" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="940" y="110" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="K3" value="Azure Speech Service" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="940" y="150" width="140" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="K4" value="Storage (Future)" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="940" y="190" width="140" height="30" as="geometry"/>
+        </mxCell>
 
-  <!-- Loop area -->
-  <rect x="220" y="680" width="360" height="92" rx="6"/>
-  <text x="240" y="714">RECO_TURN (reco_turn_node) → llm(SYSTEM_RECO)</text>
-
-  <rect x="720" y="680" width="360" height="92" rx="6"/>
-  <text x="740" y="714">STAT_TURN (stat_turn_node) → llm(SYSTEM_STAT)</text>
-
-  <!-- Decision diamond -->
-  <g transform="translate(520,800)">
-    <polygon points="80,0 160,64 80,128 0,64" class="diamond"/>
-    <text x="30" y="70">should_continue?</text>
-    <text x="30" y="88" class="note">(current_turn &lt; max_turns)</text>
-  </g>
-
-  <!-- Outro -->
-  <rect x="520" y="928" width="420" height="88" rx="6"/>
-  <text x="540" y="968">NEXUS_OUTRO (nexus_outro_node)</text>
-
-  <!-- Engine pipeline -->
-  <rect x="1200" y="220" width="300" height="80" rx="6"/>
-  <text x="1220" y="250">LLM Service (lkk.py): llm_safe(), llm()</text>
-
-  <rect x="1200" y="320" width="300" height="72" rx="6"/>
-  <text x="1220" y="350">SSML Generator: text_to_ssml(), _inflect()</text>
-
-  <rect x="1200" y="408" width="300" height="72" rx="6"/>
-  <text x="1220" y="438">TTS Synth: synth()</text>
-
-  <rect x="1200" y="496" width="300" height="72" rx="6"/>
-  <text x="1220" y="526">Audio Processor: write_master(), wav_len()</text>
-
-  <!-- Outputs cylinder -->
-  <ellipse cx="780" cy="1060" rx="260" ry="32" class="cyl"/>
-  <rect x="520" y="1060" width="520" height="80" class="cyl" rx="6"/>
-  <ellipse cx="780" cy="1140" rx="260" ry="32" class="cyl"/>
-  <text x="560" y="1100">Outputs & Storage: podcast_YYYYMMDD.wav, podcast_script.txt, graph_convo.json, mermaid.html</text>
-
-  <!-- Monitoring -->
-  <rect x="120" y="1040" width="280" height="120" rx="6"/>
-  <text x="140" y="1068">Monitoring: WebSocket timeline.jsonl, mermaid HTML</text>
-
-  <!-- External services -->
-  <rect x="1450" y="120" width="240" height="96" rx="6" class="dashed"/>
-  <text x="1470" y="148">External: Azure OpenAI (LLM), Azure Speech (TTS)</text>
-
-  <!-- Arrows -->
-  <path class="arrow" d="M800,88 L800,112"/>
-  <path class="arrow" d="M800,196 L800,220"/>
-  <path class="arrow" d="M400,264 L520,264"/>
-  <path class="arrow" d="M400,356 L420,356"/>
-  <path class="arrow" d="M640,656 L500,688"/>
-  <path class="arrow" d="M560,656 L720,688"/>
-  <path class="arrow" d="M840,656 L940,688"/>
-  <path class="arrow" d="M900,772 L680,800"/>
-  <path class="arrow" d="M600,896 L520,928"/>
-  <path class="arrow" d="M760,1016 L760,1040"/>
-
-  <!-- Engine arrows -->
-  <path class="arrow" d="M940,736 L1200,260"/>
-  <path class="arrow" d="M980,768 L1200,340"/>
-  <path class="arrow" d="M990,820 L1200,420"/>
-  <path class="arrow dashed" d="M1260,240 L1470,160"/>
-  <path class="arrow dashed" d="M1320,420 L1470,200"/>
-
-  <!-- LLM pipeline arrows -->
-  <path class="arrow" d="M1350,300 L1350,320"/>
-  <path class="arrow" d="M1350,392 L1350,408"/>
-  <path class="arrow" d="M1350,480 L1350,496"/>
-  <path class="arrow dashed" d="M1350,260 L1510,160"/>
-
-</svg>
+        <!-- DATA FLOW ARROWS -->
+        <mxCell id="edge1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="A1" target="B1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="edge2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="B1" target="C1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="edge3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="C1" target="D1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="edge4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="D1" target="E1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="edge5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="E1" target="F1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="edge6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="E1" target="G1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="edge7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="F1" target="H1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="edge8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="G1" target="H1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="edge9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="H1" target="J1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="edge10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="D1" target="I1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="edge11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;" edge="1" parent="1" source="F1" target="K2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="edge12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;" edge="1" parent="1" source="G1" target="K3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="edge13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;" edge="1" parent="1" source="I1" target="A1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
