@@ -12,19 +12,19 @@ from typing import Dict, List, Any, Optional, TypedDict, Annotated
 from dataclasses import dataclass
 from time import perf_counter
 
+# ---- Environment Setup ----
+from dotenv import load_dotenv
+load_dotenv()
+
 # ---- LiveKit Full Integration ----
 try:
-    import livekit.rtc as lkrtc
-    from livekit.agents import (
-        JobContext, Worker, AutoSubscribe,
-        llm, stt, tts, voice_assistant
-    )
-    from livekit.agents.pipeline import VoicePipeline
-    from livekit.agents.tts import TTSStreamAdapter
+    from livekit import rtc as lkrtc
+    from livekit.agents import JobContext, Worker
     _LIVEKIT_AVAILABLE = True
-except ImportError:
+    print("✅ LiveKit imported successfully")
+except ImportError as e:
     _LIVEKIT_AVAILABLE = False
-    print("⚠️  LiveKit not available. Install with: pip install 'livekit-agents'")
+    print(f"⚠️  LiveKit not available: {e}")
     lkrtc = None
 
 # ---- Podcast Engine ----
@@ -37,7 +37,6 @@ except Exception as e:
 # ---- LangGraph Core ----
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import create_react_agent
 
 # ---- Enhanced State Management ----
 class ConversationState(TypedDict):
@@ -69,14 +68,18 @@ class LiveKitAudioStream:
     
     def __init__(self, room):
         self.room = room
-        self.audio_track = lkrtc.LocalAudioTrack()
-        self.audio_source = lkrtc.AudioSource()
+        if _LIVEKIT_AVAILABLE:
+            self.audio_track = lkrtc.LocalAudioTrack()
+            self.audio_source = lkrtc.AudioSource()
         self.sample_rate = 24000
         self.sample_width = 2  # 16-bit
         self.channels = 1
         
     async def stream_audio_file(self, audio_file: str):
         """Stream audio file to LiveKit room in real-time"""
+        if not _LIVEKIT_AVAILABLE:
+            return
+            
         try:
             with wave.open(audio_file, 'rb') as wav_file:
                 # Verify format
@@ -84,7 +87,6 @@ class LiveKitAudioStream:
                     wav_file.getsampwidth() != self.sample_width or
                     wav_file.getnchannels() != self.channels):
                     print("⚠️  Audio format mismatch, converting...")
-                    # You'd add audio conversion here
                     return
                 
                 # Stream audio chunks
@@ -105,7 +107,7 @@ class LiveKitAudioStream:
                     
                     # Send to LiveKit
                     await self.audio_source.capture_frame(audio_frame)
-                    await asyncio.sleep(0.01)  # Control streaming rate
+                    await asyncio.sleep(0.01)
                     
         except Exception as e:
             print(f"❌ Audio streaming error: {e}")
@@ -125,13 +127,8 @@ class ConversationNodes:
             "action": "agent_introductions"
         })
         
-        # Nexus introduction
         await self._speak_agent(state, "NEXUS", podcast.NEXUS_INTRO)
-        
-        # Reco introduction  
         await self._speak_agent(state, "RECO", podcast.RECO_INTRO)
-        
-        # Stat introduction
         await self._speak_agent(state, "STAT", podcast.STAT_INTRO)
         
         state["current_node"] = "topic_introduction"
@@ -158,10 +155,7 @@ class ConversationNodes:
             "status": "waiting"
         })
         
-        # In LiveKit mode, this node waits for real user input
-        # In CLI mode, it processes the next input
         if not state.get("user_input"):
-            # Set condition to wait for input
             state["current_node"] = "process_user_input"
             return state
             
@@ -211,7 +205,7 @@ class ConversationNodes:
             state["current_node"] = "conversation_outro"
         else:
             state["current_node"] = "await_user_input"
-            state["user_input"] = ""  # Reset for next input
+            state["user_input"] = ""
             
         return state
     
@@ -242,7 +236,6 @@ class ConversationNodes:
         """Helper method for agent speech with LiveKit streaming"""
         start_time = perf_counter()
         
-        # Add to conversation history
         state["conversation_history"].append({
             "speaker": agent_type,
             "text": text,
@@ -250,20 +243,15 @@ class ConversationNodes:
             "turn": state["current_turn"]
         })
         
-        # Generate SSML and synthesize audio
         ssml = podcast.text_to_ssml(text, agent_type)
         audio_file = await asyncio.to_thread(podcast.synth, ssml)
         state["audio_segments"].append(audio_file)
         
-        # Stream audio to LiveKit if available
         if self.audio_stream and state.get("room"):
             await self.audio_stream.stream_audio_file(audio_file)
         
-        # Calculate and log latency
         latency = (perf_counter() - start_time) * 1000
         print(f"🎯 {agent_type} Latency: {latency:.0f}ms")
-        
-        # Print to console
         print(f"{agent_type}: {text}")
         
         return latency
@@ -281,12 +269,10 @@ class LiveKitHandlers:
         """Handle new participant connection"""
         print(f"👤 Participant connected: {participant.identity}")
         
-        # Add participant to state
         current_state = self.graph_manager.get_current_state()
         if participant.identity not in current_state["participants"]:
             current_state["participants"].append(participant.identity)
         
-        # Start conversation if first participant
         if len(current_state["participants"]) == 1:
             await self.graph_manager.start_conversation()
     
@@ -294,14 +280,6 @@ class LiveKitHandlers:
         """Handle audio track subscription for STT"""
         if track.kind == lkrtc.TrackKind.KIND_AUDIO:
             print(f"🎤 Audio track subscribed from {participant.identity}")
-            
-            # Initialize STT for real-time transcription
-            if not self.stt_engine:
-                try:
-                    from livekit.agents import stt
-                    self.stt_engine = stt.StreamAdapter(stt.create_stream)
-                except ImportError:
-                    print("⚠️  STT not available")
     
     async def handle_data_received(self, data: bytes, participant: lkrtc.RemoteParticipant, kind: lkrtc.DataPacketKind):
         """Handle data messages from participants"""
@@ -316,38 +294,19 @@ class LiveKitHandlers:
                 )
             elif msg_type == 'interrupt':
                 await self.graph_manager.interrupt_conversation()
-            elif msg_type == 'quality_report':
-                self._update_connection_quality(participant.identity, message['quality'])
                 
         except Exception as e:
             print(f"Error processing data: {e}")
     
     async def handle_audio_frame(self, frame: lkrtc.AudioFrame, participant: lkrtc.RemoteParticipant):
         """Real-time audio processing for STT"""
-        if not self.stt_engine or (perf_counter() - self.last_audio_time) < 0.5:
-            return
-            
-        try:
-            # Process audio for speech recognition
-            results = await self.stt_engine.process_audio(frame.data)
-            if results and results.text.strip():
-                await self.graph_manager.process_user_input(
-                    results.text, 
-                    participant.identity
-                )
-                self.last_audio_time = perf_counter()
-                
-        except Exception as e:
-            print(f"STT error: {e}")
+        # STT implementation simplified for now
+        pass
     
     def _update_connection_quality(self, participant: str, quality: float):
         """Update connection quality metrics"""
         current_state = self.graph_manager.get_current_state()
         current_state["connection_quality"][participant] = quality
-        
-        # Adapt conversation based on quality
-        if quality < 0.3:  # Poor connection
-            print(f"📶 Poor connection for {participant}, simplifying responses")
 
 # ---- Graph Manager ----
 class GraphManager:
@@ -362,18 +321,14 @@ class GraphManager:
         
     def initialize_graph(self, room=None):
         """Initialize the LangGraph workflow"""
-        # Create audio stream if LiveKit available
         if room and _LIVEKIT_AVAILABLE:
             self.audio_stream = LiveKitAudioStream(room)
         
-        # Initialize nodes
         self.nodes = ConversationNodes(self.audio_stream)
         self.handlers = LiveKitHandlers(self)
         
-        # Build the graph
         workflow = StateGraph(ConversationState)
         
-        # Add all nodes
         workflow.add_node("introduction", self.nodes.node_introduction)
         workflow.add_node("topic_introduction", self.nodes.node_topic_introduction)
         workflow.add_node("await_user_input", self.nodes.node_await_user_input)
@@ -383,7 +338,6 @@ class GraphManager:
         workflow.add_node("conversation_outro", self.nodes.node_conversation_outro)
         workflow.add_node("handle_interruption", self.nodes.node_handle_interruption)
         
-        # Define workflow edges
         workflow.set_entry_point("introduction")
         workflow.add_edge("introduction", "topic_introduction")
         workflow.add_edge("topic_introduction", "await_user_input")
@@ -409,7 +363,6 @@ class GraphManager:
         
         self.graph = workflow.compile()
         
-        # Initialize state
         self.current_state = {
             "messages": [],
             "current_speaker": "",
@@ -433,21 +386,17 @@ class GraphManager:
         }
     
     def _should_process_input(self, state: ConversationState) -> str:
-        """Conditional edge: should we process input or wait?"""
         return "process" if state.get("user_input") else "wait"
     
     def _should_end_conversation(self, state: ConversationState) -> str:
-        """Conditional edge: should conversation end?"""
         if state["current_turn"] >= state["max_turns"] or state.get("interrupted"):
             return "end"
         return "continue"
     
     async def start_conversation(self):
-        """Start the conversation workflow"""
         if not self.graph:
             self.initialize_graph()
         
-        # Load context
         context_text, meta = podcast.load_context("both")
         self.current_state["context"] = {"text": context_text, "meta": meta}
         self.current_state["topic"] = meta.get("topic", "Healthcare Analytics")
@@ -456,7 +405,6 @@ class GraphManager:
         await self.graph.ainvoke(self.current_state)
     
     async def process_user_input(self, text: str, user_id: str = "user"):
-        """Process user input through the graph"""
         if not self.graph:
             return
             
@@ -472,12 +420,10 @@ class GraphManager:
         await self.graph.ainvoke(self.current_state)
     
     async def interrupt_conversation(self):
-        """Interrupt the current conversation"""
         self.current_state["interrupted"] = True
         await self.graph.ainvoke(self.current_state)
     
     def get_current_state(self) -> ConversationState:
-        """Get current graph state"""
         return self.current_state
 
 # ---- LiveKit Worker ----
@@ -487,22 +433,15 @@ async def livekit_entrypoint(ctx: JobContext):
     
     await ctx.wait_for_connected()
     
-    # Initialize graph manager with LiveKit room
     graph_manager = GraphManager()
     graph_manager.initialize_graph(ctx.room)
     
-    # Set up event handlers
     ctx.room.on("track_subscribed", graph_manager.handlers.handle_track_subscribed)
     ctx.room.on("data_received", graph_manager.handlers.handle_data_received)
     ctx.room.on("participant_connected", graph_manager.handlers.handle_participant_connected)
     
-    # Audio processing
-    @ctx.room.on("audio_frame")
-    async def on_audio_frame(frame: lkrtc.AudioFrame, participant: lkrtc.RemoteParticipant):
-        await graph_manager.handlers.handle_audio_frame(frame, participant)
-    
     print("✅ LiveKit + LangGraph agent ready!")
-    await asyncio.Future()  # Keep running
+    await asyncio.Future()
 
 # ---- Main Application ----
 async def main():
@@ -510,23 +449,31 @@ async def main():
     print("🎧 Optum MultiAgent System - LiveKit + LangGraph")
     print("=" * 50)
     
+    # Test LiveKit credentials
+    url = os.getenv("LIVEKIT_URL")
+    api_key = os.getenv("LIVEKIT_API_KEY")
+    api_secret = os.getenv("LIVEKIT_API_SECRET")
+    
+    print("🔐 LiveKit Credentials Check:")
+    print(f"URL: {url}")
+    print(f"API Key: {api_key}")
+    print(f"Secret: {'*' * len(api_secret) if api_secret else 'MISSING'}")
+    
+    if not all([url, api_key, api_secret]):
+        print("❌ Missing LiveKit credentials in .env file")
+        return
+    
     graph_manager = GraphManager()
     
     print("1: CLI Mode (LangGraph workflow)")
     print("2: LiveKit Mode (Real-time audio)")
-    print("3: LangGraph Studio")
     
-    choice = input("\nChoose mode (1-3): ").strip()
+    choice = input("\nChoose mode (1-2): ").strip()
     
     if choice == "1":
-        # CLI mode with full LangGraph workflow
         await cli_mode(graph_manager)
     elif choice == "2":
-        # LiveKit mode
         await livekit_mode()
-    elif choice == "3":
-        # LangGraph Studio
-        os.system("langgraph dev")
     else:
         print("Invalid choice")
 
@@ -543,7 +490,6 @@ async def cli_mode(graph_manager: GraphManager):
             break
         await graph_manager.process_user_input(user_input)
     
-    # Generate final outputs
     await generate_final_outputs(graph_manager.current_state)
 
 async def livekit_mode():
@@ -554,9 +500,9 @@ async def livekit_mode():
         
     worker = Worker(
         entrypoint=livekit_entrypoint,
-        url=os.getenv("LIVEKIT_URL", "ws://localhost:7880"),
-        api_key=os.getenv("LIVEKIT_API_KEY", "devkey"),
-        api_secret=os.getenv("LIVEKIT_API_SECRET", "secret"),
+        url=os.getenv("LIVEKIT_URL"),
+        api_key=os.getenv("LIVEKIT_API_KEY"),
+        api_secret=os.getenv("LIVEKIT_API_SECRET"),
     )
     
     print("🚀 Starting LiveKit server...")
@@ -566,11 +512,9 @@ async def generate_final_outputs(state: ConversationState):
     """Generate final audio and transcript"""
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Generate final audio
     out_wav = f"conversation_{timestamp}.wav"
     podcast.write_master(state["audio_segments"], out_wav)
     
-    # Generate detailed transcript
     transcript_file = f"conversation_{timestamp}.json"
     with open(transcript_file, 'w', encoding='utf-8') as f:
         json.dump({
@@ -587,7 +531,6 @@ async def generate_final_outputs(state: ConversationState):
     print(f"\n✅ Conversation completed!")
     print(f"   Audio: {out_wav}")
     print(f"   Transcript: {transcript_file}")
-    print(f"   Workflow nodes: {len(state['node_history'])}")
 
 if __name__ == "__main__":
     try:
