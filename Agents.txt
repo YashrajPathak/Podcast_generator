@@ -11,6 +11,5 @@ dialogue - "Hello! I’m Agent Statix, focused on metric data. I dive deep into 
 
 voice for agent reco - AZURE_VOICE_BA = os.getenv("AZURE_VOICE_BA", "en-US-JennyNeural")
 voice for agent statix - AZURE_VOICE_DA = os.getenv("AZURE_VOICE_DA", "en-US-BrianNeural")
-https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload&code_challenge=wccktVGbrKYCx0OVUZ1i19sF0gS0y6O-SxtCu9EKikY&code_challenge_method=S256&state=wXOngR4psKRYgkdMqxaKYEM-HH9ohBwHE34adGBLtEc
-
+https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload&code_challenge=mkMOfIB5DLigSvvdArPhqd_hnwyxELa4cxZSPJxurnQ&code_challenge_method=S256&state=gXCkZioLfSl7SVO0M2vqUpiy9icjaq_9m5GzEwIzPBk
 5Xju4uaIyJc0bVuke7Efz2wVg4kIp0wsbnwMCISEpYkeB4hb#wXOngR4psKRYgkdMqxaKYEM-HH9ohBwHE34adGBLtEc
